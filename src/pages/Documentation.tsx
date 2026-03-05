@@ -1369,7 +1369,7 @@ supabase functions deploy`}</pre>
           <div className="space-y-2 text-sm">
             <p className="text-muted-foreground">Set secrets in Supabase dashboard:</p>
             <div className="bg-muted p-3 rounded text-xs">
-              {["RESEND_API_KEY", "EXOTEL_API_KEY", "EXOTEL_API_TOKEN", "EXOTEL_ACCOUNT_SID", "LOVABLE_API_KEY"].map((secret) => (
+              {["RESEND_API_KEY", "EXOTEL_API_KEY", "EXOTEL_API_TOKEN", "EXOTEL_ACCOUNT_SID", "GEMINI_API_KEY"].map((secret) => (
                 <div key={secret} className="font-mono">• {secret}</div>
               ))}
             </div>

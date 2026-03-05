@@ -20,7 +20,7 @@ serve(async (req) => {
     const { data: orgs, error: orgsError } = await supabase
       .from('organizations')
       .select('id, name')
-      .eq('is_active', true);
+      .eq('subscription_active', true);
 
     if (orgsError) {
       console.error('Error fetching organizations:', orgsError);

@@ -149,7 +149,7 @@ async function processWebhook(
     // Build headers
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'User-Agent': 'Lovable-CRM-Webhook/1.0',
+      'User-Agent': 'InSync-CRM-Webhook/1.0',
       ...webhook.headers,
     };
 

@@ -34,5 +34,11 @@ BEGIN
 END;
 $$;
 
--- Execute the deletion for gulshan@in-sync.co.in
-SELECT delete_user_data('gulshan@in-sync.co.in');
+-- Execute the deletion for gulshan@in-sync.co.in (skip if user does not exist)
+DO $$
+BEGIN
+  PERFORM delete_user_data('gulshan@in-sync.co.in');
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'Skipped: user gulshan@in-sync.co.in not found in fresh database';
+END;
+$$;

@@ -2,7 +2,7 @@
  * In-Sync Help Widget
  * 
  * Usage: Add this to any website:
- * <script src="https://go-in-sync.lovable.app/help-widget.js" data-source="paisaa_saarthi"></script>
+ * <script src="https://go.in-sync.co.in/help-widget.js" data-source="paisaa_saarthi"></script>
  * 
  * Optional attributes:
  *   data-source="paisaa_saarthi"  (required - identifies the platform)
@@ -18,7 +18,7 @@
   var ACCENT = script?.getAttribute("data-color") || "#6366f1";
   var POSITION = script?.getAttribute("data-position") || "right";
   var COMPANY = script?.getAttribute("data-company") || "";
-  var API_URL = "https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/submit-help-ticket";
+  var API_URL = "https://knuewnenaswscgaldjej.supabase.co/functions/v1/submit-help-ticket";
 
   var IMAGE_EXTS = ["jpg", "jpeg", "png", "gif", "webp"];
   var VIDEO_EXTS = ["mp4", "webm", "mov"];

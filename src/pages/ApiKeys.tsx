@@ -22,6 +22,7 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { DataTable, Column } from "@/components/common/DataTable";
 
 export default function ApiKeys() {
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyDescription, setNewKeyDescription] = useState("");
@@ -522,18 +523,18 @@ export default function ApiKeys() {
                 <p className="text-[15px] leading-relaxed mb-6 text-foreground">Include your API key in the <code className="bg-muted px-2 py-0.5 rounded text-[13px] font-mono text-foreground">X-API-Key</code> header:</p>
                 <pre className="bg-[#f4f4f4] dark:bg-[#1e1e1e] p-4 rounded-lg overflow-x-auto border border-border text-[14px] leading-relaxed font-mono text-foreground mb-8">
 {`curl -H "X-API-Key: your_api_key_here" \\
-  https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/crm-bridge-api/contacts`}
+  ${supabaseUrl}/functions/v1/crm-bridge-api/contacts`}
                 </pre>
 
                 <h3 className="text-2xl font-bold mb-6 mt-8 text-foreground">Base URL</h3>
                 <div className="flex items-center gap-2 mb-8">
                   <p className="font-mono text-[14px] bg-[#f4f4f4] dark:bg-[#1e1e1e] p-3 rounded flex-1 text-foreground border border-border">
-                    https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/crm-bridge-api
+                    {supabaseUrl}/functions/v1/crm-bridge-api
                   </p>
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => copyToClipboard("https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/crm-bridge-api")}
+                    onClick={() => copyToClipboard(`${supabaseUrl}/functions/v1/crm-bridge-api`)}
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
@@ -581,14 +582,14 @@ export default function ApiKeys() {
                         </Badge>
                         <div className="flex-1 min-w-0">
                           <p className="font-mono text-[13px] break-all text-foreground leading-relaxed">
-                            https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/crm-bridge-api{endpoint.path}
+                            {supabaseUrl}/functions/v1/crm-bridge-api{endpoint.path}
                           </p>
                           <p className="text-[14px] text-foreground mt-2 leading-relaxed">{endpoint.desc}</p>
                         </div>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => copyToClipboard(`https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/crm-bridge-api${endpoint.path}`)}
+                          onClick={() => copyToClipboard(`${supabaseUrl}/functions/v1/crm-bridge-api${endpoint.path}`)}
                         >
                           <Copy className="h-4 w-4" />
                         </Button>
@@ -1121,7 +1122,7 @@ Response:
 const syncOrganization = async () => {
   try {
     const response = await fetch(
-      'https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/crm-bridge-api/organizations',
+      '${supabaseUrl}/functions/v1/crm-bridge-api/organizations',
       {
         method: 'GET',
         headers: {
@@ -2094,7 +2095,7 @@ useEffect(() => {
                 <h4 className="text-xl font-semibold mb-3 mt-8 text-foreground">cURL Example</h4>
                 <pre className="bg-[#f5f5f5] dark:bg-[#1e1e1e] p-4 rounded-lg overflow-x-auto border border-border text-[14px] leading-relaxed font-mono text-foreground">
 {`curl -X GET \\
-  https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/crm-bridge-api/organizations \\
+  ${supabaseUrl}/functions/v1/crm-bridge-api/organizations \\
   -H "x-api-key: your_api_key_here" \\
   -H "Content-Type: application/json"`}
                 </pre>
@@ -2148,12 +2149,12 @@ useEffect(() => {
                 <h3 className="text-lg font-semibold mb-2">Endpoint URL</h3>
                 <div className="flex items-center gap-2 bg-muted p-3 rounded-lg">
                   <code className="flex-1 text-sm">
-                    https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/blog-webhook
+                    {supabaseUrl}/functions/v1/blog-webhook
                   </code>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => copyToClipboard('https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/blog-webhook')}
+                    onClick={() => copyToClipboard(`${supabaseUrl}/functions/v1/blog-webhook`)}
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
@@ -2243,7 +2244,7 @@ Content-Type: application/json
               <div>
                 <h3 className="text-lg font-semibold mb-2">Example cURL Request</h3>
                 <pre className="bg-muted p-4 rounded-lg text-sm overflow-x-auto">
-{`curl -X POST https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/blog-webhook \\
+{`curl -X POST ${supabaseUrl}/functions/v1/blog-webhook \\
   -H "Content-Type: application/json" \\
   -d '{
     "org_id": "65e22e43-f23d-4c0a-9d84-2eba65ad0e12",
@@ -2290,12 +2291,12 @@ Content-Type: application/json
                 <h3 className="text-lg font-semibold mb-2">Base URL</h3>
                 <div className="flex items-center gap-2 bg-muted p-3 rounded-lg">
                   <code className="flex-1 text-sm">
-                    https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/crm-bridge-api
+                    {supabaseUrl}/functions/v1/crm-bridge-api
                   </code>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => copyToClipboard('https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/crm-bridge-api')}
+                    onClick={() => copyToClipboard(`${supabaseUrl}/functions/v1/crm-bridge-api`)}
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
@@ -2306,7 +2307,7 @@ Content-Type: application/json
                 <h3 className="text-lg font-semibold mb-2">Example Request</h3>
                 <pre className="bg-muted p-4 rounded-lg text-sm overflow-x-auto">
 {`curl -H "X-API-Key: ${selectedKeyForDocs?.key_prefix}..." \\
-  https://aizgpxaqvtvvqarzjmze.supabase.co/functions/v1/crm-bridge-api/contacts`}
+  ${supabaseUrl}/functions/v1/crm-bridge-api/contacts`}
                 </pre>
               </div>
 
