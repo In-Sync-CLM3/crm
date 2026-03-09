@@ -1,0 +1,219 @@
+import { useState } from "react";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ChevronLeft, Download, Mail, CreditCard } from "lucide-react";
+import { formatCurrencyINR, numberToWords, statusLabel, formatFinancialYear } from "@/utils/billingUtils";
+import { DOC_TYPE_LABELS, STATUS_COLORS } from "@/types/billing";
+import type { BillingDocument, BillingPayment, BillingSettings } from "@/types/billing";
+import { RecordPaymentDialog } from "./RecordPaymentDialog";
+
+interface BillingDocumentViewProps {
+  doc: BillingDocument;
+  payments: BillingPayment[];
+  settings: BillingSettings;
+  onBack: () => void;
+  onRecordPayment: (payment: { document_id: string; amount: number; payment_date: string; payment_mode: string; reference_number: string; notes: string; org_id: string }) => void;
+}
+
+export function BillingDocumentView({ doc, payments, settings, onBack, onRecordPayment }: BillingDocumentViewProps) {
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <Button variant="ghost" size="icon" onClick={onBack}><ChevronLeft className="h-5 w-5" /></Button>
+        <div className="flex-1 min-w-0">
+          <h2 className="text-2xl font-bold">{doc.doc_number}</h2>
+          <p className="text-sm text-muted-foreground">{DOC_TYPE_LABELS[doc.doc_type]} for {doc.client_name}</p>
+        </div>
+        <Badge variant="secondary" className={`${STATUS_COLORS[doc.status]} text-sm px-3 py-1`}>{statusLabel(doc.status)}</Badge>
+        <Button variant="outline"><Download className="h-4 w-4 mr-1" />PDF</Button>
+        <Button variant="outline"><Mail className="h-4 w-4 mr-1" />Email</Button>
+        {doc.doc_type === "invoice" && doc.status !== "paid" && (
+          <Button className="bg-emerald-600 hover:bg-emerald-700" onClick={() => setShowPaymentModal(true)}>
+            <CreditCard className="h-4 w-4 mr-1" />Record Payment
+          </Button>
+        )}
+      </div>
+
+      {/* Invoice Preview */}
+      <Card className="p-8">
+        <div className="border-2 border-gray-200 rounded-xl p-8">
+          {/* Company Header */}
+          <div className="flex justify-between items-start mb-6">
+            <div>
+              <h3 className="text-xl font-bold text-primary">{settings.company_name || "Your Company"}</h3>
+              <p className="text-xs text-muted-foreground mt-1">{settings.company_address}</p>
+              <p className="text-xs text-muted-foreground">GSTIN: {settings.company_gstin} | PAN: {settings.company_pan}</p>
+              <p className="text-xs text-muted-foreground">Email: {settings.company_email} | Ph: {settings.company_phone}</p>
+            </div>
+            <div className="text-right">
+              <div className={`inline-block px-4 py-1.5 rounded-lg text-sm font-bold ${
+                doc.doc_type === "invoice" ? "bg-primary text-primary-foreground" :
+                doc.doc_type === "proforma" ? "bg-sky-500 text-white" : "bg-violet-500 text-white"
+              }`}>
+                {DOC_TYPE_LABELS[doc.doc_type]?.toUpperCase()}
+              </div>
+            </div>
+          </div>
+          <div className="h-px bg-primary mb-6" />
+
+          {/* Bill To + Doc Details */}
+          <div className="grid grid-cols-2 gap-8 mb-6">
+            <div className="bg-muted/50 rounded-lg p-4">
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Bill To</p>
+              <p className="text-sm font-bold">{doc.client_name}</p>
+              {doc.client && (
+                <>
+                  <p className="text-xs text-muted-foreground mt-1">{doc.client.billing_address || doc.client.state}</p>
+                  <p className="text-xs text-muted-foreground">{doc.client.city}{doc.client.pin_code ? ` - ${doc.client.pin_code}` : ""}</p>
+                  {doc.client.gstin && <p className="text-xs text-muted-foreground mt-1">GSTIN: {doc.client.gstin}</p>}
+                </>
+              )}
+            </div>
+            <div className="bg-muted/50 rounded-lg p-4">
+              <div className="space-y-1.5">
+                <div className="flex justify-between"><span className="text-[10px] font-bold text-muted-foreground uppercase">Doc Number</span><span className="text-xs font-semibold">{doc.doc_number}</span></div>
+                <div className="flex justify-between"><span className="text-[10px] font-bold text-muted-foreground uppercase">Date</span><span className="text-xs">{doc.doc_date}</span></div>
+                <div className="flex justify-between"><span className="text-[10px] font-bold text-muted-foreground uppercase">Due Date</span><span className="text-xs">{doc.due_date}</span></div>
+                <div className="flex justify-between"><span className="text-[10px] font-bold text-muted-foreground uppercase">Supply Type</span><span className="text-xs">{doc.supply_type === "intra_state" ? "Intra-State" : "Inter-State"}</span></div>
+                <div className="flex justify-between"><span className="text-[10px] font-bold text-muted-foreground uppercase">FY</span><span className="text-xs">{formatFinancialYear(doc.financial_year)}</span></div>
+              </div>
+            </div>
+          </div>
+
+          {/* Line Items */}
+          <table className="w-full mb-6">
+            <thead>
+              <tr className="bg-primary text-primary-foreground">
+                {["#", "Description", "HSN/SAC", "Qty", "Rate", "Taxable",
+                  doc.supply_type === "intra_state" ? "CGST" : "IGST",
+                  ...(doc.supply_type === "intra_state" ? ["SGST"] : []),
+                  "Total"
+                ].map(h => (
+                  <th key={h} className="px-3 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {doc.items?.map((item, i) => (
+                <tr key={i} className={i % 2 ? "bg-muted/30" : ""}>
+                  <td className="px-3 py-2.5 text-xs">{i + 1}</td>
+                  <td className="px-3 py-2.5 text-xs font-medium">{item.description}</td>
+                  <td className="px-3 py-2.5 text-xs text-muted-foreground">{item.hsn_sac}</td>
+                  <td className="px-3 py-2.5 text-xs">{item.qty} {item.unit}</td>
+                  <td className="px-3 py-2.5 text-xs">{formatCurrencyINR(item.rate)}</td>
+                  <td className="px-3 py-2.5 text-xs">{formatCurrencyINR(item.taxable)}</td>
+                  <td className="px-3 py-2.5 text-xs">{formatCurrencyINR(doc.supply_type === "intra_state" ? item.cgst : item.igst)}</td>
+                  {doc.supply_type === "intra_state" && <td className="px-3 py-2.5 text-xs">{formatCurrencyINR(item.sgst)}</td>}
+                  <td className="px-3 py-2.5 text-xs font-semibold">{formatCurrencyINR(item.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {/* Summary */}
+          <div className="flex justify-end mb-6">
+            <div className="w-72 space-y-1.5">
+              <div className="flex justify-between text-sm"><span className="text-muted-foreground">Subtotal</span><span>{formatCurrencyINR(doc.subtotal)}</span></div>
+              {doc.supply_type === "intra_state" ? (
+                <>
+                  <div className="flex justify-between text-sm"><span className="text-muted-foreground">CGST</span><span>{formatCurrencyINR(doc.total_tax / 2)}</span></div>
+                  <div className="flex justify-between text-sm"><span className="text-muted-foreground">SGST</span><span>{formatCurrencyINR(doc.total_tax / 2)}</span></div>
+                </>
+              ) : (
+                <div className="flex justify-between text-sm"><span className="text-muted-foreground">IGST</span><span>{formatCurrencyINR(doc.total_tax)}</span></div>
+              )}
+              <div className="h-px bg-border my-2" />
+              <div className="flex justify-between text-base font-bold text-primary"><span>Grand Total</span><span>{formatCurrencyINR(doc.total_amount)}</span></div>
+            </div>
+          </div>
+
+          {/* Amount in words */}
+          <div className="bg-muted/50 rounded-lg p-3 mb-6">
+            <p className="text-xs text-muted-foreground"><span className="font-semibold">Amount in Words:</span> {numberToWords(doc.total_amount)}</p>
+          </div>
+
+          {/* Bank + Signature */}
+          <div className="grid grid-cols-2 gap-8">
+            <div>
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Bank Details</p>
+              <p className="text-xs">Bank: {settings.bank_name || "—"}</p>
+              <p className="text-xs">A/C: {settings.bank_account_number || "—"}</p>
+              <p className="text-xs">IFSC: {settings.bank_ifsc || "—"}</p>
+              {settings.bank_upi_id && <p className="text-xs">UPI: {settings.bank_upi_id}</p>}
+            </div>
+            <div className="text-right">
+              <p className="text-xs font-semibold">For {settings.company_name || "Your Company"}</p>
+              <div className="h-12 mt-2 mb-2" />
+              <p className="text-xs text-muted-foreground">Authorized Signatory</p>
+            </div>
+          </div>
+
+          {/* Terms */}
+          {doc.terms_and_conditions && (
+            <div className="mt-4 pt-4 border-t">
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Terms & Conditions</p>
+              <p className="text-xs text-muted-foreground whitespace-pre-line">{doc.terms_and_conditions}</p>
+            </div>
+          )}
+
+          <p className="text-center text-[10px] text-muted-foreground mt-6 pt-4 border-t">
+            This is a computer-generated document and does not require a physical signature.
+          </p>
+        </div>
+      </Card>
+
+      {/* Payment History for Invoices */}
+      {doc.doc_type === "invoice" && (
+        <Card>
+          <div className="px-5 py-4 border-b flex items-center justify-between">
+            <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">Payment History</h3>
+            <div className="flex items-center gap-4 text-sm">
+              <span className="text-muted-foreground">Total: <strong>{formatCurrencyINR(doc.total_amount)}</strong></span>
+              <span className="text-emerald-600">Paid: <strong>{formatCurrencyINR(doc.amount_paid)}</strong></span>
+              <span className="text-amber-600">Balance: <strong>{formatCurrencyINR(doc.balance_due)}</strong></span>
+            </div>
+          </div>
+          {payments.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead>Mode</TableHead>
+                  <TableHead>Reference</TableHead>
+                  <TableHead>Notes</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {payments.map(p => (
+                  <TableRow key={p.id}>
+                    <TableCell>{p.payment_date}</TableCell>
+                    <TableCell className="text-right font-semibold text-emerald-600">{formatCurrencyINR(p.amount)}</TableCell>
+                    <TableCell className="capitalize">{p.payment_mode?.replace(/_/g, " ")}</TableCell>
+                    <TableCell className="font-mono text-muted-foreground">{p.reference_number || "—"}</TableCell>
+                    <TableCell className="text-muted-foreground">{p.notes || "—"}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="px-5 py-8 text-center text-muted-foreground text-sm">No payments recorded yet</div>
+          )}
+        </Card>
+      )}
+
+      {/* Payment Dialog */}
+      <RecordPaymentDialog
+        open={showPaymentModal}
+        onClose={() => setShowPaymentModal(false)}
+        doc={doc}
+        onRecordPayment={onRecordPayment}
+      />
+    </div>
+  );
+}

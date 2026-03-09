@@ -86,6 +86,7 @@ const Documentation = lazy(() => import("./pages/Documentation"));
 const RedefineDataRepository = lazy(() => import("./pages/RedefineDataRepository"));
 const Subscriptions = lazy(() => import("./pages/Subscriptions"));
 const Inventory = lazy(() => import("./pages/Inventory"));
+const BillingSystem = lazy(() => import("./pages/BillingSystem"));
 const Tasks = lazy(() => import("./pages/Tasks"));
 const Calendar = lazy(() => import("./pages/Calendar"));
 const Chat = lazy(() => import("./pages/Chat"));
@@ -430,6 +431,12 @@ const App = () => (
           <Route path="/inventory" element={
             <ProtectedRoute>
               <Inventory />
+            </ProtectedRoute>
+          } />
+
+          <Route path="/billing-system" element={
+            <ProtectedRoute>
+              <BillingSystem />
             </ProtectedRoute>
           } />
           
