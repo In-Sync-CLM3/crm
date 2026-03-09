@@ -53,6 +53,7 @@ export interface BillingDocument {
     company: string;
     first_name: string;
     last_name: string;
+    invoice_company_name?: string;
     gstin?: string;
     pan?: string;
     billing_state_code?: string;

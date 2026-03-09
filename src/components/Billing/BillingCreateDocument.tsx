@@ -48,6 +48,7 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
 
   // Editable billing details for the selected client
   const [billingDetails, setBillingDetails] = useState({
+    invoice_company_name: "",
     gstin: "",
     pan: "",
     billing_address: "",
@@ -73,6 +74,7 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
         const stateCode = selectedClient.billing_state_code ||
           INDIAN_STATES.find(s => s.name === selectedClient.state)?.code || "";
         setBillingDetails({
+          invoice_company_name: "",
           gstin: selectedClient.gstin || "",
           pan: selectedClient.pan || "",
           billing_address: selectedClient.billing_address || "",
@@ -83,7 +85,7 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
         });
       }
     } else {
-      setBillingDetails({ gstin: "", pan: "", billing_address: "", city: "", state: "", state_code: "", pin_code: "" });
+      setBillingDetails({ invoice_company_name: "", gstin: "", pan: "", billing_address: "", city: "", state: "", state_code: "", pin_code: "" });
     }
   }, [selectedClient, getClientBillingDetails]);
 
@@ -129,11 +131,12 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
       doc_type: docType,
       doc_number: form.doc_number,
       client_id: form.client_id,
-      client_name: selectedClient?.company || `${selectedClient?.first_name || ""} ${selectedClient?.last_name || ""}`.trim() || "",
+      client_name: billingDetails.invoice_company_name || selectedClient?.company || `${selectedClient?.first_name || ""} ${selectedClient?.last_name || ""}`.trim() || "",
       client: selectedClient ? {
         company: selectedClient.company,
         first_name: selectedClient.first_name,
         last_name: selectedClient.last_name || "",
+        invoice_company_name: billingDetails.invoice_company_name || undefined,
         gstin: billingDetails.gstin,
         pan: billingDetails.pan,
         billing_state_code: billingDetails.state_code,
@@ -211,6 +214,16 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
               </Badge>
             </div>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="lg:col-span-2 space-y-1">
+                <Label className="text-[10px] uppercase tracking-wider">Invoice Company Name <span className="text-muted-foreground">(if different from CRM)</span></Label>
+                <Input
+                  value={billingDetails.invoice_company_name}
+                  onChange={e => updateBillingField("invoice_company_name", e.target.value)}
+                  placeholder={selectedClient?.company || "Leave blank to use CRM company name"}
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div className="lg:col-span-2" />
               <div className="space-y-1">
                 <Label className="text-[10px] uppercase tracking-wider">GSTIN <span className="text-red-500">*</span></Label>
                 <Input

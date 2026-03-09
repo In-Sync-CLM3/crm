@@ -3,6 +3,7 @@ import { useCallback } from "react";
 const CACHE_KEY = "billing_client_details";
 
 export interface CachedBillingDetails {
+  invoice_company_name: string;
   gstin: string;
   pan: string;
   billing_address: string;

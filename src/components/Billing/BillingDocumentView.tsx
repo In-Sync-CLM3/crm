@@ -65,7 +65,10 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
           <div className="grid grid-cols-2 gap-8 mb-6">
             <div className="bg-muted/50 rounded-lg p-4">
               <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-2">Bill To</p>
-              <p className="text-sm font-bold">{doc.client_name}</p>
+              <p className="text-sm font-bold">{doc.client?.invoice_company_name || doc.client_name}</p>
+              {doc.client?.invoice_company_name && doc.client_name !== doc.client.invoice_company_name && (
+                <p className="text-xs text-muted-foreground">({doc.client.company})</p>
+              )}
               {doc.client && (
                 <>
                   <p className="text-xs text-muted-foreground mt-1">{doc.client.billing_address || doc.client.state}</p>
