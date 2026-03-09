@@ -1,10 +1,8 @@
 import { useState, useCallback } from "react";
 import type {
   BillingDocument,
-  BillingDocumentItem,
   BillingPayment,
   BillingSettings,
-  BillingClient,
   BillingDocumentType,
   BillingDocumentStatus,
 } from "@/types/billing";
@@ -38,7 +36,6 @@ const DEFAULT_SETTINGS: BillingSettings = {
   next_proforma_number: 1,
 };
 
-// Local storage key prefix
 const STORAGE_KEY = "billing_data";
 
 function loadFromStorage<T>(key: string, fallback: T): T {
@@ -66,14 +63,10 @@ export function useBillingData() {
   const [payments, setPayments] = useState<BillingPayment[]>(() =>
     loadFromStorage("payments", [])
   );
-  const [clients, setClients] = useState<BillingClient[]>(() =>
-    loadFromStorage("clients", [])
-  );
   const [settings, setSettingsState] = useState<BillingSettings>(() =>
     loadFromStorage("settings", DEFAULT_SETTINGS)
   );
 
-  // Persist on change
   const updateDocuments = useCallback((docs: BillingDocument[]) => {
     setDocuments(docs);
     saveToStorage("documents", docs);
@@ -82,11 +75,6 @@ export function useBillingData() {
   const updatePayments = useCallback((pays: BillingPayment[]) => {
     setPayments(pays);
     saveToStorage("payments", pays);
-  }, []);
-
-  const updateClients = useCallback((cls: BillingClient[]) => {
-    setClients(cls);
-    saveToStorage("clients", cls);
   }, []);
 
   const updateSettings = useCallback((s: BillingSettings) => {
@@ -98,7 +86,6 @@ export function useBillingData() {
   const addDocument = useCallback((doc: BillingDocument) => {
     const next = [doc, ...documents];
     updateDocuments(next);
-    // Increment the sequence number
     const prefix = doc.doc_type === "quotation" ? "quotation" : doc.doc_type === "proforma" ? "proforma" : "invoice";
     const key = `next_${prefix}_number` as keyof BillingSettings;
     updateSettings({ ...settings, [key]: (settings[key] as number) + 1 });
@@ -142,7 +129,6 @@ export function useBillingData() {
     };
     updatePayments([newPayment, ...payments]);
 
-    // Update document
     const doc = documents.find(d => d.id === payment.document_id);
     if (doc) {
       const newPaid = doc.amount_paid + payment.amount;
@@ -152,17 +138,6 @@ export function useBillingData() {
     }
     return newPayment;
   }, [payments, documents, updatePayments, updateDocument]);
-
-  // Client CRUD
-  const addClient = useCallback((client: Omit<BillingClient, "id">) => {
-    const newClient: BillingClient = { ...client, id: `c${Date.now()}` };
-    updateClients([...clients, newClient]);
-    return newClient;
-  }, [clients, updateClients]);
-
-  const updateClient = useCallback((id: string, updates: Partial<BillingClient>) => {
-    updateClients(clients.map(c => c.id === id ? { ...c, ...updates } : c));
-  }, [clients, updateClients]);
 
   const getDocumentPayments = useCallback((docId: string) => {
     return payments.filter(p => p.document_id === docId);
@@ -178,16 +153,12 @@ export function useBillingData() {
   return {
     documents,
     payments,
-    clients,
     settings,
     addDocument,
     updateDocument,
     deleteDocument,
     convertDocument,
     recordPayment,
-    addClient,
-    updateClient,
-    updateClients,
     updateSettings,
     getDocumentPayments,
     getNextDocNumber,

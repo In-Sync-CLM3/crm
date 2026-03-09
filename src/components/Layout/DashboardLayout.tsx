@@ -331,6 +331,12 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
                  <span>Messages</span>
                </Link>
 
+              <div className="pt-3 pb-1 px-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-sidebar-primary">
+                  Clients & Billing
+                </p>
+              </div>
+
               <Link
                 to="/clients"
                 className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
@@ -346,7 +352,7 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
                 onClick={() => setSidebarOpen(false)}
               >
                 <IndianRupee size={16} className="shrink-0 text-sidebar-muted" />
-                <span>Billing</span>
+                <span>Billing & Invoicing</span>
               </Link>
 
               <div className="pt-3 pb-1 px-2">

@@ -1,29 +1,75 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
+import { useOrgContext } from "@/hooks/useOrgContext";
 import DashboardLayout from "@/components/Layout/DashboardLayout";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Home, FileText, Receipt, IndianRupee, CreditCard, Settings, Users } from "lucide-react";
+import { Home, FileText, Receipt, IndianRupee, CreditCard, Settings } from "lucide-react";
 import { useBillingData } from "@/hooks/useBillingData";
 import { BillingDashboard } from "@/components/Billing/BillingDashboard";
-import { BillingClientMaster } from "@/components/Billing/BillingClientMaster";
 import { BillingDocumentList } from "@/components/Billing/BillingDocumentList";
 import { BillingDocumentView } from "@/components/Billing/BillingDocumentView";
 import { BillingCreateDocument } from "@/components/Billing/BillingCreateDocument";
 import { BillingPaymentsList } from "@/components/Billing/BillingPaymentsList";
 import { BillingSettingsPanel } from "@/components/Billing/BillingSettings";
-import type { BillingDocument, BillingDocumentType } from "@/types/billing";
+import { LoadingState } from "@/components/common/LoadingState";
+import type { BillingDocument, BillingDocumentType, BillingClient } from "@/types/billing";
+import { INDIAN_STATES } from "@/types/billing";
 
-type BillingView = "dashboard" | "clients" | "quotations" | "proformas" | "invoices" | "payments" | "settings";
+type BillingView = "dashboard" | "quotations" | "proformas" | "invoices" | "payments" | "settings";
+
+// Map CRM client state name to state code
+function getStateCode(stateName: string | null): string {
+  if (!stateName) return "";
+  const found = INDIAN_STATES.find(s => s.name.toLowerCase() === stateName.toLowerCase());
+  return found?.code || "";
+}
 
 export default function BillingSystem() {
+  const { effectiveOrgId } = useOrgContext();
   const [view, setView] = useState<BillingView>("dashboard");
   const [viewDocId, setViewDocId] = useState<string | null>(null);
   const [createDocType, setCreateDocType] = useState<BillingDocumentType | null>(null);
 
   const {
-    documents, payments, clients, settings,
+    documents, payments, settings,
     addDocument, updateDocument, deleteDocument, convertDocument,
-    recordPayment, addClient, updateClient, updateSettings, getDocumentPayments, getNextDocNumber,
+    recordPayment, updateSettings, getDocumentPayments, getNextDocNumber,
   } = useBillingData();
+
+  // Fetch CRM clients from Supabase
+  const { data: crmClients = [], isLoading: clientsLoading } = useQuery({
+    queryKey: ["billing-crm-clients", effectiveOrgId],
+    queryFn: async () => {
+      if (!effectiveOrgId) return [];
+      const { data, error } = await supabase
+        .from("clients")
+        .select("id, company, first_name, last_name, email, phone, address, city, state, postal_code, status")
+        .eq("org_id", effectiveOrgId)
+        .order("company", { ascending: true });
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!effectiveOrgId,
+  });
+
+  // Map CRM clients to BillingClient format
+  const clients: BillingClient[] = useMemo(() => {
+    return crmClients.map(c => ({
+      id: c.id,
+      company: c.company || `${c.first_name} ${c.last_name || ""}`.trim(),
+      first_name: c.first_name,
+      last_name: c.last_name || undefined,
+      email: c.email || undefined,
+      phone: c.phone || undefined,
+      billing_address: c.address || undefined,
+      city: c.city || undefined,
+      state: c.state || undefined,
+      pin_code: c.postal_code || undefined,
+      billing_state_code: getStateCode(c.state),
+      status: c.status || "active",
+    }));
+  }, [crmClients]);
 
   const navigate = useCallback((v: BillingView) => {
     setView(v);
@@ -55,11 +101,15 @@ export default function BillingSystem() {
     recordPayment(payment as any);
   }, [recordPayment]);
 
-  // Determine active tab based on current view
-  const activeTab = viewDocId || createDocType ? view : view;
+  if (clientsLoading) {
+    return (
+      <DashboardLayout>
+        <LoadingState message="Loading billing data..." />
+      </DashboardLayout>
+    );
+  }
 
   const renderContent = () => {
-    // Document view
     if (viewDocId) {
       const doc = documents.find(d => d.id === viewDocId);
       if (!doc) return <div className="text-center text-muted-foreground py-8">Document not found</div>;
@@ -74,7 +124,6 @@ export default function BillingSystem() {
       );
     }
 
-    // Create document
     if (createDocType) {
       return (
         <BillingCreateDocument
@@ -88,7 +137,6 @@ export default function BillingSystem() {
       );
     }
 
-    // Main views
     switch (view) {
       case "dashboard":
         return (
@@ -96,14 +144,6 @@ export default function BillingSystem() {
             documents={documents}
             onCreateInvoice={() => handleCreateDoc("invoice")}
             onViewDocument={handleViewDoc}
-          />
-        );
-      case "clients":
-        return (
-          <BillingClientMaster
-            clients={clients}
-            onAddClient={addClient}
-            onUpdateClient={updateClient}
           />
         );
       case "quotations":
@@ -147,12 +187,10 @@ export default function BillingSystem() {
   return (
     <DashboardLayout>
       <div className="space-y-4">
-        {/* Navigation Tabs */}
         {!viewDocId && !createDocType && (
           <Tabs value={view} onValueChange={v => navigate(v as BillingView)}>
             <TabsList className="bg-muted/50 h-auto flex-wrap gap-0.5">
               <TabsTrigger value="dashboard" className="gap-1.5 text-xs"><Home className="h-3.5 w-3.5" />Dashboard</TabsTrigger>
-              <TabsTrigger value="clients" className="gap-1.5 text-xs"><Users className="h-3.5 w-3.5" />Clients</TabsTrigger>
               <TabsTrigger value="quotations" className="gap-1.5 text-xs"><FileText className="h-3.5 w-3.5" />Quotations</TabsTrigger>
               <TabsTrigger value="proformas" className="gap-1.5 text-xs"><Receipt className="h-3.5 w-3.5" />Proforma Inv.</TabsTrigger>
               <TabsTrigger value="invoices" className="gap-1.5 text-xs"><IndianRupee className="h-3.5 w-3.5" />Tax Invoices</TabsTrigger>
@@ -162,7 +200,6 @@ export default function BillingSystem() {
           </Tabs>
         )}
 
-        {/* Content */}
         {renderContent()}
       </div>
     </DashboardLayout>
