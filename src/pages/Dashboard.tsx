@@ -25,6 +25,7 @@ import { DashboardTasksSection } from "@/components/Dashboard/DashboardTasksSect
 // Revenue Dashboard components
 import { MonthlyGoalTracker } from "@/components/Revenue/MonthlyGoalTracker";
 import { ProgressionChart } from "@/components/Revenue/ProgressionChart";
+import { RevenueBreakdownTabs } from "@/components/Revenue/RevenueBreakdownTabs";
 import { ContactsListDialog, type MetricType } from "@/components/Revenue/ContactsListDialog";
 import { DashboardGSTSection } from "@/components/Dashboard/DashboardGSTSection";
 
@@ -1092,13 +1093,49 @@ export default function Dashboard() {
           <DashboardGSTSection dateRange={dateRange} />
         ) : currentView === "revenue" ? (
           <>
+            {/* Revenue Metrics Cards */}
+            <DashboardRevenueCards
+              revenueStats={revenueStats}
+              formatCurrency={formatCurrency}
+              onCardClick={handleRevenueCardClick}
+            />
+
+            {/* Revenue Card Drill-down Dialog */}
+            <RevenueCardDialog
+              open={revenueCardDialogOpen}
+              onClose={() => setRevenueCardDialogOpen(false)}
+              cardType={selectedCardType}
+              invoices={getRevenueCardInvoices}
+              dateRangeLabel={`${format(dateRange.from, "MMM d, yyyy")} - ${format(dateRange.to, "MMM d, yyyy")}`}
+            />
+
+            {/* Due to Dept Monthly Breakdown Dialog */}
+            <DueToDeptDialog
+              open={dueToDeptDialogOpen}
+              onClose={() => setDueToDeptDialogOpen(false)}
+            />
+
             {/* Progression Chart - Full Page Animated */}
             <ProgressionChart monthlyActuals={monthlyActuals} />
 
             {/* Compact Monthly Goal Tracker Table */}
-            <MonthlyGoalTracker 
-              monthlyActuals={monthlyActuals} 
+            <MonthlyGoalTracker
+              monthlyActuals={monthlyActuals}
               onCellClick={handleCellClick}
+            />
+
+            {/* Revenue Trend & Breakdown */}
+            <DashboardRevenueChart
+              data={clientRevenueData}
+              clients={uniqueClients}
+              formatCurrency={formatCurrency}
+            />
+
+            {/* Revenue Breakdown by Date, Client, Invoice */}
+            <RevenueBreakdownTabs
+              invoices={invoicesForBreakdown}
+              dateBreakdown={dateBreakdown}
+              clientBreakdown={clientBreakdown}
             />
 
             {/* Contacts List Dialog for clickable actuals */}
