@@ -30,6 +30,7 @@ export default function BillingSystem() {
   const [view, setView] = useState<BillingView>("dashboard");
   const [viewDocId, setViewDocId] = useState<string | null>(null);
   const [createDocType, setCreateDocType] = useState<BillingDocumentType | null>(null);
+  const [editDoc, setEditDoc] = useState<BillingDocument | null>(null);
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<string | undefined>(undefined);
 
   const {
@@ -99,7 +100,27 @@ export default function BillingSystem() {
   const handleBack = useCallback(() => {
     setViewDocId(null);
     setCreateDocType(null);
+    setEditDoc(null);
   }, []);
+
+  const handleEditDoc = useCallback((doc: BillingDocument) => {
+    setEditDoc(doc);
+    setCreateDocType(doc.doc_type);
+    setViewDocId(null);
+  }, []);
+
+  const handleDeleteDoc = useCallback((id: string) => {
+    deleteDocument(id);
+    setViewDocId(null);
+  }, [deleteDocument]);
+
+  const handleSaveDoc = useCallback((doc: BillingDocument) => {
+    if (editDoc) {
+      updateDocument(doc.id, doc);
+    } else {
+      addDocument(doc);
+    }
+  }, [editDoc, updateDocument, addDocument]);
 
   const handleConvert = useCallback((doc: BillingDocument) => {
     const nextType: BillingDocumentType = doc.doc_type === "quotation" ? "proforma" : "invoice";
@@ -129,6 +150,8 @@ export default function BillingSystem() {
           settings={settings}
           onBack={handleBack}
           onRecordPayment={handleRecordPayment}
+          onEdit={handleEditDoc}
+          onDelete={handleDeleteDoc}
         />
       );
     }
@@ -140,8 +163,9 @@ export default function BillingSystem() {
           clients={clients}
           settings={settings}
           getNextDocNumber={getNextDocNumber}
-          onSave={addDocument}
+          onSave={handleSaveDoc}
           onBack={handleBack}
+          editDoc={editDoc || undefined}
         />
       );
     }

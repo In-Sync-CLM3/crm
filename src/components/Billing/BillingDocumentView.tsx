@@ -3,7 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ChevronLeft, Download, Mail, CreditCard, Loader2 } from "lucide-react";
+import { ChevronLeft, Download, Mail, CreditCard, Loader2, Pencil, Trash2 } from "lucide-react";
 import { formatCurrencyINR, numberToWords, statusLabel, formatFinancialYear } from "@/utils/billingUtils";
 import { DOC_TYPE_LABELS, STATUS_COLORS } from "@/types/billing";
 import type { BillingDocument, BillingPayment, BillingSettings } from "@/types/billing";
@@ -15,10 +15,13 @@ interface BillingDocumentViewProps {
   settings: BillingSettings;
   onBack: () => void;
   onRecordPayment: (payment: { document_id: string; amount: number; payment_date: string; payment_mode: string; reference_number: string; notes: string; org_id: string }) => void;
+  onEdit?: (doc: BillingDocument) => void;
+  onDelete?: (id: string) => void;
 }
 
-export function BillingDocumentView({ doc, payments, settings, onBack, onRecordPayment }: BillingDocumentViewProps) {
+export function BillingDocumentView({ doc, payments, settings, onBack, onRecordPayment, onEdit, onDelete }: BillingDocumentViewProps) {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const invoiceRef = useRef<HTMLDivElement>(null);
 
@@ -88,6 +91,16 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
           PDF
         </Button>
         <Button variant="outline"><Mail className="h-4 w-4 mr-1" />Email</Button>
+        {onEdit && (
+          <Button variant="outline" onClick={() => onEdit(doc)}>
+            <Pencil className="h-4 w-4 mr-1" />Edit
+          </Button>
+        )}
+        {onDelete && (
+          <Button variant="outline" className="text-red-600 hover:text-red-700 hover:bg-red-50" onClick={() => setShowDeleteConfirm(true)}>
+            <Trash2 className="h-4 w-4 mr-1" />Delete
+          </Button>
+        )}
         {doc.doc_type === "invoice" && doc.status !== "paid" && (
           <Button className="bg-emerald-600 hover:bg-emerald-700" onClick={() => setShowPaymentModal(true)}>
             <CreditCard className="h-4 w-4 mr-1" />Record Payment
@@ -299,6 +312,24 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
         doc={doc}
         onRecordPayment={onRecordPayment}
       />
+
+      {/* Delete Confirmation */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <Card className="p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-bold">Delete {DOC_TYPE_LABELS[doc.doc_type]}</h3>
+            <p className="text-sm text-muted-foreground mt-2">
+              Are you sure you want to delete <strong>{doc.doc_number}</strong>? This action cannot be undone.
+            </p>
+            <div className="flex justify-end gap-3 mt-6">
+              <Button variant="outline" onClick={() => setShowDeleteConfirm(false)}>Cancel</Button>
+              <Button variant="destructive" onClick={() => { onDelete?.(doc.id); setShowDeleteConfirm(false); }}>
+                <Trash2 className="h-4 w-4 mr-1" />Delete
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }

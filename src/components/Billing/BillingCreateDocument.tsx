@@ -19,6 +19,7 @@ interface BillingCreateDocumentProps {
   getNextDocNumber: (docType: BillingDocumentType) => string;
   onSave: (doc: BillingDocument) => void;
   onBack: () => void;
+  editDoc?: BillingDocument;
 }
 
 interface RawItem {
@@ -31,31 +32,42 @@ interface RawItem {
   tax_rate: number;
 }
 
-export function BillingCreateDocument({ docType, clients, settings, getNextDocNumber, onSave, onBack }: BillingCreateDocumentProps) {
+export function BillingCreateDocument({ docType, clients, settings, getNextDocNumber, onSave, onBack, editDoc }: BillingCreateDocumentProps) {
   const { getClientBillingDetails, saveClientBillingDetails } = useBillingClientCache();
+  const isEdit = !!editDoc;
 
   const [form, setForm] = useState({
-    doc_number: getNextDocNumber(docType),
-    client_id: "",
-    doc_date: new Date().toISOString().split("T")[0],
-    due_date: "",
-    notes: settings.default_terms || "",
+    doc_number: editDoc?.doc_number || getNextDocNumber(docType),
+    client_id: editDoc?.client_id || "",
+    doc_date: editDoc?.doc_date || new Date().toISOString().split("T")[0],
+    due_date: editDoc?.due_date || "",
+    notes: editDoc?.notes || settings.default_terms || "",
   });
 
-  const [items, setItems] = useState<RawItem[]>([
-    { description: "", hsn_sac: settings.default_hsn || "998314", qty: 1, unit: "Nos", rate: 0, discount: 0, tax_rate: settings.default_tax_rate || 18 },
-  ]);
+  const [items, setItems] = useState<RawItem[]>(
+    editDoc?.items?.length
+      ? editDoc.items.map(item => ({
+          description: item.description,
+          hsn_sac: item.hsn_sac,
+          qty: item.qty,
+          unit: item.unit,
+          rate: item.rate,
+          discount: item.discount,
+          tax_rate: item.tax_rate,
+        }))
+      : [{ description: "", hsn_sac: settings.default_hsn || "998314", qty: 1, unit: "Nos", rate: 0, discount: 0, tax_rate: settings.default_tax_rate || 18 }],
+  );
 
   // Editable billing details for the selected client
   const [billingDetails, setBillingDetails] = useState({
-    invoice_company_name: "",
-    gstin: "",
-    pan: "",
-    billing_address: "",
-    city: "",
-    state: "",
-    state_code: "",
-    pin_code: "",
+    invoice_company_name: editDoc?.client?.invoice_company_name || "",
+    gstin: editDoc?.client?.gstin || "",
+    pan: editDoc?.client?.pan || "",
+    billing_address: editDoc?.client?.billing_address || "",
+    city: editDoc?.client?.city || "",
+    state: editDoc?.client?.state || "",
+    state_code: editDoc?.client?.billing_state_code || "",
+    pin_code: editDoc?.client?.pin_code || "",
   });
 
   const selectedClient = clients.find(c => c.id === form.client_id);
@@ -126,7 +138,7 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
 
   const handleSave = (status: "draft" | "sent") => {
     const newDoc: BillingDocument = {
-      id: `d${Date.now()}`,
+      id: editDoc?.id || `d${Date.now()}`,
       org_id: settings.org_id || "",
       doc_type: docType,
       doc_number: form.doc_number,
@@ -147,18 +159,18 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
       } : undefined,
       doc_date: form.doc_date,
       due_date: form.due_date,
-      financial_year: getCurrentFinancialYear(),
+      financial_year: editDoc?.financial_year || getCurrentFinancialYear(),
       supply_type: supplyType,
       subtotal: totals.subtotal,
       total_tax: totals.totalTax,
       total_amount: totals.grandTotal,
-      amount_paid: 0,
-      balance_due: totals.grandTotal,
-      status,
+      amount_paid: editDoc?.amount_paid || 0,
+      balance_due: totals.grandTotal - (editDoc?.amount_paid || 0),
+      status: editDoc ? (status === "sent" ? status : editDoc.status) : status,
       notes: form.notes,
       terms_and_conditions: form.notes,
       items: calcItems,
-      created_at: new Date().toISOString(),
+      created_at: editDoc?.created_at || new Date().toISOString(),
     };
     // Save billing details for this client for future use
     if (form.client_id) {
@@ -173,7 +185,7 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
     <div className="space-y-5">
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon" onClick={onBack}><ChevronLeft className="h-5 w-5" /></Button>
-        <h2 className="text-2xl font-bold">Create {DOC_TYPE_LABELS[docType]}</h2>
+        <h2 className="text-2xl font-bold">{isEdit ? "Edit" : "Create"} {DOC_TYPE_LABELS[docType]}</h2>
       </div>
 
       {/* Document Details */}
@@ -373,8 +385,8 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
       {/* Actions */}
       <div className="flex items-center justify-end gap-3 pb-8">
         <Button variant="outline" onClick={onBack}>Cancel</Button>
-        <Button variant="outline" onClick={() => handleSave("draft")}><FileText className="h-4 w-4 mr-1" />Save as Draft</Button>
-        <Button onClick={() => handleSave("sent")}><Mail className="h-4 w-4 mr-1" />Save & Send</Button>
+        <Button variant="outline" onClick={() => handleSave("draft")}><FileText className="h-4 w-4 mr-1" />{isEdit ? "Update" : "Save as Draft"}</Button>
+        <Button onClick={() => handleSave("sent")}><Mail className="h-4 w-4 mr-1" />{isEdit ? "Update & Send" : "Save & Send"}</Button>
       </div>
     </div>
   );
