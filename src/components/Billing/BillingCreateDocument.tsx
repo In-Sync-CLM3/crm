@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ChevronLeft, Plus, Trash2, FileText, Mail } from "lucide-react";
+import { ChevronLeft, Plus, Trash2, FileText, Mail, Save } from "lucide-react";
+import { toast } from "sonner";
 import { calculateLineItem, calculateDocumentTotals, formatCurrencyINR, numberToWords, detectSupplyType, getCurrentFinancialYear } from "@/utils/billingUtils";
 import { DOC_TYPE_LABELS, INDIAN_STATES } from "@/types/billing";
 import type { BillingDocument, BillingDocumentItem, BillingDocumentType, BillingClient, BillingSettings, SupplyType } from "@/types/billing";
@@ -20,6 +21,7 @@ interface BillingCreateDocumentProps {
   onSave: (doc: BillingDocument) => void;
   onBack: () => void;
   editDoc?: BillingDocument;
+  onUpdateSettings?: (settings: BillingSettings) => void;
 }
 
 interface RawItem {
@@ -32,7 +34,13 @@ interface RawItem {
   tax_rate: number;
 }
 
-export function BillingCreateDocument({ docType, clients, settings, getNextDocNumber, onSave, onBack, editDoc }: BillingCreateDocumentProps) {
+function getDefaultTerms(settings: BillingSettings, docType: BillingDocumentType): string {
+  if (docType === "quotation" && settings.default_quotation_terms) return settings.default_quotation_terms;
+  if (docType === "proforma" && settings.default_proforma_terms) return settings.default_proforma_terms;
+  return settings.default_terms || "";
+}
+
+export function BillingCreateDocument({ docType, clients, settings, getNextDocNumber, onSave, onBack, editDoc, onUpdateSettings }: BillingCreateDocumentProps) {
   const { getClientBillingDetails, saveClientBillingDetails } = useBillingClientCache();
   const isEdit = !!editDoc;
 
@@ -41,7 +49,7 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
     client_id: editDoc?.client_id || "",
     doc_date: editDoc?.doc_date || new Date().toISOString().split("T")[0],
     due_date: editDoc?.due_date || "",
-    notes: editDoc?.notes || settings.default_terms || "",
+    notes: editDoc?.notes || getDefaultTerms(settings, docType),
   });
 
   const [items, setItems] = useState<RawItem[]>(
@@ -378,7 +386,25 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
 
       {/* Terms */}
       <Card className="p-6">
-        <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Terms & Conditions</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Terms & Conditions</h3>
+          {onUpdateSettings && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs text-muted-foreground hover:text-primary"
+              onClick={() => {
+                const key = docType === "quotation" ? "default_quotation_terms"
+                  : docType === "proforma" ? "default_proforma_terms"
+                  : "default_terms";
+                onUpdateSettings({ ...settings, [key]: form.notes });
+                toast.success(`Default terms saved for all ${DOC_TYPE_LABELS[docType]}s`);
+              }}
+            >
+              <Save className="h-3.5 w-3.5 mr-1" />Save as default for all {DOC_TYPE_LABELS[docType]}s
+            </Button>
+          )}
+        </div>
         <Textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={3} />
       </Card>
 

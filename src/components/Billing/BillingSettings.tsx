@@ -163,8 +163,16 @@ export function BillingSettingsPanel({ settings: initial, onSave }: BillingSetti
           <div className="space-y-1.5"><Label>Payment Terms (Days)</Label><Input type="number" value={s.default_due_days} onChange={e => u("default_due_days", parseInt(e.target.value) || 30)} /></div>
           <div className="space-y-1.5"><Label>Default HSN/SAC</Label><Input value={s.default_hsn} onChange={e => u("default_hsn", e.target.value)} /></div>
           <div className="col-span-3 space-y-1.5">
-            <Label>Default Terms & Conditions</Label>
+            <Label>Default Terms & Conditions (Invoices)</Label>
             <Textarea value={s.default_terms} onChange={e => u("default_terms", e.target.value)} rows={3} />
+          </div>
+          <div className="col-span-3 space-y-1.5">
+            <Label>Default Terms & Conditions (Quotations)</Label>
+            <Textarea value={s.default_quotation_terms || ""} onChange={e => u("default_quotation_terms", e.target.value)} rows={3} placeholder="Leave blank to use invoice terms" />
+          </div>
+          <div className="col-span-3 space-y-1.5">
+            <Label>Default Terms & Conditions (Proforma Invoices)</Label>
+            <Textarea value={s.default_proforma_terms || ""} onChange={e => u("default_proforma_terms", e.target.value)} rows={3} placeholder="Leave blank to use invoice terms" />
           </div>
         </div>
       </Card>

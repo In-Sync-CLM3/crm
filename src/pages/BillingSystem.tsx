@@ -166,6 +166,7 @@ export default function BillingSystem() {
           onSave={handleSaveDoc}
           onBack={handleBack}
           editDoc={editDoc || undefined}
+          onUpdateSettings={updateSettings}
         />
       );
     }

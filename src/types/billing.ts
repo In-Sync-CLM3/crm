@@ -112,6 +112,8 @@ export interface BillingSettings {
   bank_branch: string;
   bank_upi_id: string;
   default_terms: string;
+  default_quotation_terms?: string;
+  default_proforma_terms?: string;
   default_tax_rate: number;
   default_due_days: number;
   default_hsn: string;
