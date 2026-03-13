@@ -15,11 +15,12 @@ interface BillingDocumentListProps {
   onView: (id: string) => void;
   onCreate: () => void;
   onConvert?: (doc: BillingDocument) => void;
+  initialStatusFilter?: string;
 }
 
-export function BillingDocumentList({ documents, docType, onView, onCreate, onConvert }: BillingDocumentListProps) {
+export function BillingDocumentList({ documents, docType, onView, onCreate, onConvert, initialStatusFilter }: BillingDocumentListProps) {
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState(initialStatusFilter || "all");
 
   const typeLabel = DOC_TYPE_LABELS[docType] || "Documents";
   const docs = documents.filter(d => d.doc_type === docType);

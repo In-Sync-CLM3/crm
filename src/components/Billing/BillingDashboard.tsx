@@ -15,9 +15,10 @@ interface BillingDashboardProps {
   documents: BillingDocument[];
   onCreateInvoice: () => void;
   onViewDocument: (id: string) => void;
+  onCardClick?: (filter: string) => void;
 }
 
-export function BillingDashboard({ documents, onCreateInvoice, onViewDocument }: BillingDashboardProps) {
+export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, onCardClick }: BillingDashboardProps) {
   const invoices = useMemo(() => documents.filter(d => d.doc_type === "invoice"), [documents]);
 
   const totalRevenue = useMemo(() => invoices.filter(d => d.status === "paid").reduce((s, d) => s + d.total_amount, 0), [invoices]);
@@ -58,10 +59,10 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument }:
   }, [invoices]);
 
   const kpiCards = [
-    { label: "Total Revenue", value: formatCurrencyINR(totalRevenue), sub: "Paid invoices", icon: TrendingUp, color: "text-emerald-600", bg: "bg-emerald-50" },
-    { label: "Outstanding", value: formatCurrencyINR(outstanding), sub: `${invoices.filter(d => ["sent", "partially_paid"].includes(d.status)).length} invoices`, icon: Clock, color: "text-amber-600", bg: "bg-amber-50" },
-    { label: "Overdue", value: formatCurrencyINR(overdue), sub: `${invoices.filter(d => d.status === "overdue").length} invoices`, icon: AlertTriangle, color: "text-red-600", bg: "bg-red-50" },
-    { label: "This Month", value: formatCurrencyINR(thisMonth), sub: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }), icon: IndianRupee, color: "text-blue-600", bg: "bg-blue-50" },
+    { label: "Total Revenue", value: formatCurrencyINR(totalRevenue), sub: "Paid invoices", icon: TrendingUp, color: "text-emerald-600", bg: "bg-emerald-50", filter: "paid" },
+    { label: "Outstanding", value: formatCurrencyINR(outstanding), sub: `${invoices.filter(d => ["sent", "partially_paid"].includes(d.status)).length} invoices`, icon: Clock, color: "text-amber-600", bg: "bg-amber-50", filter: "sent" },
+    { label: "Overdue", value: formatCurrencyINR(overdue), sub: `${invoices.filter(d => d.status === "overdue").length} invoices`, icon: AlertTriangle, color: "text-red-600", bg: "bg-red-50", filter: "overdue" },
+    { label: "This Month", value: formatCurrencyINR(thisMonth), sub: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }), icon: IndianRupee, color: "text-blue-600", bg: "bg-blue-50", filter: "all" },
   ];
 
   return (
@@ -77,7 +78,11 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument }:
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {kpiCards.map(card => (
-          <Card key={card.label} className="p-5">
+          <Card
+            key={card.label}
+            className="p-5 cursor-pointer transition-shadow hover:shadow-md hover:ring-1 hover:ring-border"
+            onClick={() => onCardClick?.(card.filter)}
+          >
             <div className="flex items-start justify-between">
               <div>
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{card.label}</p>

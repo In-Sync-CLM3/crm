@@ -30,6 +30,7 @@ export default function BillingSystem() {
   const [view, setView] = useState<BillingView>("dashboard");
   const [viewDocId, setViewDocId] = useState<string | null>(null);
   const [createDocType, setCreateDocType] = useState<BillingDocumentType | null>(null);
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<string | undefined>(undefined);
 
   const {
     documents, payments, settings,
@@ -73,6 +74,14 @@ export default function BillingSystem() {
 
   const navigate = useCallback((v: BillingView) => {
     setView(v);
+    setViewDocId(null);
+    setCreateDocType(null);
+    if (v !== "invoices") setInvoiceStatusFilter(undefined);
+  }, []);
+
+  const handleDashboardCardClick = useCallback((filter: string) => {
+    setInvoiceStatusFilter(filter);
+    setView("invoices");
     setViewDocId(null);
     setCreateDocType(null);
   }, []);
@@ -144,6 +153,7 @@ export default function BillingSystem() {
             documents={documents}
             onCreateInvoice={() => handleCreateDoc("invoice")}
             onViewDocument={handleViewDoc}
+            onCardClick={handleDashboardCardClick}
           />
         );
       case "quotations":
@@ -173,6 +183,7 @@ export default function BillingSystem() {
             docType="invoice"
             onView={handleViewDoc}
             onCreate={() => handleCreateDoc("invoice")}
+            initialStatusFilter={invoiceStatusFilter}
           />
         );
       case "payments":
