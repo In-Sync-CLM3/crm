@@ -55,6 +55,7 @@ export default defineConfig(({ mode }) => ({
         categories: ["business", "productivity"]
       },
       workbox: {
+        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024, // 3 MB
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
         skipWaiting: true,
         clientsClaim: true,
@@ -98,6 +99,9 @@ export default defineConfig(({ mode }) => ({
             }
             if (id.includes('@supabase') || id.includes('@tanstack')) {
               return 'vendor-data';
+            }
+            if (id.includes('jspdf') || id.includes('html2canvas')) {
+              return 'vendor-pdf';
             }
             return 'vendor';
           }
