@@ -37,6 +37,7 @@ interface RawItem {
 function getDefaultTerms(settings: BillingSettings, docType: BillingDocumentType): string {
   if (docType === "quotation" && settings.default_quotation_terms) return settings.default_quotation_terms;
   if (docType === "proforma" && settings.default_proforma_terms) return settings.default_proforma_terms;
+  if (docType === "credit_note" && settings.default_credit_note_terms) return settings.default_credit_note_terms;
   return settings.default_terms || "";
 }
 
@@ -177,6 +178,8 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
       status: editDoc ? (status === "sent" ? status : editDoc.status) : status,
       notes: form.notes,
       terms_and_conditions: form.notes,
+      original_invoice_id: editDoc?.original_invoice_id,
+      original_invoice_number: editDoc?.original_invoice_number,
       items: calcItems,
       created_at: editDoc?.created_at || new Date().toISOString(),
     };
@@ -204,6 +207,12 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
             <Label>Document Number</Label>
             <Input value={form.doc_number} onChange={e => setForm({ ...form, doc_number: e.target.value })} />
           </div>
+          {editDoc?.original_invoice_number && (
+            <div className="space-y-1.5">
+              <Label>Against Invoice</Label>
+              <Input value={editDoc.original_invoice_number} disabled className="text-red-600 font-semibold" />
+            </div>
+          )}
           <div className="space-y-1.5">
             <Label>Date <span className="text-red-500">*</span></Label>
             <Input type="date" value={form.doc_date} onChange={e => setForm({ ...form, doc_date: e.target.value })} />
@@ -396,6 +405,7 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
               onClick={() => {
                 const key = docType === "quotation" ? "default_quotation_terms"
                   : docType === "proforma" ? "default_proforma_terms"
+                  : docType === "credit_note" ? "default_credit_note_terms"
                   : "default_terms";
                 onUpdateSettings({ ...settings, [key]: form.notes });
                 toast.success(`Default terms saved for all ${DOC_TYPE_LABELS[docType]}s`);

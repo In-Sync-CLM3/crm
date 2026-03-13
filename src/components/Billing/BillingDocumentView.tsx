@@ -3,7 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ChevronLeft, Download, Mail, CreditCard, Loader2, Pencil, Trash2 } from "lucide-react";
+import { ChevronLeft, Download, Mail, CreditCard, Loader2, Pencil, Trash2, FileX2 } from "lucide-react";
 import { formatCurrencyINR, numberToWords, statusLabel, formatFinancialYear } from "@/utils/billingUtils";
 import { DOC_TYPE_LABELS, STATUS_COLORS } from "@/types/billing";
 import type { BillingDocument, BillingPayment, BillingSettings } from "@/types/billing";
@@ -17,9 +17,10 @@ interface BillingDocumentViewProps {
   onRecordPayment: (payment: { document_id: string; amount: number; payment_date: string; payment_mode: string; reference_number: string; notes: string; org_id: string }) => void;
   onEdit?: (doc: BillingDocument) => void;
   onDelete?: (id: string) => void;
+  onIssueCreditNote?: (doc: BillingDocument) => void;
 }
 
-export function BillingDocumentView({ doc, payments, settings, onBack, onRecordPayment, onEdit, onDelete }: BillingDocumentViewProps) {
+export function BillingDocumentView({ doc, payments, settings, onBack, onRecordPayment, onEdit, onDelete, onIssueCreditNote }: BillingDocumentViewProps) {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -101,9 +102,14 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
             <Trash2 className="h-4 w-4" />Delete
           </Button>
         )}
-        {doc.doc_type === "invoice" && doc.status !== "paid" && (
+        {doc.doc_type === "invoice" && doc.status !== "cancelled" && doc.status !== "paid" && (
           <Button className="gap-1.5 bg-emerald-600 hover:bg-emerald-700" onClick={() => setShowPaymentModal(true)}>
             <CreditCard className="h-4 w-4" />Record Payment
+          </Button>
+        )}
+        {doc.doc_type === "invoice" && doc.status !== "cancelled" && onIssueCreditNote && (
+          <Button variant="outline" className="gap-1.5 text-red-600 hover:text-red-700 hover:bg-red-50" onClick={() => onIssueCreditNote(doc)}>
+            <FileX2 className="h-4 w-4" />Cancel & Issue Credit Note
           </Button>
         )}
       </div>
@@ -144,6 +150,7 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
             <div className="text-right">
               <div className={`inline-block px-4 py-1.5 rounded-lg text-sm font-bold ${
                 doc.doc_type === "invoice" ? "bg-primary text-primary-foreground" :
+                doc.doc_type === "credit_note" ? "bg-red-500 text-white" :
                 doc.doc_type === "proforma" ? "bg-sky-500 text-white" : "bg-violet-500 text-white"
               }`}>
                 {DOC_TYPE_LABELS[doc.doc_type]?.toUpperCase()}
@@ -175,6 +182,9 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
                 <div className="flex justify-between"><span className="text-[10px] font-bold text-muted-foreground uppercase">Due Date</span><span className="text-xs">{doc.due_date}</span></div>
                 <div className="flex justify-between"><span className="text-[10px] font-bold text-muted-foreground uppercase">Supply Type</span><span className="text-xs">{doc.supply_type === "intra_state" ? "Intra-State" : "Inter-State"}</span></div>
                 <div className="flex justify-between"><span className="text-[10px] font-bold text-muted-foreground uppercase">FY</span><span className="text-xs">{formatFinancialYear(doc.financial_year)}</span></div>
+                {doc.original_invoice_number && (
+                  <div className="flex justify-between"><span className="text-[10px] font-bold text-red-600 uppercase">Against Invoice</span><span className="text-xs font-semibold text-red-600">{doc.original_invoice_number}</span></div>
+                )}
               </div>
             </div>
           </div>

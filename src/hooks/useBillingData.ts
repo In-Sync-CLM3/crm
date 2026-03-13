@@ -34,6 +34,8 @@ const DEFAULT_SETTINGS: BillingSettings = {
   next_invoice_number: 1,
   next_quotation_number: 1,
   next_proforma_number: 1,
+  credit_note_prefix: "CN",
+  next_credit_note_number: 1,
 };
 
 const STORAGE_KEY = "billing_data";
@@ -63,9 +65,10 @@ export function useBillingData() {
   const [payments, setPayments] = useState<BillingPayment[]>(() =>
     loadFromStorage("payments", [])
   );
-  const [settings, setSettingsState] = useState<BillingSettings>(() =>
-    loadFromStorage("settings", DEFAULT_SETTINGS)
-  );
+  const [settings, setSettingsState] = useState<BillingSettings>(() => ({
+    ...DEFAULT_SETTINGS,
+    ...loadFromStorage("settings", DEFAULT_SETTINGS),
+  }));
 
   const updateDocuments = useCallback((docs: BillingDocument[]) => {
     setDocuments(docs);
@@ -86,7 +89,7 @@ export function useBillingData() {
   const addDocument = useCallback((doc: BillingDocument) => {
     const next = [doc, ...documents];
     updateDocuments(next);
-    const prefix = doc.doc_type === "quotation" ? "quotation" : doc.doc_type === "proforma" ? "proforma" : "invoice";
+    const prefix = doc.doc_type === "quotation" ? "quotation" : doc.doc_type === "proforma" ? "proforma" : doc.doc_type === "credit_note" ? "credit_note" : "invoice";
     const key = `next_${prefix}_number` as keyof BillingSettings;
     updateSettings({ ...settings, [key]: (settings[key] as number) + 1 });
   }, [documents, settings, updateDocuments, updateSettings]);
@@ -145,10 +148,33 @@ export function useBillingData() {
 
   const getNextDocNumber = useCallback((docType: BillingDocumentType) => {
     const fy = getCurrentFinancialYear();
-    const prefix = docType === "quotation" ? settings.quotation_prefix : docType === "proforma" ? settings.proforma_prefix : settings.invoice_prefix;
-    const nextNum = docType === "quotation" ? settings.next_quotation_number : docType === "proforma" ? settings.next_proforma_number : settings.next_invoice_number;
+    const prefix = docType === "quotation" ? settings.quotation_prefix : docType === "proforma" ? settings.proforma_prefix : docType === "credit_note" ? settings.credit_note_prefix : settings.invoice_prefix;
+    const nextNum = docType === "quotation" ? settings.next_quotation_number : docType === "proforma" ? settings.next_proforma_number : docType === "credit_note" ? settings.next_credit_note_number : settings.next_invoice_number;
     return `${prefix}-${fy}-${String(nextNum).padStart(4, "0")}`;
   }, [settings]);
+
+  const issueCreditNote = useCallback((cancelledInvoice: BillingDocument) => {
+    const fy = getCurrentFinancialYear();
+    const prefix = settings.credit_note_prefix;
+    const nextNum = settings.next_credit_note_number;
+    const newDoc: BillingDocument = {
+      ...cancelledInvoice,
+      id: `d${Date.now()}`,
+      doc_type: "credit_note",
+      doc_number: `${prefix}-${fy}-${String(nextNum).padStart(4, "0")}`,
+      status: "draft",
+      original_invoice_id: cancelledInvoice.id,
+      original_invoice_number: cancelledInvoice.doc_number,
+      amount_paid: 0,
+      balance_due: cancelledInvoice.total_amount,
+      doc_date: new Date().toISOString().split("T")[0],
+      notes: settings.default_credit_note_terms || `Credit Note against ${cancelledInvoice.doc_number}`,
+      terms_and_conditions: settings.default_credit_note_terms || `Credit Note against ${cancelledInvoice.doc_number}`,
+      created_at: new Date().toISOString(),
+    };
+    addDocument(newDoc);
+    return newDoc;
+  }, [settings, addDocument]);
 
   return {
     documents,
@@ -162,5 +188,6 @@ export function useBillingData() {
     updateSettings,
     getDocumentPayments,
     getNextDocNumber,
+    issueCreditNote,
   };
 }

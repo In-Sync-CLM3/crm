@@ -35,6 +35,8 @@ export function BillingDocumentList({ documents, docType, onView, onCreate, onCo
     ? ["all", "draft", "sent", "accepted", "rejected", "expired"]
     : docType === "proforma"
     ? ["all", "draft", "sent", "paid", "cancelled"]
+    : docType === "credit_note"
+    ? ["all", "draft", "sent", "issued", "cancelled"]
     : ["all", "draft", "sent", "paid", "partially_paid", "overdue", "cancelled"];
 
   return (
@@ -98,7 +100,7 @@ export function BillingDocumentList({ documents, docType, onView, onCreate, onCo
                       <Button variant="ghost" size="icon" onClick={() => onView(d.id)} title="View"><Eye className="h-4 w-4" /></Button>
                       <Button variant="ghost" size="icon" title="Download PDF" onClick={() => onView(d.id)}><Download className="h-4 w-4" /></Button>
                       <Button variant="ghost" size="icon" title="Send Email"><Mail className="h-4 w-4" /></Button>
-                      {docType !== "invoice" && onConvert && (
+                      {docType !== "invoice" && docType !== "credit_note" && onConvert && (
                         <Button variant="ghost" size="icon" onClick={() => onConvert(d)} title="Convert" className="text-emerald-600 hover:text-emerald-700">
                           <ArrowRight className="h-4 w-4" />
                         </Button>

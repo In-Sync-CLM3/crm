@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
-import { TrendingUp, Clock, AlertTriangle, IndianRupee, Plus } from "lucide-react";
+import { TrendingUp, Clock, AlertTriangle, IndianRupee, Plus, FileX2 } from "lucide-react";
 import { formatCurrencyINR, statusLabel } from "@/utils/billingUtils";
 import { DOC_TYPE_LABELS, DOC_TYPE_COLORS, STATUS_COLORS } from "@/types/billing";
 import type { BillingDocument } from "@/types/billing";
@@ -21,9 +21,12 @@ interface BillingDashboardProps {
 export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, onCardClick }: BillingDashboardProps) {
   const invoices = useMemo(() => documents.filter(d => d.doc_type === "invoice"), [documents]);
 
+  const creditNotes = useMemo(() => documents.filter(d => d.doc_type === "credit_note"), [documents]);
+
   const totalRevenue = useMemo(() => invoices.filter(d => d.status === "paid").reduce((s, d) => s + d.total_amount, 0), [invoices]);
   const outstanding = useMemo(() => invoices.filter(d => ["sent", "partially_paid"].includes(d.status)).reduce((s, d) => s + d.balance_due, 0), [invoices]);
   const overdue = useMemo(() => invoices.filter(d => d.status === "overdue").reduce((s, d) => s + d.balance_due, 0), [invoices]);
+  const totalCreditNotes = useMemo(() => creditNotes.reduce((s, d) => s + d.total_amount, 0), [creditNotes]);
 
   const thisMonth = useMemo(() => {
     const now = new Date();
@@ -63,6 +66,7 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
     { label: "Outstanding", value: formatCurrencyINR(outstanding), sub: `${invoices.filter(d => ["sent", "partially_paid"].includes(d.status)).length} invoices`, icon: Clock, color: "text-amber-600", bg: "bg-amber-50", filter: "sent" },
     { label: "Overdue", value: formatCurrencyINR(overdue), sub: `${invoices.filter(d => d.status === "overdue").length} invoices`, icon: AlertTriangle, color: "text-red-600", bg: "bg-red-50", filter: "overdue" },
     { label: "This Month", value: formatCurrencyINR(thisMonth), sub: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }), icon: IndianRupee, color: "text-blue-600", bg: "bg-blue-50", filter: "all" },
+    { label: "Credit Notes", value: formatCurrencyINR(totalCreditNotes), sub: `${creditNotes.length} issued`, icon: FileX2, color: "text-red-600", bg: "bg-red-50", filter: "credit_notes" },
   ];
 
   return (
@@ -76,7 +80,7 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         {kpiCards.map(card => (
           <Card
             key={card.label}

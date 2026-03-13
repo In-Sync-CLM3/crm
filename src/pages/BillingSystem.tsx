@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import DashboardLayout from "@/components/Layout/DashboardLayout";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Home, FileText, Receipt, IndianRupee, CreditCard, Settings } from "lucide-react";
+import { Home, FileText, Receipt, IndianRupee, CreditCard, Settings, FileX2 } from "lucide-react";
 import { useBillingData } from "@/hooks/useBillingData";
 import { BillingDashboard } from "@/components/Billing/BillingDashboard";
 import { BillingDocumentList } from "@/components/Billing/BillingDocumentList";
@@ -16,7 +16,7 @@ import { LoadingState } from "@/components/common/LoadingState";
 import type { BillingDocument, BillingDocumentType, BillingClient } from "@/types/billing";
 import { INDIAN_STATES } from "@/types/billing";
 
-type BillingView = "dashboard" | "quotations" | "proformas" | "invoices" | "payments" | "settings";
+type BillingView = "dashboard" | "quotations" | "proformas" | "invoices" | "credit_notes" | "payments" | "settings";
 
 // Map CRM client state name to state code
 function getStateCode(stateName: string | null): string {
@@ -37,6 +37,7 @@ export default function BillingSystem() {
     documents, payments, settings,
     addDocument, updateDocument, deleteDocument, convertDocument,
     recordPayment, updateSettings, getDocumentPayments, getNextDocNumber,
+    issueCreditNote,
   } = useBillingData();
 
   // Fetch CRM clients from Supabase
@@ -81,6 +82,12 @@ export default function BillingSystem() {
   }, []);
 
   const handleDashboardCardClick = useCallback((filter: string) => {
+    if (filter === "credit_notes") {
+      setView("credit_notes");
+      setViewDocId(null);
+      setCreateDocType(null);
+      return;
+    }
     setInvoiceStatusFilter(filter);
     setView("invoices");
     setViewDocId(null);
@@ -122,6 +129,14 @@ export default function BillingSystem() {
     }
   }, [editDoc, updateDocument, addDocument]);
 
+  const handleIssueCreditNote = useCallback((doc: BillingDocument) => {
+    updateDocument(doc.id, { status: "cancelled" });
+    const cn = issueCreditNote(doc);
+    setViewDocId(cn.id);
+    setCreateDocType(null);
+    setEditDoc(null);
+  }, [issueCreditNote, updateDocument]);
+
   const handleConvert = useCallback((doc: BillingDocument) => {
     const nextType: BillingDocumentType = doc.doc_type === "quotation" ? "proforma" : "invoice";
     convertDocument(doc, nextType);
@@ -152,6 +167,7 @@ export default function BillingSystem() {
           onRecordPayment={handleRecordPayment}
           onEdit={handleEditDoc}
           onDelete={handleDeleteDoc}
+          onIssueCreditNote={handleIssueCreditNote}
         />
       );
     }
@@ -211,6 +227,15 @@ export default function BillingSystem() {
             initialStatusFilter={invoiceStatusFilter}
           />
         );
+      case "credit_notes":
+        return (
+          <BillingDocumentList
+            documents={documents}
+            docType="credit_note"
+            onView={handleViewDoc}
+            onCreate={() => handleCreateDoc("credit_note")}
+          />
+        );
       case "payments":
         return <BillingPaymentsList payments={payments} documents={documents} />;
       case "settings":
@@ -230,6 +255,7 @@ export default function BillingSystem() {
               <TabsTrigger value="quotations" className="gap-1.5 text-xs"><FileText className="h-3.5 w-3.5" />Quotations</TabsTrigger>
               <TabsTrigger value="proformas" className="gap-1.5 text-xs"><Receipt className="h-3.5 w-3.5" />Proforma Inv.</TabsTrigger>
               <TabsTrigger value="invoices" className="gap-1.5 text-xs"><IndianRupee className="h-3.5 w-3.5" />Tax Invoices</TabsTrigger>
+              <TabsTrigger value="credit_notes" className="gap-1.5 text-xs"><FileX2 className="h-3.5 w-3.5" />Credit Notes</TabsTrigger>
               <TabsTrigger value="payments" className="gap-1.5 text-xs"><CreditCard className="h-3.5 w-3.5" />Payments</TabsTrigger>
               <TabsTrigger value="settings" className="gap-1.5 text-xs"><Settings className="h-3.5 w-3.5" />Settings</TabsTrigger>
             </TabsList>
