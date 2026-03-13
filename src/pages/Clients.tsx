@@ -10,7 +10,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Search, Users, FileText, Receipt, RefreshCw, UserCheck, UserX, AlertTriangle, Trash2 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Search, Users, FileText, Receipt, RefreshCw, UserCheck, UserX, AlertTriangle, Trash2, X } from "lucide-react";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import { useNotification } from "@/hooks/useNotification";
 import { LoadingState } from "@/components/common/LoadingState";
@@ -29,6 +30,9 @@ export default function Clients() {
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [companyFilter, setCompanyFilter] = useState("all");
+  const [cityFilter, setCityFilter] = useState("all");
+  const [stateFilter, setStateFilter] = useState("all");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showDuplicatesManager, setShowDuplicatesManager] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -74,6 +78,21 @@ export default function Clients() {
     },
   });
 
+  // Unique values for filter dropdowns
+  const companies = [...new Set(clients?.map(c => c.company).filter(Boolean) || [])].sort();
+  const cities = [...new Set(clients?.map(c => c.city).filter(Boolean) || [])].sort();
+  const states = [...new Set(clients?.map(c => c.state).filter(Boolean) || [])].sort();
+
+  const hasActiveFilters = companyFilter !== "all" || cityFilter !== "all" || stateFilter !== "all";
+
+  const clearAllFilters = () => {
+    setCompanyFilter("all");
+    setCityFilter("all");
+    setStateFilter("all");
+    setSearchTerm("");
+    setStatusFilter("all");
+  };
+
   const filteredClients = clients?.filter((client) => {
     // Status filter
     if (statusFilter !== 'all') {
@@ -81,7 +100,13 @@ export default function Clients() {
       if (clientStatus !== statusFilter) return false;
     }
 
+    // Dropdown filters
+    if (companyFilter !== "all" && client.company !== companyFilter) return false;
+    if (cityFilter !== "all" && client.city !== cityFilter) return false;
+    if (stateFilter !== "all" && client.state !== stateFilter) return false;
+
     // Search filter
+    if (!searchTerm) return true;
     const searchLower = searchTerm.toLowerCase();
     const email = client.email || (client.contact as any)?.email;
     return (
@@ -195,20 +220,61 @@ export default function Clients() {
           </TabsList>
         </Tabs>
 
-        {/* Search and Bulk Actions */}
-        <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-          <div className="relative max-w-md flex-1">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search clients..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10"
-            />
+        {/* Search and Filters */}
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+            <div className="relative max-w-xs flex-1">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search clients..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10"
+              />
+            </div>
+            {companies.length > 0 && (
+              <Select value={companyFilter} onValueChange={setCompanyFilter}>
+                <SelectTrigger className="w-[180px] text-xs">
+                  <SelectValue placeholder="Company" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Companies</SelectItem>
+                  {companies.map(c => <SelectItem key={c} value={c!}>{c}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            )}
+            {cities.length > 0 && (
+              <Select value={cityFilter} onValueChange={setCityFilter}>
+                <SelectTrigger className="w-[160px] text-xs">
+                  <SelectValue placeholder="City" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Cities</SelectItem>
+                  {cities.map(c => <SelectItem key={c} value={c!}>{c}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            )}
+            {states.length > 0 && (
+              <Select value={stateFilter} onValueChange={setStateFilter}>
+                <SelectTrigger className="w-[160px] text-xs">
+                  <SelectValue placeholder="State" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All States</SelectItem>
+                  {states.map(s => <SelectItem key={s} value={s!}>{s}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            )}
+            {hasActiveFilters && (
+              <Button variant="ghost" size="sm" onClick={clearAllFilters} className="text-xs text-muted-foreground gap-1">
+                <X className="h-3.5 w-3.5" />Clear Filters
+              </Button>
+            )}
           </div>
           {selectedIds.size > 0 && (
-            <Button 
-              variant="destructive" 
+            <Button
+              variant="destructive"
+              size="sm"
               onClick={() => setShowDeleteConfirm(true)}
             >
               <Trash2 className="h-4 w-4 mr-2" />
