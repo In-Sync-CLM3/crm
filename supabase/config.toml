@@ -152,3 +152,6 @@ verify_jwt = false
 
 [functions.submit-help-ticket]
 verify_jwt = false
+
+[functions.ticket-email-reply]
+verify_jwt = false

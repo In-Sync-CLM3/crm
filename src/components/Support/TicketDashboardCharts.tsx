@@ -23,6 +23,17 @@ const CATEGORY_COLORS = [
   "hsl(var(--chart-5))",
 ];
 
+const SOURCE_COLORS: Record<string, string> = {
+  crm: "hsl(217, 91%, 60%)",
+  rmpl: "hsl(271, 91%, 65%)",
+  paisaa_saarthi: "hsl(142, 71%, 45%)",
+  whatsapp: "hsl(142, 76%, 36%)",
+  in_sync_website: "hsl(25, 95%, 53%)",
+  website: "hsl(45, 93%, 47%)",
+  email: "hsl(0, 84%, 60%)",
+  help_widget: "hsl(199, 89%, 48%)",
+};
+
 const STATUS_COLORS: Record<string, string> = {
   new: "hsl(217, 91%, 60%)",
   assigned: "hsl(271, 91%, 65%)",
@@ -105,7 +116,21 @@ export function TicketDashboardCharts({ tickets }: TicketDashboardChartsProps) {
       .map(([date, counts]) => ({ date, ...counts }))
       .sort((a, b) => a.date.localeCompare(b.date));
 
-    return { avgResolutionHours, categoryData, priorityData, statusData, trendData, resolvedCount: resolvedTickets.length };
+    // Source breakdown
+    const sourceMap: Record<string, number> = {};
+    tickets.forEach((t) => {
+      const src = t.source || "crm";
+      sourceMap[src] = (sourceMap[src] || 0) + 1;
+    });
+    const sourceData = Object.entries(sourceMap)
+      .map(([name, value]) => ({
+        name: name.replace(/_/g, " "),
+        value,
+        fill: SOURCE_COLORS[name] || "hsl(var(--muted))",
+      }))
+      .sort((a, b) => b.value - a.value);
+
+    return { avgResolutionHours, categoryData, priorityData, statusData, sourceData, trendData, resolvedCount: resolvedTickets.length };
   }, [tickets]);
 
   const formatHours = (h: number) => {
@@ -231,6 +256,32 @@ export function TicketDashboardCharts({ tickets }: TicketDashboardChartsProps) {
                 <Bar dataKey="value" name="Tickets" radius={[4, 4, 0, 0]}>
                   {stats.categoryData.map((_, i) => (
                     <Cell key={i} fill={CATEGORY_COLORS[i % CATEGORY_COLORS.length]} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Source Bar Chart */}
+      <Card className="md:col-span-2 xl:col-span-4">
+        <CardHeader className="pb-2 pt-3 px-4">
+          <CardTitle className="text-sm font-medium">Tickets by Source</CardTitle>
+        </CardHeader>
+        <CardContent className="p-2 pr-4">
+          {stats.sourceData.length === 0 ? (
+            <div className="h-[180px] flex items-center justify-center text-sm text-muted-foreground">No data</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={stats.sourceData} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis type="number" tick={{ fontSize: 10 }} allowDecimals={false} />
+                <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={100} />
+                <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: '8px', fontSize: '12px' }} />
+                <Bar dataKey="value" name="Tickets" radius={[0, 4, 4, 0]}>
+                  {stats.sourceData.map((entry, i) => (
+                    <Cell key={i} fill={entry.fill} />
                   ))}
                 </Bar>
               </BarChart>

@@ -23,6 +23,7 @@ export default function SupportTickets() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [priorityFilter, setPriorityFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState<SupportTicket | null>(null);
@@ -34,6 +35,7 @@ export default function SupportTickets() {
     status: statusFilter,
     priority: priorityFilter,
     category: categoryFilter,
+    source: sourceFilter,
     search: searchQuery || undefined,
   });
 
@@ -176,6 +178,19 @@ export default function SupportTickets() {
               <SelectItem value="technical">Technical</SelectItem>
             </SelectContent>
           </Select>
+          <Select value={sourceFilter} onValueChange={setSourceFilter}>
+            <SelectTrigger className="w-40"><SelectValue placeholder="Source" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Sources</SelectItem>
+              <SelectItem value="crm">CRM</SelectItem>
+              <SelectItem value="rmpl">RMPL</SelectItem>
+              <SelectItem value="paisaa_saarthi">Paisaa Saarthi</SelectItem>
+              <SelectItem value="whatsapp">WhatsApp</SelectItem>
+              <SelectItem value="in_sync_website">In-Sync Website</SelectItem>
+              <SelectItem value="website">Website</SelectItem>
+              <SelectItem value="email">Email</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Table */}
@@ -213,7 +228,7 @@ export default function SupportTickets() {
                         <TableCell className="font-mono text-xs">{ticket.ticket_number}</TableCell>
                         <TableCell className="text-sm">
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground capitalize">
-                            {((ticket as any).source || "crm").replace(/_/g, " ")}
+                            {(ticket.source || "crm").replace(/_/g, " ")}
                           </span>
                         </TableCell>
                         <TableCell className="max-w-[200px] truncate font-medium">{ticket.subject}</TableCell>
@@ -235,7 +250,7 @@ export default function SupportTickets() {
                           ) : "-"}
                         </TableCell>
                         <TableCell>
-                          {(ticket as any).client_notified ? (
+                          {ticket.client_notified ? (
                             <span className="inline-flex items-center gap-1 text-xs text-green-600 font-medium">
                               <Bell size={14} /> Yes
                             </span>

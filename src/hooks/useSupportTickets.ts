@@ -4,6 +4,62 @@ import { useAuth } from "@/contexts/AuthProvider";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import { toast } from "sonner";
 
+// Working hours constants: Mon-Fri 9AM-6PM IST
+const WORK_START_HOUR = 9;
+const WORK_END_HOUR = 18;
+const WORK_HOURS_PER_DAY = WORK_END_HOUR - WORK_START_HOUR;
+const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+
+const SLA_HOURS: Record<string, number> = {
+  critical: 4,
+  high: 9,
+  medium: 18,
+  low: 27,
+};
+
+function moveToNextWorkingDay(date: Date): Date {
+  const d = new Date(date);
+  d.setUTCDate(d.getUTCDate() + 1);
+  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) {
+    d.setUTCDate(d.getUTCDate() + 1);
+  }
+  d.setUTCHours(WORK_START_HOUR, 0, 0, 0);
+  return d;
+}
+
+function moveToNextWorkingTime(date: Date): Date {
+  const d = new Date(date);
+  const dayOfWeek = d.getUTCDay();
+  const hour = d.getUTCHours();
+  if (dayOfWeek === 0) { d.setUTCDate(d.getUTCDate() + 1); d.setUTCHours(WORK_START_HOUR, 0, 0, 0); return d; }
+  if (dayOfWeek === 6) { d.setUTCDate(d.getUTCDate() + 2); d.setUTCHours(WORK_START_HOUR, 0, 0, 0); return d; }
+  if (hour < WORK_START_HOUR) { d.setUTCHours(WORK_START_HOUR, 0, 0, 0); return d; }
+  if (hour >= WORK_END_HOUR) return moveToNextWorkingDay(d);
+  return d;
+}
+
+function calculateDueDate(startDate: Date, workingHours: number): Date {
+  const istTime = new Date(startDate.getTime() + IST_OFFSET);
+  let remainingMinutes = workingHours * 60;
+  let current = moveToNextWorkingTime(new Date(istTime));
+
+  while (remainingMinutes > 0) {
+    const dayOfWeek = current.getUTCDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) { current = moveToNextWorkingDay(current); continue; }
+    const currentMinutesInDay = current.getUTCHours() * 60 + current.getUTCMinutes();
+    const minutesLeftToday = WORK_END_HOUR * 60 - currentMinutesInDay;
+    if (minutesLeftToday <= 0) { current = moveToNextWorkingDay(current); continue; }
+    if (remainingMinutes <= minutesLeftToday) {
+      current = new Date(current.getTime() + remainingMinutes * 60 * 1000);
+      remainingMinutes = 0;
+    } else {
+      remainingMinutes -= minutesLeftToday;
+      current = moveToNextWorkingDay(current);
+    }
+  }
+  return new Date(current.getTime() - IST_OFFSET);
+}
+
 export interface SupportTicket {
   id: string;
   org_id: string;
@@ -21,8 +77,11 @@ export interface SupportTicket {
   contact_phone: string | null;
   contact_email: string | null;
   company_name: string | null;
+  source: string;
   due_at: string | null;
   attachments: { name: string; url: string; type: string; size: number }[] | null;
+  client_notified: boolean;
+  client_notified_at: string | null;
   created_at: string;
   updated_at: string;
   creator?: { first_name: string; last_name: string; email?: string };
@@ -78,7 +137,7 @@ async function uploadTicketAttachments(orgId: string, ticketId: string, files: F
   return uploaded;
 }
 
-export function useSupportTickets(filters?: { status?: string; priority?: string; category?: string; search?: string }) {
+export function useSupportTickets(filters?: { status?: string; priority?: string; category?: string; source?: string; search?: string }) {
   const { user } = useAuth();
   const { effectiveOrgId: orgId } = useOrgContext();
   const queryClient = useQueryClient();
@@ -101,6 +160,9 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
       if (filters?.category && filters.category !== "all") {
         query = query.eq("category", filters.category);
       }
+      if (filters?.source && filters.source !== "all") {
+        query = query.eq("source", filters.source);
+      }
       if (filters?.search) {
         query = query.or(`ticket_number.ilike.%${filters.search}%,subject.ilike.%${filters.search}%`);
       }
@@ -116,6 +178,10 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
     mutationFn: async (ticket: CreateTicketInput) => {
       const filesToUpload = ticket.attachments || [];
 
+      // Calculate due date based on working hours (Mon-Fri 9AM-6PM IST)
+      const slaHours = SLA_HOURS[ticket.priority] || SLA_HOURS.medium;
+      const dueAt = calculateDueDate(new Date(), slaHours);
+
       const { data, error } = await supabase
         .from("support_tickets")
         .insert({
@@ -129,7 +195,9 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
           contact_phone: ticket.contact_phone || null,
           contact_email: ticket.contact_email || null,
           company_name: ticket.company_name || null,
+          source: "crm",
           ticket_number: "TEMP",
+          due_at: dueAt.toISOString(),
         })
         .select()
         .single();
@@ -165,7 +233,8 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
           const slaNote = (priority === "Critical" || priority === "High")
             ? `<p style="margin:16px 0;color:#b45309;font-size:14px;">For <strong>${priority}</strong> priority tickets, we aim to respond within <strong>${slaMap[priority]}</strong>.</p>`
             : "";
-          const emailSubject = `Your Support Ticket ${ticketNum} Has Been Received`;
+          const emailSubject = `[${ticketNum}] Support Ticket Received - ${ticket.subject}`;
+          const dueDate = ticket.due_at ? new Date(ticket.due_at).toLocaleDateString("en-IN", { weekday: "short", year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "Asia/Kolkata" }) : "As per SLA";
           try {
             await supabase.functions.invoke("send-email", {
               body: {
@@ -173,19 +242,29 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
                 subject: emailSubject,
                 html: `
                   <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;color:#333;">
-                    <p style="font-size:15px;">Dear ${clientName},</p>
-                    <p style="font-size:15px;">Thank you for reaching out to <strong>In-Sync</strong>.</p>
-                    <p style="font-size:15px;">This is to confirm that your support ticket has been successfully created. Our team has been notified and will attend to your request at the earliest.</p>
-                    <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
-                      <tr style="background:#f3f4f6;"><td style="padding:10px 14px;font-weight:600;border:1px solid #e5e7eb;">Ticket Number</td><td style="padding:10px 14px;border:1px solid #e5e7eb;">${ticketNum}</td></tr>
-                      <tr><td style="padding:10px 14px;font-weight:600;border:1px solid #e5e7eb;">Subject</td><td style="padding:10px 14px;border:1px solid #e5e7eb;">${ticket.subject}</td></tr>
-                      <tr style="background:#f3f4f6;"><td style="padding:10px 14px;font-weight:600;border:1px solid #e5e7eb;">Priority</td><td style="padding:10px 14px;border:1px solid #e5e7eb;">${priority}</td></tr>
-                      <tr><td style="padding:10px 14px;font-weight:600;border:1px solid #e5e7eb;">Status</td><td style="padding:10px 14px;border:1px solid #e5e7eb;">${ticket.status || "Open"}</td></tr>
-                      <tr style="background:#f3f4f6;"><td style="padding:10px 14px;font-weight:600;border:1px solid #e5e7eb;">Raised On</td><td style="padding:10px 14px;border:1px solid #e5e7eb;">${createdDate}</td></tr>
-                    </table>
-                    <p style="font-size:15px;">You will receive a notification as soon as your ticket is assigned to a team member.</p>
-                    ${slaNote}
-                    <p style="font-size:15px;margin-top:24px;">Thank you<br/><strong>Team In-Sync</strong></p>
+                    <div style="background:#6366f1;padding:20px 24px;border-radius:12px 12px 0 0;">
+                      <h1 style="margin:0;font-size:20px;color:#fff;">Support Ticket Received</h1>
+                    </div>
+                    <div style="padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
+                      <p style="font-size:15px;margin-top:0;">Dear ${clientName},</p>
+                      <p style="font-size:15px;">Thank you for reaching out to <strong>In-Sync</strong>. Your support ticket has been successfully created.</p>
+                      <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
+                        <tr style="background:#f3f4f6;"><td style="padding:10px 14px;font-weight:600;border:1px solid #e5e7eb;width:40%;">Ticket Number</td><td style="padding:10px 14px;border:1px solid #e5e7eb;font-weight:700;color:#6366f1;">${ticketNum}</td></tr>
+                        <tr><td style="padding:10px 14px;font-weight:600;border:1px solid #e5e7eb;">Subject</td><td style="padding:10px 14px;border:1px solid #e5e7eb;">${ticket.subject}</td></tr>
+                        <tr style="background:#f3f4f6;"><td style="padding:10px 14px;font-weight:600;border:1px solid #e5e7eb;">Priority</td><td style="padding:10px 14px;border:1px solid #e5e7eb;">${priority}</td></tr>
+                        <tr><td style="padding:10px 14px;font-weight:600;border:1px solid #e5e7eb;">Raised On</td><td style="padding:10px 14px;border:1px solid #e5e7eb;">${createdDate}</td></tr>
+                        <tr style="background:#f3f4f6;"><td style="padding:10px 14px;font-weight:600;border:1px solid #e5e7eb;">Expected Resolution</td><td style="padding:10px 14px;border:1px solid #e5e7eb;font-weight:600;color:#059669;">${dueDate}</td></tr>
+                      </table>
+                      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:14px 16px;margin:20px 0;">
+                        <p style="margin:0 0 8px;font-weight:600;font-size:14px;color:#1e40af;">How to follow up</p>
+                        <p style="margin:0;font-size:13px;color:#1e40af;">Simply <strong>reply to this email</strong> to add information or ask questions about your ticket. Please keep the ticket number <strong>${ticketNum}</strong> in the subject line.</p>
+                      </div>
+                      <div style="background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:14px 16px;margin:20px 0;">
+                        <p style="margin:0;font-size:13px;color:#92400e;"><strong>Working Hours:</strong> Monday to Friday, 9:00 AM to 6:00 PM IST. Resolution time is calculated based on working hours only.</p>
+                      </div>
+                      ${slaNote}
+                      <p style="font-size:15px;margin-top:24px;">Best regards,<br/><strong>Team In-Sync</strong></p>
+                    </div>
                   </div>
                 `,
               },
@@ -305,11 +384,18 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
                   subject: resolvedEmailSubject,
                   html: `
                     <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;color:#333;">
-                      <p style="font-size:15px;">Dear ${clientName},</p>
-                      <p style="font-size:15px;">Your support ticket <strong>${t.ticket_number}</strong> regarding <strong>${t.subject}</strong> has been successfully resolved.</p>
-                      <p style="font-size:15px;">If you are still facing any issues, please raise a new ticket through the Help section of the platform, as this is an automated email and replies to this address are not monitored.</p>
-                      <p style="font-size:15px;">Thank you for your patience and continued support.</p>
-                      <p style="font-size:15px;margin-top:24px;">Best regards,<br/><strong>Team In-Sync</strong></p>
+                      <div style="background:#059669;padding:20px 24px;border-radius:12px 12px 0 0;">
+                        <h1 style="margin:0;font-size:20px;color:#fff;">Ticket Resolved</h1>
+                      </div>
+                      <div style="padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
+                        <p style="font-size:15px;margin-top:0;">Dear ${clientName},</p>
+                        <p style="font-size:15px;">Your support ticket <strong>${t.ticket_number}</strong> regarding <strong>${t.subject}</strong> has been successfully resolved.</p>
+                        ${t.resolution_notes ? `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:14px 16px;margin:16px 0;"><p style="margin:0 0 4px;font-weight:600;font-size:13px;color:#166534;">Resolution Notes:</p><p style="margin:0;font-size:14px;color:#333;">${t.resolution_notes}</p></div>` : ""}
+                        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:14px 16px;margin:16px 0;">
+                          <p style="margin:0;font-size:13px;color:#1e40af;">If you are still facing issues, simply <strong>reply to this email</strong> with ticket number <strong>${t.ticket_number}</strong> in the subject and your ticket will be reopened automatically.</p>
+                        </div>
+                        <p style="font-size:15px;margin-top:24px;">Best regards,<br/><strong>Team In-Sync</strong></p>
+                      </div>
                     </div>
                   `,
                 },

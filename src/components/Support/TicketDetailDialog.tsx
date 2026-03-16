@@ -13,8 +13,8 @@ import { useTicketHistory } from "@/hooks/useTicketHistory";
 import { useTicketNotifications } from "@/hooks/useTicketNotifications";
 import { useTicketEscalations } from "@/hooks/useTicketEscalations";
 import { useOrgContext } from "@/hooks/useOrgContext";
-import { format, isPast } from "date-fns";
-import { MessageSquare, Clock, User, Phone, Mail, Building2, AlertTriangle, History, Paperclip, Image, Video, Trash2, Bell, CheckCircle, XCircle, ArrowUpRight, Upload, X } from "lucide-react";
+import { format, isPast, differenceInMinutes, isWeekend, nextMonday, setHours, setMinutes, setSeconds } from "date-fns";
+import { MessageSquare, Clock, User, Phone, Mail, Building2, AlertTriangle, History, Paperclip, Image, Video, Trash2, Bell, CheckCircle, XCircle, ArrowUpRight, Upload, X, Timer } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,6 +42,73 @@ function formatFileSize(bytes: number) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+/**
+ * Calculate remaining working hours until due date.
+ * Working hours: Mon-Fri 9AM-6PM IST (UTC+5:30)
+ */
+function getWorkingHoursRemaining(dueAt: string): { hours: number; label: string; isOverdue: boolean } {
+  const now = new Date();
+  const due = new Date(dueAt);
+
+  if (now >= due) {
+    // Calculate overdue working hours
+    const overdue = calculateWorkingMinutesBetween(due, now);
+    const hours = Math.floor(overdue / 60);
+    const mins = overdue % 60;
+    return { hours: -hours, label: `${hours}h ${mins}m overdue`, isOverdue: true };
+  }
+
+  const remaining = calculateWorkingMinutesBetween(now, due);
+  const hours = Math.floor(remaining / 60);
+  const mins = remaining % 60;
+  return { hours, label: `${hours}h ${mins}m remaining`, isOverdue: false };
+}
+
+function calculateWorkingMinutesBetween(start: Date, end: Date): number {
+  const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+  let current = new Date(start.getTime() + IST_OFFSET);
+  const target = new Date(end.getTime() + IST_OFFSET);
+  let totalMinutes = 0;
+
+  while (current < target) {
+    const day = current.getUTCDay();
+    if (day === 0 || day === 6) {
+      // Skip weekend
+      current.setUTCDate(current.getUTCDate() + 1);
+      current.setUTCHours(9, 0, 0, 0);
+      continue;
+    }
+
+    const hour = current.getUTCHours();
+    const minute = current.getUTCMinutes();
+
+    if (hour < 9) {
+      current.setUTCHours(9, 0, 0, 0);
+      continue;
+    }
+    if (hour >= 18) {
+      current.setUTCDate(current.getUTCDate() + 1);
+      current.setUTCHours(9, 0, 0, 0);
+      continue;
+    }
+
+    // Within working hours
+    const endOfDay = new Date(current);
+    endOfDay.setUTCHours(18, 0, 0, 0);
+    const effectiveEnd = target < endOfDay ? target : endOfDay;
+    const diff = Math.floor((effectiveEnd.getTime() - current.getTime()) / 60000);
+    totalMinutes += Math.max(0, diff);
+
+    current = new Date(endOfDay);
+    if (current < target) {
+      current.setUTCDate(current.getUTCDate() + 1);
+      current.setUTCHours(9, 0, 0, 0);
+    }
+  }
+
+  return totalMinutes;
 }
 
 export function TicketDetailDialog({ ticket, open, onOpenChange, onUpdateStatus, onAssign, onDelete, isDeleting, isAdmin, teamMembers }: TicketDetailDialogProps) {
@@ -138,19 +205,33 @@ export function TicketDetailDialog({ ticket, open, onOpenChange, onUpdateStatus,
               <TicketStatusBadge status={ticket.status} />
               <TicketPriorityBadge priority={ticket.priority} />
               <span className="text-muted-foreground capitalize">{ticket.category.replace("_", " ")}</span>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 capitalize">
+                {(ticket.source || "crm").replace(/_/g, " ")}
+              </span>
               <span className="text-muted-foreground flex items-center gap-1">
                 <Clock size={14} />
                 {format(new Date(ticket.created_at), "MMM d, yyyy h:mm a")}
               </span>
             </div>
 
-            {/* SLA Deadline */}
+            {/* SLA Deadline with Working Hours */}
             {ticket.due_at && (
-              <div className={`flex items-center gap-1 text-sm ${isOverdue ? "text-destructive font-medium" : "text-muted-foreground"}`}>
-                {isOverdue && <AlertTriangle size={14} />}
-                <Clock size={14} />
-                Due: {format(new Date(ticket.due_at), "MMM d, yyyy h:mm a")}
-                {isOverdue && " (OVERDUE)"}
+              <div className="space-y-1">
+                <div className={`flex items-center gap-1 text-sm ${isOverdue ? "text-destructive font-medium" : "text-muted-foreground"}`}>
+                  {isOverdue && <AlertTriangle size={14} />}
+                  <Clock size={14} />
+                  Due: {format(new Date(ticket.due_at), "MMM d, yyyy h:mm a")}
+                  {isOverdue && " (OVERDUE)"}
+                </div>
+                {!["resolved", "closed"].includes(ticket.status) && (() => {
+                  const wh = getWorkingHoursRemaining(ticket.due_at);
+                  return (
+                    <div className={`flex items-center gap-1 text-xs px-2 py-1 rounded-md w-fit ${wh.isOverdue ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary"}`}>
+                      <Timer size={12} />
+                      <span>{wh.label} (working hours: Mon-Fri, 9AM-6PM IST)</span>
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
