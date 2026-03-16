@@ -821,42 +821,51 @@ export default function Dashboard() {
     return result;
   }, [backendActuals]);
 
-  // Get filtered contacts/invoices for dialog using backend IDs
+  // Get filtered contacts/invoices for dialog using backend IDs or client-side fallback
   const getDialogData = useMemo(() => {
+    const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+
     return async (month: string, metricType: MetricType) => {
       const monthData = backendMonthlyData[month];
-      
-      if (!monthData) {
-        return { contacts: [], invoices: [] };
-      }
+      const monthIndex = monthNames.indexOf(month);
 
       if (metricType === "invoiced" || metricType === "received") {
-        const invoiceIds = metricType === "invoiced" 
-          ? monthData.invoiced_invoice_ids 
-          : monthData.received_invoice_ids;
-        
-        if (!invoiceIds || invoiceIds.length === 0) {
-          return { contacts: [], invoices: [] };
+        const invoiceIds = metricType === "invoiced"
+          ? monthData?.invoiced_invoice_ids
+          : monthData?.received_invoice_ids;
+
+        // If backend has IDs, use them; otherwise filter yearlyInvoicesWithClients by month
+        let matchedInvoices: any[];
+        if (invoiceIds && invoiceIds.length > 0) {
+          matchedInvoices = yearlyInvoicesWithClients.filter((inv: any) => invoiceIds.includes(inv.id));
+        } else if (monthIndex >= 0) {
+          // Client-side fallback: filter by month from invoice_date or payment_received_date
+          matchedInvoices = yearlyInvoicesWithClients.filter((inv: any) => {
+            if (metricType === "invoiced") {
+              return inv.invoice_date && new Date(inv.invoice_date).getMonth() === monthIndex;
+            } else {
+              return inv.status === "paid" && inv.payment_received_date &&
+                new Date(inv.payment_received_date).getMonth() === monthIndex;
+            }
+          });
+        } else {
+          matchedInvoices = [];
         }
 
-        // Fetch invoice details from yearlyInvoicesWithClients
-        // For "received" type, use payment_received_date as the display date
-        const invoices = yearlyInvoicesWithClients
-          .filter((inv: any) => invoiceIds.includes(inv.id))
-          .map((inv: any) => ({
-            id: inv.id,
-            invoice_number: inv.invoice_number,
-            amount: inv.amount || 0,
-            status: inv.status,
-            invoice_date: metricType === "received" ? (inv.payment_received_date || inv.invoice_date) : inv.invoice_date,
-            clientName: inv.clients?.company || `${inv.clients?.first_name || ''} ${inv.clients?.last_name || ''}`.trim() || 'Unknown',
-          }));
+        const invoices = matchedInvoices.map((inv: any) => ({
+          id: inv.id,
+          invoice_number: inv.invoice_number,
+          amount: inv.amount || 0,
+          status: inv.status,
+          invoice_date: metricType === "received" ? (inv.payment_received_date || inv.invoice_date) : inv.invoice_date,
+          clientName: getEntityName(inv),
+        }));
         return { invoices, contacts: [] };
       } else {
         let contactIds: string[] = [];
-        if (metricType === "qualified") contactIds = monthData.qualified_contact_ids || [];
-        else if (metricType === "proposals") contactIds = monthData.proposal_contact_ids || [];
-        else if (metricType === "deals") contactIds = monthData.deal_contact_ids || [];
+        if (metricType === "qualified") contactIds = monthData?.qualified_contact_ids || [];
+        else if (metricType === "proposals") contactIds = monthData?.proposal_contact_ids || [];
+        else if (metricType === "deals") contactIds = monthData?.deal_contact_ids || [];
         
         if (contactIds.length === 0) {
           return { contacts: [], invoices: [] };
