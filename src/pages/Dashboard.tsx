@@ -526,6 +526,14 @@ export default function Dashboard() {
     return { totalInvoiced, totalReceived, totalPending, totalGST, totalTDS, dueToDept };
   }, [invoicedData, paymentsData, dueToDept]);
 
+  // Resolve entity name from client join (left join, may be null)
+  const getEntityName = (inv: any): string => {
+    if (inv.clients?.company || inv.clients?.first_name) {
+      return inv.clients.company || `${inv.clients.first_name || ''} ${inv.clients.last_name || ''}`.trim() || 'Unknown';
+    }
+    return 'Unknown';
+  };
+
   // Process monthly revenue data by client for trend chart
   const { clientRevenueData, uniqueClients } = useMemo(() => {
     if (!revenueData || revenueData.length === 0) return { clientRevenueData: [], uniqueClients: [] };
@@ -999,14 +1007,6 @@ export default function Dashboard() {
         return [];
     }
   }, [selectedCardType, invoicedData, paymentsData]);
-
-  // Resolve entity name from client, contact, or external entity
-  const getEntityName = (inv: any): string => {
-    if (inv.clients?.company || inv.clients?.first_name) {
-      return inv.clients.company || `${inv.clients.first_name || ''} ${inv.clients.last_name || ''}`.trim() || 'Unknown';
-    }
-    return 'Unknown';
-  };
 
   // Format currency in Indian format
   const formatCurrency = (amount: number) => {
