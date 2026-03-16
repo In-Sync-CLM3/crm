@@ -211,13 +211,16 @@ export default function Dashboard() {
       const { data, error } = await supabase
         .from("client_invoices")
         .select(`
-          amount, 
+          amount,
           tax_amount,
-          status, 
-          due_date, 
-          document_type, 
+          status,
+          due_date,
+          document_type,
           invoice_date,
-          clients!inner(first_name, last_name, company)
+          client_id,
+          contact_id,
+          external_entity_id,
+          clients(first_name, last_name, company)
         `)
         .eq("org_id", effectiveOrgId)
         .gte("invoice_date", format(dateRange.from, "yyyy-MM-dd"))
@@ -238,16 +241,19 @@ export default function Dashboard() {
       const { data, error } = await supabase
         .from("client_invoices")
         .select(`
-          amount, 
-          status, 
-          document_type, 
+          amount,
+          status,
+          document_type,
           invoice_date,
           payment_received_date,
           tax_amount,
           tds_amount,
           net_received_amount,
           actual_payment_received,
-          clients!inner(first_name, last_name, company)
+          client_id,
+          contact_id,
+          external_entity_id,
+          clients(first_name, last_name, company)
         `)
         .eq("org_id", effectiveOrgId)
         .eq("status", "paid")
@@ -328,7 +334,7 @@ export default function Dashboard() {
 
   // Fetch monthly actuals from backend API
   const currentYear = new Date().getFullYear();
-  const { data: backendActuals, isLoading: actualsLoading } = useQuery({
+  const { data: backendActuals } = useQuery({
     queryKey: ["monthly-actuals-backend-v2", effectiveOrgId, currentYear],
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
@@ -343,27 +349,51 @@ export default function Dashboard() {
     enabled: !!effectiveOrgId,
   });
 
-  // Fetch yearly invoices with client details for dialog (fallback for drill-down)
-  // Need to include invoices where either invoice_date OR payment_received_date is in the year
+  // Fetch yearly invoices with client details for dialog and fallback monthly computation
   const { data: yearlyInvoicesWithClients = [] } = useQuery({
     queryKey: ["yearly-invoices-with-clients", effectiveOrgId, currentYear],
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
       const startOfYear = `${currentYear}-01-01`;
       const endOfYear = `${currentYear}-12-31`;
-      
-      // Fetch invoices where invoice_date is in year OR payment_received_date is in year
+
       const { data, error } = await supabase
         .from("client_invoices")
         .select(`
-          id, invoice_number, amount, status, invoice_date, payment_received_date, document_type,
+          id, invoice_number, amount, tax_amount, status, invoice_date, payment_received_date, document_type,
+          net_received_amount, actual_payment_received,
           clients(id, first_name, last_name, company)
         `)
         .eq("org_id", effectiveOrgId)
-        .or(`invoice_date.gte.${startOfYear},payment_received_date.gte.${startOfYear}`)
-        .or(`invoice_date.lte.${endOfYear},payment_received_date.lte.${endOfYear}`);
+        .gte("invoice_date", startOfYear)
+        .lte("invoice_date", endOfYear);
       if (error) throw error;
-      return data || [];
+
+      // Also fetch invoices paid in this year (payment_received_date in year) but invoiced earlier
+      const { data: paidData, error: paidError } = await supabase
+        .from("client_invoices")
+        .select(`
+          id, invoice_number, amount, tax_amount, status, invoice_date, payment_received_date, document_type,
+          net_received_amount, actual_payment_received,
+          clients(id, first_name, last_name, company)
+        `)
+        .eq("org_id", effectiveOrgId)
+        .eq("status", "paid")
+        .gte("payment_received_date", startOfYear)
+        .lte("payment_received_date", endOfYear)
+        .lt("invoice_date", startOfYear);
+      if (paidError) throw paidError;
+
+      // Merge both sets, avoiding duplicates
+      const allInvoices = [...(data || [])];
+      const existingIds = new Set(allInvoices.map((inv: any) => inv.id));
+      (paidData || []).forEach((inv: any) => {
+        if (!existingIds.has(inv.id)) {
+          allInvoices.push(inv);
+        }
+      });
+
+      return allInvoices;
     },
     enabled: !!effectiveOrgId,
   });
@@ -506,9 +536,7 @@ export default function Dashboard() {
     // Calculate total revenue per client to filter out zero-revenue clients
     const clientTotals: Record<string, number> = {};
     invoicesOnly.forEach((invoice: any) => {
-      const clientName = invoice.clients?.company || 
-        `${invoice.clients?.first_name || ''} ${invoice.clients?.last_name || ''}`.trim() || 
-        'Unknown';
+      const clientName = getEntityName(invoice);
       clientTotals[clientName] = (clientTotals[clientName] || 0) + (invoice.amount || 0);
     });
     
@@ -525,10 +553,8 @@ export default function Dashboard() {
     invoicesOnly.forEach((invoice: any) => {
       const date = new Date(invoice.invoice_date);
       const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      const clientName = invoice.clients?.company || 
-        `${invoice.clients?.first_name || ''} ${invoice.clients?.last_name || ''}`.trim() || 
-        'Unknown';
-      
+      const clientName = getEntityName(invoice);
+
       if (!monthlyData[monthKey]) {
         monthlyData[monthKey] = {};
       }
@@ -612,10 +638,8 @@ export default function Dashboard() {
         dateMap[dateKey].received += amount;
       }
       // Add client/company name
-      const clientName = inv.clients?.company || 
-        `${inv.clients?.first_name || ''} ${inv.clients?.last_name || ''}`.trim() || 
-        '';
-      if (clientName) {
+      const clientName = getEntityName(inv);
+      if (clientName && clientName !== 'Unknown') {
         dateMap[dateKey].clients.add(clientName);
       }
     });
@@ -639,22 +663,20 @@ export default function Dashboard() {
     const clientMap: Record<string, { totalInvoiced: number; totalPaid: number; invoiceCount: number; company?: string }> = {};
     
     invoicesOnly.forEach((inv: any) => {
-      const clientId = inv.clients?.company || 
-        `${inv.clients?.first_name || ''} ${inv.clients?.last_name || ''}`.trim() || 
-        'Unknown';
-      if (!clientMap[clientId]) {
-        clientMap[clientId] = { 
-          totalInvoiced: 0, 
-          totalPaid: 0, 
+      const entityName = getEntityName(inv);
+      if (!clientMap[entityName]) {
+        clientMap[entityName] = {
+          totalInvoiced: 0,
+          totalPaid: 0,
           invoiceCount: 0,
           company: inv.clients?.company
         };
       }
       const amount = inv.amount || 0;
-      clientMap[clientId].totalInvoiced += amount;
-      clientMap[clientId].invoiceCount += 1;
+      clientMap[entityName].totalInvoiced += amount;
+      clientMap[entityName].invoiceCount += 1;
       if (inv.status === 'paid') {
-        clientMap[clientId].totalPaid += amount;
+        clientMap[entityName].totalPaid += amount;
       }
     });
 
@@ -715,11 +737,11 @@ export default function Dashboard() {
     return () => window.removeEventListener("orgContextChange", handleOrgChange);
   }, [queryClient]);
 
-  // Process monthly actuals from backend API
+  // Process monthly actuals from backend API, with client-side fallback for revenue
   const monthlyActuals = useMemo(() => {
     const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
     const result: Record<string, { qualified: number; proposals: number; deals: number; invoiced: number; received: number }> = {};
-    
+
     // Initialize all months
     monthNames.forEach(m => {
       result[m] = { qualified: 0, proposals: 0, deals: 0, invoiced: 0, received: 0 };
@@ -727,22 +749,55 @@ export default function Dashboard() {
 
     // If we have backend actuals, use them
     if (backendActuals?.monthly_actuals) {
-      backendActuals.monthly_actuals.forEach((monthData: any) => {
-        const monthKey = monthNames[monthData.month - 1];
-        if (monthKey) {
-          result[monthKey] = {
-            qualified: monthData.qualified || 0,
-            proposals: monthData.proposals || 0,
-            deals: monthData.deals || 0,
-            invoiced: monthData.invoiced || 0,
-            received: monthData.received || 0,
-          };
+      const hasNonZeroData = backendActuals.monthly_actuals.some((md: any) =>
+        (md.invoiced || 0) > 0 || (md.received || 0) > 0 || (md.qualified || 0) > 0
+      );
+
+      if (hasNonZeroData) {
+        backendActuals.monthly_actuals.forEach((monthData: any) => {
+          const monthKey = monthNames[monthData.month - 1];
+          if (monthKey) {
+            result[monthKey] = {
+              qualified: monthData.qualified || 0,
+              proposals: monthData.proposals || 0,
+              deals: monthData.deals || 0,
+              invoiced: monthData.invoiced || 0,
+              received: monthData.received || 0,
+            };
+          }
+        });
+        return result;
+      }
+    }
+
+    // Fallback: compute monthly revenue from yearlyInvoicesWithClients
+    if (yearlyInvoicesWithClients && yearlyInvoicesWithClients.length > 0) {
+      yearlyInvoicesWithClients.forEach((inv: any) => {
+        // Invoiced: group by invoice_date month
+        if (inv.invoice_date) {
+          const invoiceMonth = new Date(inv.invoice_date).getMonth();
+          const monthKey = monthNames[invoiceMonth];
+          if (monthKey) {
+            const amount = (inv.amount || 0) + (inv.tax_amount || 0);
+            result[monthKey].invoiced += amount;
+          }
+        }
+
+        // Received: group by payment_received_date month
+        if (inv.status === 'paid' && inv.payment_received_date) {
+          const paymentMonth = new Date(inv.payment_received_date).getMonth();
+          const monthKey = monthNames[paymentMonth];
+          if (monthKey) {
+            const received = inv.actual_payment_received || inv.net_received_amount ||
+              ((inv.amount || 0) + (inv.tax_amount || 0));
+            result[monthKey].received += received;
+          }
         }
       });
     }
 
     return result;
-  }, [backendActuals]);
+  }, [backendActuals, yearlyInvoicesWithClients]);
 
   // Store backend actuals for dialog data lookup
   const backendMonthlyData = useMemo(() => {
@@ -886,7 +941,7 @@ export default function Dashboard() {
   const pendingTasksCount = allTasks.filter(t => t.status === "pending").length;
   const overdueTasksCount = allTasks.filter(t => t.isOverdue && t.status !== "completed").length;
 
-  const loading = orgLoading || statsLoading || pipelineLoading || revenueLoading || actualsLoading;
+  const loading = orgLoading || statsLoading || pipelineLoading || revenueLoading;
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleRefresh = async () => {
@@ -926,7 +981,7 @@ export default function Dashboard() {
       payment_received_date: inv.payment_received_date,
       tax_amount: inv.tax_amount || 0,
       tds_amount: inv.tds_amount || 0,
-      clientName: inv.clients?.company || `${inv.clients?.first_name || ''} ${inv.clients?.last_name || ''}`.trim() || 'Unknown',
+      clientName: getEntityName(inv),
     });
 
     switch (selectedCardType) {
@@ -944,6 +999,14 @@ export default function Dashboard() {
         return [];
     }
   }, [selectedCardType, invoicedData, paymentsData]);
+
+  // Resolve entity name from client, contact, or external entity
+  const getEntityName = (inv: any): string => {
+    if (inv.clients?.company || inv.clients?.first_name) {
+      return inv.clients.company || `${inv.clients.first_name || ''} ${inv.clients.last_name || ''}`.trim() || 'Unknown';
+    }
+    return 'Unknown';
+  };
 
   // Format currency in Indian format
   const formatCurrency = (amount: number) => {
