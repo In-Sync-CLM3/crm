@@ -243,6 +243,38 @@ Deno.serve(async (req) => {
     const inboundEmail: ResendInboundPayload = payload;
     console.log('Processing inbound email from:', inboundEmail.from);
 
+    // --- Support Ticket Reply Detection ---
+    // Check if this email is a reply to a support ticket by looking for TKT-XXXXX pattern
+    const ticketFromSubject = inboundEmail.subject?.match(/\[?(TKT-\d+)\]?/i);
+    const ticketFromTo = inboundEmail.to?.match(/support\+(TKT-\d+)@/i);
+    const ticketNumber = (ticketFromSubject?.[1] || ticketFromTo?.[1])?.toUpperCase();
+
+    if (ticketNumber) {
+      console.log(`[inbound-webhook] Detected support ticket reply for: ${ticketNumber}, forwarding to ticket-email-reply`);
+      try {
+        const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
+        const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') || '';
+        const ticketReplyUrl = `${supabaseUrl}/functions/v1/ticket-email-reply`;
+        const ticketReplyResponse = await fetch(ticketReplyUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${supabaseAnonKey}`,
+          },
+          body: JSON.stringify(payload),
+        });
+        const ticketReplyResult = await ticketReplyResponse.json();
+        console.log('[inbound-webhook] ticket-email-reply response:', ticketReplyResult);
+        return new Response(
+          JSON.stringify({ success: true, message: 'Forwarded to ticket-email-reply', result: ticketReplyResult }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (ticketErr) {
+        console.error('[inbound-webhook] Error forwarding to ticket-email-reply:', ticketErr);
+        // Fall through to normal email processing if ticket handler fails
+      }
+    }
+
     // Extract domain from recipient email (inboundEmail.to)
     const recipientEmail = inboundEmail.to;
     const recipientDomain = recipientEmail.split('@')[1];
