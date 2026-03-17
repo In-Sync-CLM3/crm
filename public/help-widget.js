@@ -19,6 +19,7 @@
   var POSITION = script?.getAttribute("data-position") || "right";
   var COMPANY = script?.getAttribute("data-company") || "";
   var API_URL = "https://knuewnenaswscgaldjej.supabase.co/functions/v1/submit-help-ticket";
+  var TRACK_URL = "https://knuewnenaswscgaldjej.supabase.co/functions/v1/track-ticket";
 
   var IMAGE_EXTS = ["jpg", "jpeg", "png", "gif", "webp"];
   var VIDEO_EXTS = ["mp4", "webm", "mov"];
@@ -81,13 +82,23 @@
     "#insync-help-dialog .dialog-header h2 { margin:0 0 4px; font-size:20px; font-weight:700; color:#fff; }",
     "#insync-help-dialog .dialog-header p { margin:0; font-size:13px; color:rgba(255,255,255,.85); }",
     "",
+    "/* Tabs */",
+    "#insync-help-dialog .tabs { display:flex; border-bottom:1px solid #e5e7eb; background:#fafafa; }",
+    "#insync-help-dialog .tab-btn {",
+    "  flex:1; padding:12px; background:transparent; border:none; cursor:pointer;",
+    "  font-size:13px; font-weight:600; color:#9ca3af; text-align:center;",
+    "  border-bottom:2px solid transparent; transition:all .15s; font-family:inherit;",
+    "}",
+    "#insync-help-dialog .tab-btn.active { color:" + ACCENT + "; border-bottom-color:" + ACCENT + "; background:#fff; }",
+    "#insync-help-dialog .tab-btn:hover { color:#6b7280; }",
+    "",
     "#insync-help-dialog .dialog-body { padding:20px 24px 24px; }",
     "",
     "#insync-help-dialog label { display:block; font-size:13px; font-weight:600; color:#333; margin-bottom:4px; }",
     "#insync-help-dialog input, #insync-help-dialog textarea, #insync-help-dialog select {",
     "  width:100%; padding:10px 12px; border:1px solid #d1d5db; border-radius:8px;",
     "  font-size:14px; margin-bottom:14px; outline:none; box-sizing:border-box;",
-    "  transition:border-color .2s;",
+    "  transition:border-color .2s; font-family:inherit;",
     "}",
     "#insync-help-dialog input:focus, #insync-help-dialog textarea:focus, #insync-help-dialog select:focus {",
     "  border-color:" + ACCENT + "; box-shadow:0 0 0 3px " + ACCENT + "22;",
@@ -97,7 +108,7 @@
     "#insync-help-dialog .btn-submit {",
     "  width:100%; padding:12px; border:none; border-radius:8px; cursor:pointer;",
     "  background:" + ACCENT + "; color:#fff; font-size:15px; font-weight:600;",
-    "  transition:opacity .2s;",
+    "  transition:opacity .2s; font-family:inherit;",
     "}",
     "#insync-help-dialog .btn-submit:hover { opacity:.9; }",
     "#insync-help-dialog .btn-submit:disabled { opacity:.5; cursor:not-allowed; }",
@@ -158,6 +169,27 @@
     "  padding:2px 4px; font-size:9px; overflow:hidden; text-overflow:ellipsis;",
     "  white-space:nowrap; max-width:76px;",
     "}",
+    "",
+    "/* Track ticket result styles */",
+    ".insync-track-result {",
+    "  background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px;",
+    "  padding:16px; margin-top:14px;",
+    "}",
+    ".insync-track-row {",
+    "  display:flex; justify-content:space-between; padding:8px 0;",
+    "  border-bottom:1px solid #f1f5f9; font-size:13px;",
+    "}",
+    ".insync-track-row:last-child { border-bottom:none; }",
+    ".insync-track-label { color:#6b7280; font-weight:500; }",
+    ".insync-track-value { color:#1f2937; font-weight:600; }",
+    ".insync-status {",
+    "  display:inline-block; padding:3px 10px; border-radius:12px;",
+    "  font-size:10px; font-weight:700; text-transform:uppercase;",
+    "}",
+    ".insync-status-open { background:#dbeafe; color:#1e40af; }",
+    ".insync-status-in_progress { background:#fef3c7; color:#92400e; }",
+    ".insync-status-resolved { background:#dcfce7; color:#166534; }",
+    ".insync-status-closed { background:#f3f4f6; color:#6b7280; }",
   ].join("\n");
   document.head.appendChild(style);
 
@@ -170,6 +202,7 @@
 
   // State
   var selectedFiles = [];
+  var activeTab = "submit";
 
   // Overlay
   var overlay = document.createElement("div");
@@ -177,100 +210,133 @@
   overlay.innerHTML = [
     '<div id="insync-help-dialog">',
     '  <button class="close-btn" id="insync-close">&times;</button>',
-    '  <div id="insync-form-view">',
-    '    <div class="dialog-header">',
-    '      <h2>Need Help?</h2>',
-    '      <p>Submit a support ticket and we\'ll get back to you during working hours.</p>',
-    '    </div>',
-    '    <div class="dialog-body">',
-    '      <div class="working-hours-note">',
-    '        <strong>Working Hours:</strong> Monday to Friday, 9:00 AM - 6:00 PM IST. Resolution time is calculated on working hours only.',
+    '  <div class="dialog-header">',
+    '    <h2>Need Help?</h2>',
+    '    <p>Submit a support ticket or track an existing one.</p>',
+    '  </div>',
+    '  <div class="tabs">',
+    '    <button class="tab-btn active" data-tab="submit">Submit Ticket</button>',
+    '    <button class="tab-btn" data-tab="track">Track Ticket</button>',
+    '  </div>',
+    '  <div id="insync-submit-tab">',
+    '    <div id="insync-form-view">',
+    '      <div class="dialog-body">',
+    '        <div class="working-hours-note">',
+    '          <strong>Working Hours:</strong> Monday to Friday, 9:00 AM - 6:00 PM IST. Resolution time is calculated on working hours only.',
+    '        </div>',
+    '        <div id="insync-error" class="error-msg" style="display:none;"></div>',
+    '        <form id="insync-form">',
+    '          <div class="row">',
+    '            <div>',
+    '              <label>Name *</label>',
+    '              <input type="text" name="name" required maxlength="100" placeholder="Your full name" />',
+    '            </div>',
+    '            <div>',
+    '              <label>Email *</label>',
+    '              <input type="email" name="email" required maxlength="255" placeholder="you@example.com" />',
+    '            </div>',
+    '          </div>',
+    '          <div class="row">',
+    '            <div>',
+    '              <label>Phone</label>',
+    '              <input type="tel" name="phone" maxlength="20" placeholder="+91 98765 43210" />',
+    '            </div>',
+    '            <div>',
+    '              <label>Company</label>',
+    '              <input type="text" name="company_name" maxlength="100" value="' + COMPANY + '" placeholder="Company name" />',
+    '            </div>',
+    '          </div>',
+    '          <div class="row">',
+    '            <div>',
+    '              <label>Category</label>',
+    '              <select name="category">',
+    '                <option value="general">General</option>',
+    '                <option value="bug">Bug / Issue</option>',
+    '                <option value="feature_request">Feature Request</option>',
+    '                <option value="billing">Billing</option>',
+    '                <option value="technical">Technical</option>',
+    '              </select>',
+    '            </div>',
+    '            <div>',
+    '              <label>Priority</label>',
+    '              <select name="priority">',
+    '                <option value="medium">Medium</option>',
+    '                <option value="low">Low</option>',
+    '                <option value="high">High</option>',
+    '                <option value="critical">Critical</option>',
+    '              </select>',
+    '            </div>',
+    '          </div>',
+    '          <label>Subject *</label>',
+    '          <input type="text" name="subject" required maxlength="200" placeholder="Brief summary of your issue" />',
+    '          <label>Description *</label>',
+    '          <textarea name="description" required maxlength="5000" placeholder="Please describe your issue in detail..."></textarea>',
+    '          <label>Attachments</label>',
+    '          <div id="insync-file-area">',
+    '            <p>\uD83D\uDCCE Click to attach files</p>',
+    '            <p class="hint">Images (max 6, 5 MB each) \u00B7 Videos (max 2, 10 MB each)</p>',
+    '          </div>',
+    '          <input type="file" id="insync-file-input" multiple accept=".jpg,.jpeg,.png,.gif,.webp,.mp4,.webm,.mov" style="display:none" />',
+    '          <div id="insync-file-list"></div>',
+    '          <button type="submit" class="btn-submit" id="insync-submit">Submit Ticket</button>',
+    '        </form>',
     '      </div>',
-    '      <div id="insync-error" class="error-msg" style="display:none;"></div>',
-    '      <form id="insync-form">',
-    '        <div class="row">',
-    '          <div>',
-    '            <label>Name *</label>',
-    '            <input type="text" name="name" required maxlength="100" placeholder="Your full name" />',
+    '    </div>',
+    '    <div id="insync-success-view" style="display:none;">',
+    '      <div class="dialog-body">',
+    '        <div class="success-msg">',
+    '          <div class="check">\u2705</div>',
+    '          <h3>Your ticket has been created</h3>',
+    '          <span class="ticket-num" id="insync-ticket-num"></span>',
+    '          <div class="resolution-info" id="insync-resolution-info" style="display:none;">',
+    '            <strong>Expected Resolution:</strong> <span id="insync-due-date"></span>',
     '          </div>',
-    '          <div>',
-    '            <label>Email *</label>',
-    '            <input type="email" name="email" required maxlength="255" placeholder="you@example.com" />',
+    '          <div class="email-note">',
+    '            <strong>Email Confirmation:</strong> A confirmation email with your ticket number has been sent. You can reply to that email to add more details or follow up on your ticket.',
     '          </div>',
+    '          <div class="working-hours-note">',
+    '            <strong>Working Hours:</strong> Mon-Fri, 9:00 AM - 6:00 PM IST. Resolution time is based on working hours only.',
+    '          </div>',
+    '          <br/>',
+    '          <button class="btn-submit" id="insync-done">Done</button>',
     '        </div>',
-    '        <div class="row">',
-    '          <div>',
-    '            <label>Phone</label>',
-    '            <input type="tel" name="phone" maxlength="20" placeholder="+91 98765 43210" />',
-    '          </div>',
-    '          <div>',
-    '            <label>Company</label>',
-    '            <input type="text" name="company_name" maxlength="100" value="' + COMPANY + '" placeholder="Company name" />',
-    '          </div>',
-    '        </div>',
-    '        <div class="row">',
-    '          <div>',
-    '            <label>Category</label>',
-    '            <select name="category">',
-    '              <option value="general">General</option>',
-    '              <option value="bug">Bug / Issue</option>',
-    '              <option value="feature_request">Feature Request</option>',
-    '              <option value="billing">Billing</option>',
-    '              <option value="technical">Technical</option>',
-    '            </select>',
-    '          </div>',
-    '          <div>',
-    '            <label>Priority</label>',
-    '            <select name="priority">',
-    '              <option value="medium">Medium</option>',
-    '              <option value="low">Low</option>',
-    '              <option value="high">High</option>',
-    '              <option value="critical">Critical</option>',
-    '            </select>',
-    '          </div>',
-    '        </div>',
-    '        <label>Subject *</label>',
-    '        <input type="text" name="subject" required maxlength="200" placeholder="Brief summary of your issue" />',
-    '        <label>Description *</label>',
-    '        <textarea name="description" required maxlength="5000" placeholder="Please describe your issue in detail..."></textarea>',
-    '        <label>Attachments</label>',
-    '        <div id="insync-file-area">',
-    '          <p>\uD83D\uDCCE Click to attach files</p>',
-    '          <p class="hint">Images (max 6, 5 MB each) \u00B7 Videos (max 2, 10 MB each)</p>',
-    '        </div>',
-    '        <input type="file" id="insync-file-input" multiple accept=".jpg,.jpeg,.png,.gif,.webp,.mp4,.webm,.mov" style="display:none" />',
-    '        <div id="insync-file-list"></div>',
-    '        <button type="submit" class="btn-submit" id="insync-submit">Submit Ticket</button>',
-    '      </form>',
+    '      </div>',
     '    </div>',
     '  </div>',
-    '  <div id="insync-success-view" style="display:none;">',
-    '    <div class="dialog-header">',
-    '      <h2>Ticket Submitted!</h2>',
-    '      <p>Our team will review your request during working hours.</p>',
-    '    </div>',
+    '  <div id="insync-track-tab" style="display:none;">',
     '    <div class="dialog-body">',
-    '      <div class="success-msg">',
-    '        <div class="check">\u2705</div>',
-    '        <h3>Your ticket has been created</h3>',
-    '        <span class="ticket-num" id="insync-ticket-num"></span>',
-    '        <div class="resolution-info" id="insync-resolution-info" style="display:none;">',
-    '          <strong>Expected Resolution:</strong> <span id="insync-due-date"></span>',
-    '        </div>',
-    '        <div class="email-note">',
-    '          <strong>Email Confirmation:</strong> A confirmation email with your ticket number has been sent. You can reply to that email to add more details or follow up on your ticket.',
-    '        </div>',
-    '        <div class="working-hours-note">',
-    '          <strong>Working Hours:</strong> Mon-Fri, 9:00 AM - 6:00 PM IST. Resolution time is based on working hours only.',
-    '        </div>',
-    '        <br/>',
-    '        <button class="btn-submit" id="insync-done">Done</button>',
+    '      <label>Ticket Number *</label>',
+    '      <input type="text" id="insync-track-input" placeholder="e.g. TKT-20260317-0001" maxlength="30" />',
+    '      <button class="btn-submit" id="insync-track-btn">Track Ticket</button>',
+    '      <div id="insync-track-result"></div>',
+    '      <div class="working-hours-note" style="margin-top:14px;">',
+    '        <strong>Working Hours:</strong> Monday to Friday, 9:00 AM - 6:00 PM IST. Resolution times are based on business hours.',
     '      </div>',
     '    </div>',
     '  </div>',
     '</div>'
   ].join("\n");
   document.body.appendChild(overlay);
+
+  // Tab switching
+  var tabBtns = overlay.querySelectorAll(".tab-btn");
+  var submitTab = document.getElementById("insync-submit-tab");
+  var trackTab = document.getElementById("insync-track-tab");
+
+  tabBtns.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      tabBtns.forEach(function (b) { b.classList.remove("active"); });
+      btn.classList.add("active");
+      var tab = btn.getAttribute("data-tab");
+      if (tab === "submit") {
+        submitTab.style.display = "";
+        trackTab.style.display = "none";
+      } else {
+        submitTab.style.display = "none";
+        trackTab.style.display = "";
+      }
+    });
+  });
 
   function renderFileList() {
     var list = document.getElementById("insync-file-list");
@@ -352,6 +418,7 @@
     e.target.value = "";
   });
 
+  // Submit ticket
   document.getElementById("insync-form").addEventListener("submit", async function (e) {
     e.preventDefault();
     var form = e.target;
@@ -410,7 +477,6 @@
 
       document.getElementById("insync-ticket-num").textContent = data.ticket_number;
 
-      // Show resolution date if available
       if (data.due_at_formatted) {
         document.getElementById("insync-due-date").textContent = data.due_at_formatted;
         document.getElementById("insync-resolution-info").style.display = "";
@@ -427,5 +493,85 @@
       btn.disabled = false;
       btn.textContent = "Submit Ticket";
     }
+  });
+
+  // Track ticket
+  var trackBtn = document.getElementById("insync-track-btn");
+  var trackInput = document.getElementById("insync-track-input");
+  var trackResult = document.getElementById("insync-track-result");
+
+  trackBtn.addEventListener("click", async function () {
+    var ticketNum = trackInput.value.trim().toUpperCase();
+    if (!ticketNum) {
+      trackResult.innerHTML = '<p class="error-msg" style="margin-top:12px;">Please enter a ticket number.</p>';
+      return;
+    }
+
+    trackBtn.disabled = true;
+    trackBtn.textContent = "Searching...";
+    trackResult.innerHTML = "";
+
+    try {
+      var res = await fetch(TRACK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticket_number: ticketNum }),
+      });
+      var data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to look up ticket");
+      }
+
+      if (!data.found) {
+        trackResult.innerHTML = '<p class="error-msg" style="text-align:center;padding:16px;margin-top:12px;">No ticket found: <strong>' + ticketNum + '</strong></p>';
+        return;
+      }
+
+      var t = data.ticket;
+      var createdAt = new Date(t.created_at).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short"
+      });
+
+      var resolvedRow = "";
+      if (t.resolved_at) {
+        var resolvedAt = new Date(t.resolved_at).toLocaleString("en-IN", {
+          timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short"
+        });
+        resolvedRow = '<div class="insync-track-row"><span class="insync-track-label">Resolved</span><span class="insync-track-value">' + resolvedAt + '</span></div>';
+      }
+
+      var dueRow = "";
+      if (t.due_at) {
+        var dueAt = new Date(t.due_at).toLocaleString("en-IN", {
+          timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short"
+        });
+        dueRow = '<div class="insync-track-row"><span class="insync-track-label">Expected By</span><span class="insync-track-value" style="color:#059669;">' + dueAt + '</span></div>';
+      }
+
+      var statusClass = "insync-status insync-status-" + t.status;
+      var statusText = t.status.replace("_", " ").toUpperCase();
+
+      trackResult.innerHTML = [
+        '<div class="insync-track-result">',
+        '  <div class="insync-track-row"><span class="insync-track-label">Ticket</span><span class="insync-track-value">' + t.ticket_number + '</span></div>',
+        '  <div class="insync-track-row"><span class="insync-track-label">Subject</span><span class="insync-track-value">' + t.subject + '</span></div>',
+        '  <div class="insync-track-row"><span class="insync-track-label">Status</span><span class="' + statusClass + '">' + statusText + '</span></div>',
+        '  <div class="insync-track-row"><span class="insync-track-label">Priority</span><span class="insync-track-value" style="text-transform:capitalize;">' + t.priority + '</span></div>',
+        '  <div class="insync-track-row"><span class="insync-track-label">Created</span><span class="insync-track-value">' + createdAt + '</span></div>',
+        dueRow,
+        resolvedRow,
+        '</div>'
+      ].join("\n");
+    } catch (err) {
+      trackResult.innerHTML = '<p class="error-msg" style="margin-top:12px;">Failed to fetch ticket. Please try again.</p>';
+    } finally {
+      trackBtn.disabled = false;
+      trackBtn.textContent = "Track Ticket";
+    }
+  });
+
+  trackInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); trackBtn.click(); }
   });
 })();
