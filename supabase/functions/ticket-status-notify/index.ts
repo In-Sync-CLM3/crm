@@ -93,7 +93,7 @@ Deno.serve(async (req) => {
 
     const sendingDomain = emailSettings?.sending_domain && emailSettings.verification_status === "verified"
       ? emailSettings.sending_domain
-      : "in-sync.app";
+      : "in-sync.co.in";
     const fromEmail = `noreply@${sendingDomain}`;
     const replyToEmail = `support+${ticket.ticket_number}@${sendingDomain}`;
 
