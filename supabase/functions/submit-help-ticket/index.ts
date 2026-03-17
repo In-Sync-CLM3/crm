@@ -250,6 +250,27 @@ Deno.serve(async (req) => {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
+    // AI auto-response function
+    async function getAIResponse(subj: string, desc: string, prio: string): Promise<string | null> {
+      const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+      if (!anthropicKey) return null;
+      try {
+        const res = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "x-api-key": anthropicKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-haiku-4-5-20251001",
+            max_tokens: 500,
+            system: `You are a helpful support assistant for In-Sync CRM platform. Provide an immediate, concise first response to support tickets. Acknowledge the issue, suggest solutions if possible, keep under 150 words, use a warm professional tone. Working hours: Mon-Fri, 9 AM - 6 PM IST.`,
+            messages: [{ role: "user", content: `Subject: ${subj}\nDescription: ${desc}\nPriority: ${prio}` }],
+          }),
+        });
+        if (!res.ok) return null;
+        const result = await res.json();
+        return result.content?.[0]?.text || null;
+      } catch { return null; }
+    }
+
     // Use the main org (ECR TIPL)
     const mainOrgId = "65e22e43-f23d-4c0a-9d84-2eba65ad0e12";
 
@@ -273,6 +294,9 @@ Deno.serve(async (req) => {
     const slaHours = SLA_HOURS[ticketPriority] || SLA_HOURS.medium;
     const now = new Date();
     const dueAt = calculateDueDate(now, slaHours);
+
+    // Start AI response generation in parallel
+    const aiResponsePromise = getAIResponse(subject, description, ticketPriority);
 
     const { data: ticket, error } = await supabase
       .from("support_tickets")
@@ -300,6 +324,12 @@ Deno.serve(async (req) => {
         JSON.stringify({ error: "Failed to create ticket" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
+    }
+
+    // Wait for AI response and save it
+    const aiResponse = await aiResponsePromise;
+    if (aiResponse) {
+      await supabase.from("support_tickets").update({ ai_response: aiResponse }).eq("id", ticket.id);
     }
 
     // Upload attachments to storage
@@ -386,6 +416,16 @@ Deno.serve(async (req) => {
             <div style="padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
               <p style="font-size:15px;margin-top:0;">Dear ${name.trim()},</p>
               <p style="font-size:15px;">Thank you for reaching out to <strong>In-Sync</strong>. Your support ticket has been successfully created. Our team has been notified and will attend to your request during working hours.</p>
+
+              ${aiResponse ? `
+              <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:16px;margin:0 0 20px;">
+                <p style="color:#6d28d9;font-size:14px;margin:0 0 8px;font-weight:700;">
+                  <span style="display:inline-block;width:20px;height:20px;background:#8b5cf6;border-radius:50%;text-align:center;color:#fff;font-size:11px;line-height:20px;margin-right:6px;">AI</span>
+                  Quick Response
+                </p>
+                <p style="color:#374151;font-size:14px;line-height:1.7;margin:0;white-space:pre-wrap;">${aiResponse}</p>
+                <p style="color:#9ca3af;font-size:11px;margin:12px 0 0;font-style:italic;">Automated AI response. Our team will follow up if needed.</p>
+              </div>` : ""}
 
               <table style="width:100%;border-collapse:collapse;margin:20px 0;font-size:14px;">
                 <tr style="background:#f3f4f6;">
@@ -487,6 +527,7 @@ Deno.serve(async (req) => {
         ticket_number: ticket.ticket_number,
         due_at: dueAt.toISOString(),
         due_at_formatted: formatDueDate(dueAt),
+        ai_response: aiResponse || null,
         message: "Your ticket has been submitted successfully!"
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }

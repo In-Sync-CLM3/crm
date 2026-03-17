@@ -300,6 +300,11 @@
     '          <div class="resolution-info" id="insync-resolution-info" style="display:none;">',
     '            <strong>Expected Resolution:</strong> <span id="insync-due-date"></span>',
     '          </div>',
+    '          <div id="insync-ai-response" style="display:none;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:14px;margin:12px 0;text-align:left;">',
+    '            <p style="color:#6d28d9;font-size:13px;margin:0 0 6px;font-weight:700;">AI Quick Response</p>',
+    '            <p id="insync-ai-text" style="color:#374151;font-size:13px;line-height:1.6;margin:0;white-space:pre-wrap;"></p>',
+    '            <p style="color:#9ca3af;font-size:10px;margin:8px 0 0;font-style:italic;">Automated response. Our team will follow up if needed.</p>',
+    '          </div>',
     '          <div class="email-note">',
     '            <strong>Email Confirmation:</strong> A confirmation email with your ticket number has been sent. You can reply to that email to add more details or follow up on your ticket.',
     '          </div>',
@@ -501,6 +506,11 @@
       if (data.due_at_formatted) {
         document.getElementById("insync-due-date").textContent = data.due_at_formatted;
         document.getElementById("insync-resolution-info").style.display = "";
+      }
+
+      if (data.ai_response) {
+        document.getElementById("insync-ai-text").textContent = data.ai_response;
+        document.getElementById("insync-ai-response").style.display = "";
       }
 
       document.getElementById("insync-form-view").style.display = "none";
