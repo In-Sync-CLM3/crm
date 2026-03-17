@@ -156,5 +156,8 @@ verify_jwt = false
 [functions.track-ticket]
 verify_jwt = false
 
+[functions.ticket-status-notify]
+verify_jwt = false
+
 [functions.ticket-email-reply]
 verify_jwt = false

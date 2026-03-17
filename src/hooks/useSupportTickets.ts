@@ -339,7 +339,7 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
   const updateTicket = useMutation({
     mutationFn: async ({ id, ...updates }: { id: string; status?: string; assigned_to?: string | null; resolution_notes?: string }) => {
       const updateData: Record<string, unknown> = { ...updates };
-      if (updates.status === "resolved") {
+      if (updates.status === "resolved" || updates.status === "closed") {
         updateData.resolved_at = new Date().toISOString();
       }
       const { error } = await supabase
@@ -364,8 +364,8 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
         });
       }
 
-      // Notify client on resolution
-      if (updates.status === "resolved") {
+      // Notify client on resolution or closure
+      if (updates.status === "resolved" || updates.status === "closed") {
         const { data: ticket } = await supabase
           .from("support_tickets")
           .select("contact_email, contact_phone, contact_name, ticket_number, subject, resolution_notes")
@@ -374,25 +374,37 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
         if (ticket) {
           const t = ticket as any;
           let notified = false;
-          const resolvedEmailSubject = `Your Support Ticket ${t.ticket_number} Has Been Resolved`;
+          const isResolved = updates.status === "resolved";
+          const statusLabel = isResolved ? "Resolved" : "Closed";
+          const headerColor = isResolved ? "#059669" : "#6b7280";
+          const emailSubjectLine = isResolved
+            ? `Your Support Ticket ${t.ticket_number} Has Been Resolved`
+            : `Your Support Ticket ${t.ticket_number} Has Been Closed`;
+          const statusMessage = isResolved
+            ? `Your support ticket <strong>${t.ticket_number}</strong> regarding <strong>${t.subject}</strong> has been successfully resolved.`
+            : `Your support ticket <strong>${t.ticket_number}</strong> regarding <strong>${t.subject}</strong> has been closed.`;
+          const followUpMessage = isResolved
+            ? `If you are still facing issues, simply <strong>reply to this email</strong> with ticket number <strong>${t.ticket_number}</strong> in the subject and your ticket will be reopened automatically.`
+            : `If you need further assistance, feel free to raise a new ticket or <strong>reply to this email</strong> with ticket number <strong>${t.ticket_number}</strong> in the subject.`;
+
           if (t.contact_email) {
             const clientName = t.contact_name || "Valued Client";
             try {
               await supabase.functions.invoke("send-email", {
                 body: {
                   to: t.contact_email,
-                  subject: resolvedEmailSubject,
+                  subject: emailSubjectLine,
                   html: `
                     <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;color:#333;">
-                      <div style="background:#059669;padding:20px 24px;border-radius:12px 12px 0 0;">
-                        <h1 style="margin:0;font-size:20px;color:#fff;">Ticket Resolved</h1>
+                      <div style="background:${headerColor};padding:20px 24px;border-radius:12px 12px 0 0;">
+                        <h1 style="margin:0;font-size:20px;color:#fff;">Ticket ${statusLabel}</h1>
                       </div>
                       <div style="padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;">
                         <p style="font-size:15px;margin-top:0;">Dear ${clientName},</p>
-                        <p style="font-size:15px;">Your support ticket <strong>${t.ticket_number}</strong> regarding <strong>${t.subject}</strong> has been successfully resolved.</p>
+                        <p style="font-size:15px;">${statusMessage}</p>
                         ${t.resolution_notes ? `<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:14px 16px;margin:16px 0;"><p style="margin:0 0 4px;font-weight:600;font-size:13px;color:#166534;">Resolution Notes:</p><p style="margin:0;font-size:14px;color:#333;">${t.resolution_notes}</p></div>` : ""}
                         <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:14px 16px;margin:16px 0;">
-                          <p style="margin:0;font-size:13px;color:#1e40af;">If you are still facing issues, simply <strong>reply to this email</strong> with ticket number <strong>${t.ticket_number}</strong> in the subject and your ticket will be reopened automatically.</p>
+                          <p style="margin:0;font-size:13px;color:#1e40af;">${followUpMessage}</p>
                         </div>
                         <p style="font-size:15px;margin-top:24px;">Best regards,<br/><strong>Team In-Sync</strong></p>
                       </div>
@@ -403,19 +415,19 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
               notified = true;
               await supabase.from("support_ticket_notifications").insert({
                 ticket_id: id, org_id: orgId!, channel: "email",
-                recipient: t.contact_email, subject: resolvedEmailSubject,
-                message_preview: `Ticket ${t.ticket_number} resolved notification`, status: "sent",
+                recipient: t.contact_email, subject: emailSubjectLine,
+                message_preview: `Ticket ${t.ticket_number} ${statusLabel.toLowerCase()} notification`, status: "sent",
               } as any);
             } catch (emailErr: any) {
               await supabase.from("support_ticket_notifications").insert({
                 ticket_id: id, org_id: orgId!, channel: "email",
-                recipient: t.contact_email, subject: resolvedEmailSubject,
+                recipient: t.contact_email, subject: emailSubjectLine,
                 status: "failed", error_message: emailErr?.message || "Unknown error",
               } as any);
             }
           }
           if (t.contact_phone) {
-            const waMsg = `Your ticket ${t.ticket_number} (${t.subject}) has been resolved.${t.resolution_notes ? ` Resolution: ${t.resolution_notes}` : ""}`;
+            const waMsg = `Your ticket ${t.ticket_number} (${t.subject}) has been ${statusLabel.toLowerCase()}.${t.resolution_notes ? ` Resolution: ${t.resolution_notes}` : ""}`;
             try {
               await supabase.functions.invoke("send-whatsapp-message", {
                 body: { to: t.contact_phone, message: waMsg },
