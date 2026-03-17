@@ -190,6 +190,15 @@
     ".insync-status-in_progress { background:#fef3c7; color:#92400e; }",
     ".insync-status-resolved { background:#dcfce7; color:#166534; }",
     ".insync-status-closed { background:#f3f4f6; color:#6b7280; }",
+    "",
+    ".insync-no-tickets { text-align:center; padding:24px 0; color:#6b7280; font-size:14px; }",
+    ".insync-ticket-select {",
+    "  width:100%; padding:10px 12px; border:1px solid #d1d5db; border-radius:8px;",
+    "  font-size:14px; margin-bottom:14px; outline:none; box-sizing:border-box;",
+    "  cursor:pointer; font-family:inherit; background:#fff;",
+    "  transition:border-color .2s;",
+    "}",
+    ".insync-ticket-select:focus { border-color:" + ACCENT + "; box-shadow:0 0 0 3px " + ACCENT + "22; }",
   ].join("\n");
   document.head.appendChild(style);
 
@@ -305,9 +314,21 @@
     '  </div>',
     '  <div id="insync-track-tab" style="display:none;">',
     '    <div class="dialog-body">',
-    '      <label>Ticket Number *</label>',
-    '      <input type="text" id="insync-track-input" placeholder="e.g. TKT-20260317-0001" maxlength="30" />',
-    '      <button class="btn-submit" id="insync-track-btn">Track Ticket</button>',
+    '      <div id="insync-track-email-step">',
+    '        <label>Your Email *</label>',
+    '        <input type="email" id="insync-track-email" placeholder="you@example.com" maxlength="255" />',
+    '        <button class="btn-submit" id="insync-fetch-tickets-btn">Find My Tickets</button>',
+    '      </div>',
+    '      <div id="insync-track-list-step" style="display:none;">',
+    '        <label>Select a Ticket</label>',
+    '        <select class="insync-ticket-select" id="insync-ticket-dropdown">',
+    '          <option value="">-- Select a ticket --</option>',
+    '        </select>',
+    '        <button class="btn-submit" id="insync-view-ticket-btn" disabled>View Status</button>',
+    '        <div style="margin-top:8px;text-align:center;">',
+    '          <a href="#" id="insync-track-back" style="font-size:12px;color:' + ACCENT + ';text-decoration:none;">Use a different email</a>',
+    '        </div>',
+    '      </div>',
     '      <div id="insync-track-result"></div>',
     '      <div class="working-hours-note" style="margin-top:14px;">',
     '        <strong>Working Hours:</strong> Monday to Friday, 9:00 AM - 6:00 PM IST. Resolution times are based on business hours.',
@@ -496,82 +517,138 @@
   });
 
   // Track ticket
-  var trackBtn = document.getElementById("insync-track-btn");
-  var trackInput = document.getElementById("insync-track-input");
+  var trackEmailInput = document.getElementById("insync-track-email");
+  var fetchTicketsBtn = document.getElementById("insync-fetch-tickets-btn");
+  var emailStep = document.getElementById("insync-track-email-step");
+  var listStep = document.getElementById("insync-track-list-step");
+  var ticketDropdown = document.getElementById("insync-ticket-dropdown");
+  var viewTicketBtn = document.getElementById("insync-view-ticket-btn");
+  var trackBackLink = document.getElementById("insync-track-back");
   var trackResult = document.getElementById("insync-track-result");
+  var cachedTickets = [];
 
-  trackBtn.addEventListener("click", async function () {
-    var ticketNum = trackInput.value.trim().toUpperCase();
-    if (!ticketNum) {
-      trackResult.innerHTML = '<p class="error-msg" style="margin-top:12px;">Please enter a ticket number.</p>';
+  function renderTicketDetails(t) {
+    var createdAt = new Date(t.created_at).toLocaleString("en-IN", {
+      timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short"
+    });
+
+    var resolvedRow = "";
+    if (t.resolved_at) {
+      var resolvedAt = new Date(t.resolved_at).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short"
+      });
+      resolvedRow = '<div class="insync-track-row"><span class="insync-track-label">Resolved</span><span class="insync-track-value">' + resolvedAt + '</span></div>';
+    }
+
+    var dueRow = "";
+    if (t.due_at) {
+      var dueAt = new Date(t.due_at).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short"
+      });
+      dueRow = '<div class="insync-track-row"><span class="insync-track-label">Expected By</span><span class="insync-track-value" style="color:#059669;">' + dueAt + '</span></div>';
+    }
+
+    var statusClass = "insync-status insync-status-" + t.status;
+    var statusText = t.status.replace("_", " ").toUpperCase();
+
+    trackResult.innerHTML = [
+      '<div class="insync-track-result">',
+      '  <div class="insync-track-row"><span class="insync-track-label">Ticket</span><span class="insync-track-value">' + t.ticket_number + '</span></div>',
+      '  <div class="insync-track-row"><span class="insync-track-label">Subject</span><span class="insync-track-value">' + t.subject + '</span></div>',
+      '  <div class="insync-track-row"><span class="insync-track-label">Status</span><span class="' + statusClass + '">' + statusText + '</span></div>',
+      '  <div class="insync-track-row"><span class="insync-track-label">Priority</span><span class="insync-track-value" style="text-transform:capitalize;">' + t.priority + '</span></div>',
+      '  <div class="insync-track-row"><span class="insync-track-label">Created</span><span class="insync-track-value">' + createdAt + '</span></div>',
+      dueRow,
+      resolvedRow,
+      '</div>'
+    ].join("\n");
+  }
+
+  // Step 1: Fetch tickets by email
+  fetchTicketsBtn.addEventListener("click", async function () {
+    var email = trackEmailInput.value.trim();
+    if (!email) {
+      trackResult.innerHTML = '<p class="error-msg" style="margin-top:12px;">Please enter your email address.</p>';
       return;
     }
 
-    trackBtn.disabled = true;
-    trackBtn.textContent = "Searching...";
+    fetchTicketsBtn.disabled = true;
+    fetchTicketsBtn.textContent = "Searching...";
     trackResult.innerHTML = "";
 
     try {
       var res = await fetch(TRACK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticket_number: ticketNum }),
+        body: JSON.stringify({ email: email }),
       });
       var data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || "Failed to look up ticket");
+        throw new Error(data.error || "Failed to look up tickets");
       }
 
-      if (!data.found) {
-        trackResult.innerHTML = '<p class="error-msg" style="text-align:center;padding:16px;margin-top:12px;">No ticket found: <strong>' + ticketNum + '</strong></p>';
+      cachedTickets = data.tickets || [];
+
+      if (cachedTickets.length === 0) {
+        trackResult.innerHTML = '<p class="insync-no-tickets">No tickets found for <strong>' + email + '</strong></p>';
         return;
       }
 
-      var t = data.ticket;
-      var createdAt = new Date(t.created_at).toLocaleString("en-IN", {
-        timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short"
+      // Populate dropdown
+      ticketDropdown.innerHTML = '<option value="">-- Select a ticket (' + cachedTickets.length + ' found) --</option>';
+      cachedTickets.forEach(function (t, i) {
+        var statusLabel = t.status.replace("_", " ").toUpperCase();
+        var date = new Date(t.created_at).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium" });
+        var opt = document.createElement("option");
+        opt.value = i;
+        opt.textContent = t.ticket_number + " - " + t.subject.substring(0, 30) + (t.subject.length > 30 ? "..." : "") + " [" + statusLabel + "]";
+        ticketDropdown.appendChild(opt);
       });
 
-      var resolvedRow = "";
-      if (t.resolved_at) {
-        var resolvedAt = new Date(t.resolved_at).toLocaleString("en-IN", {
-          timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short"
-        });
-        resolvedRow = '<div class="insync-track-row"><span class="insync-track-label">Resolved</span><span class="insync-track-value">' + resolvedAt + '</span></div>';
-      }
-
-      var dueRow = "";
-      if (t.due_at) {
-        var dueAt = new Date(t.due_at).toLocaleString("en-IN", {
-          timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short"
-        });
-        dueRow = '<div class="insync-track-row"><span class="insync-track-label">Expected By</span><span class="insync-track-value" style="color:#059669;">' + dueAt + '</span></div>';
-      }
-
-      var statusClass = "insync-status insync-status-" + t.status;
-      var statusText = t.status.replace("_", " ").toUpperCase();
-
-      trackResult.innerHTML = [
-        '<div class="insync-track-result">',
-        '  <div class="insync-track-row"><span class="insync-track-label">Ticket</span><span class="insync-track-value">' + t.ticket_number + '</span></div>',
-        '  <div class="insync-track-row"><span class="insync-track-label">Subject</span><span class="insync-track-value">' + t.subject + '</span></div>',
-        '  <div class="insync-track-row"><span class="insync-track-label">Status</span><span class="' + statusClass + '">' + statusText + '</span></div>',
-        '  <div class="insync-track-row"><span class="insync-track-label">Priority</span><span class="insync-track-value" style="text-transform:capitalize;">' + t.priority + '</span></div>',
-        '  <div class="insync-track-row"><span class="insync-track-label">Created</span><span class="insync-track-value">' + createdAt + '</span></div>',
-        dueRow,
-        resolvedRow,
-        '</div>'
-      ].join("\n");
+      // Show dropdown step, hide email step
+      emailStep.style.display = "none";
+      listStep.style.display = "";
+      viewTicketBtn.disabled = true;
     } catch (err) {
-      trackResult.innerHTML = '<p class="error-msg" style="margin-top:12px;">Failed to fetch ticket. Please try again.</p>';
+      trackResult.innerHTML = '<p class="error-msg" style="margin-top:12px;">Failed to fetch tickets. Please try again.</p>';
     } finally {
-      trackBtn.disabled = false;
-      trackBtn.textContent = "Track Ticket";
+      fetchTicketsBtn.disabled = false;
+      fetchTicketsBtn.textContent = "Find My Tickets";
     }
   });
 
-  trackInput.addEventListener("keydown", function (e) {
-    if (e.key === "Enter") { e.preventDefault(); trackBtn.click(); }
+  trackEmailInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); fetchTicketsBtn.click(); }
+  });
+
+  // Enable View button when a ticket is selected
+  ticketDropdown.addEventListener("change", function () {
+    var selected = ticketDropdown.value;
+    viewTicketBtn.disabled = selected === "";
+    // Auto-show details on selection
+    if (selected !== "") {
+      var t = cachedTickets[parseInt(selected)];
+      if (t) renderTicketDetails(t);
+    } else {
+      trackResult.innerHTML = "";
+    }
+  });
+
+  // View ticket details button
+  viewTicketBtn.addEventListener("click", function () {
+    var selected = ticketDropdown.value;
+    if (selected === "") return;
+    var t = cachedTickets[parseInt(selected)];
+    if (t) renderTicketDetails(t);
+  });
+
+  // Back to email step
+  trackBackLink.addEventListener("click", function (e) {
+    e.preventDefault();
+    emailStep.style.display = "";
+    listStep.style.display = "none";
+    trackResult.innerHTML = "";
+    cachedTickets = [];
   });
 })();
