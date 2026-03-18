@@ -39,8 +39,8 @@ export function useUserRole(): UserRoleResult {
         return { isAdmin: false, isSuperAdmin: false };
       }
 
-      const isAdmin = roles?.some((r) => r.role === "admin") || false;
       const isSuperAdmin = roles?.some((r) => r.role === "super_admin") || false;
+      const isAdmin = roles?.some((r) => r.role === "admin") || isSuperAdmin;
 
       return { isAdmin, isSuperAdmin };
     },

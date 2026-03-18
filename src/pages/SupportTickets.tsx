@@ -50,7 +50,7 @@ export default function SupportTickets() {
       if (error) throw error;
       return data as { id: string; first_name: string; last_name: string }[];
     },
-    enabled: !!orgId && isAdmin,
+    enabled: !!orgId,
   });
 
   const handleCreate = (data: {
@@ -234,9 +234,41 @@ export default function SupportTickets() {
                         <TableCell className="max-w-[200px] truncate font-medium">{ticket.subject}</TableCell>
                         <TableCell className="hidden sm:table-cell capitalize text-sm">{ticket.category.replace("_", " ")}</TableCell>
                         <TableCell><TicketPriorityBadge priority={ticket.priority} /></TableCell>
-                        <TableCell><TicketStatusBadge status={ticket.status} /></TableCell>
-                        <TableCell className="hidden md:table-cell text-sm">
-                          {ticket.assignee ? `${ticket.assignee.first_name} ${ticket.assignee.last_name}` : "-"}
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <Select
+                            value={ticket.status}
+                            onValueChange={(value) => handleUpdateStatus(ticket.id, value)}
+                          >
+                            <SelectTrigger className="h-7 w-[130px] text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="new">New</SelectItem>
+                              <SelectItem value="assigned">Assigned</SelectItem>
+                              <SelectItem value="in_progress">In Progress</SelectItem>
+                              <SelectItem value="awaiting_client">Awaiting Client</SelectItem>
+                              <SelectItem value="resolved">Resolved</SelectItem>
+                              <SelectItem value="closed">Closed</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell className="hidden md:table-cell text-sm" onClick={(e) => e.stopPropagation()}>
+                          <Select
+                            value={ticket.assigned_to || "unassigned"}
+                            onValueChange={(value) => handleAssign(ticket.id, value === "unassigned" ? null : value)}
+                          >
+                            <SelectTrigger className="h-7 w-[140px] text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="unassigned">Unassigned</SelectItem>
+                              {teamQuery.data?.map((member) => (
+                                <SelectItem key={member.id} value={member.id}>
+                                  {member.first_name} {member.last_name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </TableCell>
                         <TableCell className="hidden lg:table-cell text-sm text-muted-foreground">
                           {format(new Date(ticket.created_at), "MMM d, yyyy")}
