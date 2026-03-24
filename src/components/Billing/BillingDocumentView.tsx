@@ -3,7 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ChevronLeft, Download, Mail, CreditCard, Loader2, Pencil, Trash2, FileX2 } from "lucide-react";
+import { ChevronLeft, Download, Mail, CreditCard, Loader2, Pencil, Trash2, FileX2, ArrowRight } from "lucide-react";
 import { formatCurrencyINR, numberToWords, statusLabel, formatFinancialYear } from "@/utils/billingUtils";
 import { DOC_TYPE_LABELS, STATUS_COLORS } from "@/types/billing";
 import type { BillingDocument, BillingPayment, BillingSettings } from "@/types/billing";
@@ -18,9 +18,10 @@ interface BillingDocumentViewProps {
   onEdit?: (doc: BillingDocument) => void;
   onDelete?: (id: string) => void;
   onIssueCreditNote?: (doc: BillingDocument) => void;
+  onConvertToInvoice?: (doc: BillingDocument) => void;
 }
 
-export function BillingDocumentView({ doc, payments, settings, onBack, onRecordPayment, onEdit, onDelete, onIssueCreditNote }: BillingDocumentViewProps) {
+export function BillingDocumentView({ doc, payments, settings, onBack, onRecordPayment, onEdit, onDelete, onIssueCreditNote, onConvertToInvoice }: BillingDocumentViewProps) {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -80,38 +81,48 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <Button variant="ghost" size="icon" onClick={onBack}><ChevronLeft className="h-5 w-5" /></Button>
-        <div className="flex-1 min-w-0">
-          <h2 className="text-2xl font-bold">{doc.doc_number}</h2>
-          <p className="text-sm text-muted-foreground">{DOC_TYPE_LABELS[doc.doc_type]} for {doc.client_name}</p>
+      <div className="space-y-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <Button variant="ghost" size="icon" onClick={onBack}><ChevronLeft className="h-5 w-5" /></Button>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-2xl font-bold">{doc.doc_number}</h2>
+            <p className="text-sm text-muted-foreground">{DOC_TYPE_LABELS[doc.doc_type]} for {doc.client_name}</p>
+          </div>
+          <Badge variant="secondary" className={`${STATUS_COLORS[doc.status]} text-sm px-3 py-1`}>{statusLabel(doc.status)}</Badge>
+          <Button variant="outline" className="gap-1.5" onClick={handleDownloadPDF} disabled={downloading}>
+            {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            PDF
+          </Button>
+          <Button variant="outline" className="gap-1.5"><Mail className="h-4 w-4" />Email</Button>
+          {onEdit && (
+            <Button variant="outline" className="gap-1.5" onClick={() => onEdit(doc)}>
+              <Pencil className="h-4 w-4" />Edit
+            </Button>
+          )}
+          {onDelete && (
+            <Button variant="outline" className="gap-1.5 text-red-600 hover:text-red-700 hover:bg-red-50" onClick={() => setShowDeleteConfirm(true)}>
+              <Trash2 className="h-4 w-4" />Delete
+            </Button>
+          )}
         </div>
-        <Badge variant="secondary" className={`${STATUS_COLORS[doc.status]} text-sm px-3 py-1`}>{statusLabel(doc.status)}</Badge>
-        <Button variant="outline" className="gap-1.5" onClick={handleDownloadPDF} disabled={downloading}>
-          {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-          PDF
-        </Button>
-        <Button variant="outline" className="gap-1.5"><Mail className="h-4 w-4" />Email</Button>
-        {onEdit && (
-          <Button variant="outline" className="gap-1.5" onClick={() => onEdit(doc)}>
-            <Pencil className="h-4 w-4" />Edit
-          </Button>
-        )}
-        {onDelete && (
-          <Button variant="outline" className="gap-1.5 text-red-600 hover:text-red-700 hover:bg-red-50" onClick={() => setShowDeleteConfirm(true)}>
-            <Trash2 className="h-4 w-4" />Delete
-          </Button>
-        )}
-        {doc.doc_type === "invoice" && doc.status !== "cancelled" && doc.status !== "paid" && (
-          <Button className="gap-1.5 bg-emerald-600 hover:bg-emerald-700" onClick={() => setShowPaymentModal(true)}>
-            <CreditCard className="h-4 w-4" />Record Payment
-          </Button>
-        )}
-        {doc.doc_type === "invoice" && doc.status !== "cancelled" && onIssueCreditNote && (
-          <Button variant="outline" className="gap-1.5 text-red-600 hover:text-red-700 hover:bg-red-50" onClick={() => onIssueCreditNote(doc)}>
-            <FileX2 className="h-4 w-4" />Cancel & Issue Credit Note
-          </Button>
-        )}
+        {/* Workflow action buttons */}
+        <div className="flex items-center gap-3 flex-wrap pl-12">
+          {(doc.doc_type === "invoice" || doc.doc_type === "proforma") && doc.status !== "cancelled" && doc.status !== "paid" && (
+            <Button className="gap-1.5 bg-emerald-600 hover:bg-emerald-700" onClick={() => setShowPaymentModal(true)}>
+              <CreditCard className="h-4 w-4" />Record Payment
+            </Button>
+          )}
+          {doc.doc_type === "proforma" && (doc.status === "paid" || doc.status === "partially_paid") && onConvertToInvoice && (
+            <Button className="gap-1.5 bg-primary hover:bg-primary/90" onClick={() => onConvertToInvoice(doc)}>
+              <ArrowRight className="h-4 w-4" />Convert to Tax Invoice
+            </Button>
+          )}
+          {doc.doc_type === "invoice" && doc.status !== "cancelled" && onIssueCreditNote && (
+            <Button variant="outline" className="gap-1.5 text-red-600 hover:text-red-700 hover:bg-red-50" onClick={() => onIssueCreditNote(doc)}>
+              <FileX2 className="h-4 w-4" />Cancel & Issue Credit Note
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Invoice Preview */}
@@ -275,8 +286,8 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
         </div>
       </Card>
 
-      {/* Payment History for Invoices */}
-      {doc.doc_type === "invoice" && (
+      {/* Payment History for Invoices & Proformas */}
+      {(doc.doc_type === "invoice" || doc.doc_type === "proforma") && (
         <Card>
           <div className="px-5 py-4 border-b flex items-center justify-between">
             <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">Payment History</h3>

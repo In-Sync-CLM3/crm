@@ -118,8 +118,8 @@ export default function BillingSystem() {
 
   const handleDeleteDoc = useCallback((id: string) => {
     deleteDocument(id);
-    setViewDocId(null);
-  }, [deleteDocument]);
+    if (viewDocId === id) setViewDocId(null);
+  }, [deleteDocument, viewDocId]);
 
   const handleSaveDoc = useCallback((doc: BillingDocument) => {
     if (editDoc) {
@@ -172,6 +172,7 @@ export default function BillingSystem() {
           onEdit={handleEditDoc}
           onDelete={handleDeleteDoc}
           onIssueCreditNote={handleIssueCreditNote}
+          onConvertToInvoice={doc.doc_type === "proforma" ? handleConvert : undefined}
         />
       );
     }
@@ -210,6 +211,7 @@ export default function BillingSystem() {
             onCreate={() => handleCreateDoc("quotation")}
             onConvert={handleConvert}
             onConvertToInvoice={handleConvertToInvoice}
+            onDelete={handleDeleteDoc}
           />
         );
       case "proformas":
@@ -220,6 +222,7 @@ export default function BillingSystem() {
             onView={handleViewDoc}
             onCreate={() => handleCreateDoc("proforma")}
             onConvert={handleConvert}
+            onDelete={handleDeleteDoc}
           />
         );
       case "invoices":
@@ -230,6 +233,7 @@ export default function BillingSystem() {
             onView={handleViewDoc}
             onCreate={() => handleCreateDoc("invoice")}
             initialStatusFilter={invoiceStatusFilter}
+            onDelete={handleDeleteDoc}
           />
         );
       case "credit_notes":
@@ -239,6 +243,7 @@ export default function BillingSystem() {
             docType="credit_note"
             onView={handleViewDoc}
             onCreate={() => handleCreateDoc("credit_note")}
+            onDelete={handleDeleteDoc}
           />
         );
       case "payments":

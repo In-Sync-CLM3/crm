@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Search, Eye, Download, Mail, ArrowRight, IndianRupee } from "lucide-react";
+import { Plus, Search, Eye, Download, Mail, ArrowRight, IndianRupee, Trash2 } from "lucide-react";
 import { formatCurrencyINR, statusLabel } from "@/utils/billingUtils";
 import { DOC_TYPE_LABELS, DOC_TYPE_COLORS, STATUS_COLORS } from "@/types/billing";
 import type { BillingDocument, BillingDocumentType } from "@/types/billing";
@@ -16,10 +16,11 @@ interface BillingDocumentListProps {
   onCreate: () => void;
   onConvert?: (doc: BillingDocument) => void;
   onConvertToInvoice?: (doc: BillingDocument) => void;
+  onDelete?: (id: string) => void;
   initialStatusFilter?: string;
 }
 
-export function BillingDocumentList({ documents, docType, onView, onCreate, onConvert, onConvertToInvoice, initialStatusFilter }: BillingDocumentListProps) {
+export function BillingDocumentList({ documents, docType, onView, onCreate, onConvert, onConvertToInvoice, onDelete, initialStatusFilter }: BillingDocumentListProps) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState(initialStatusFilter || "all");
 
@@ -111,9 +112,19 @@ export function BillingDocumentList({ documents, docType, onView, onCreate, onCo
                           <IndianRupee className="h-4 w-4" />
                         </Button>
                       )}
-                      {docType === "proforma" && onConvert && (
-                        <Button variant="ghost" size="icon" onClick={() => onConvert(d)} title="Convert to Tax Invoice" className="text-emerald-600 hover:text-emerald-700">
+                      {docType === "proforma" && onConvert && (d.status === "paid" || d.status === "partially_paid") && (
+                        <Button variant="ghost" size="sm" onClick={() => onConvert(d)} title="Convert to Tax Invoice" className="text-emerald-600 hover:text-emerald-700 gap-1 text-xs font-semibold">
+                          <ArrowRight className="h-4 w-4" />Tax Inv.
+                        </Button>
+                      )}
+                      {docType === "proforma" && onConvert && d.status !== "paid" && d.status !== "partially_paid" && d.status !== "cancelled" && (
+                        <Button variant="ghost" size="icon" onClick={() => onConvert(d)} title="Convert to Tax Invoice" className="text-muted-foreground hover:text-emerald-600">
                           <ArrowRight className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {onDelete && (
+                        <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation(); if (window.confirm(`Delete ${d.doc_number}?`)) onDelete(d.id); }} title="Delete" className="text-muted-foreground hover:text-red-600">
+                          <Trash2 className="h-4 w-4" />
                         </Button>
                       )}
                     </div>
