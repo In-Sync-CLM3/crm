@@ -128,44 +128,42 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
       {/* Invoice Preview */}
       <Card className="p-8" ref={invoiceRef}>
         <div className="border-2 border-gray-200 rounded-xl p-8">
-          {/* Document type label - centered */}
-          <div className="text-center mb-5">
-            <div className={`inline-block px-6 py-2 rounded-lg text-sm font-bold ${
+          {/* Company Header */}
+          <div className="flex justify-between items-start mb-6">
+            <div className="flex items-start gap-4">
+              {settings.logo_url && (
+                <img src={settings.logo_url} alt="Logo" className="h-14 w-auto object-contain rounded" />
+              )}
+              <div>
+                <h3 className="text-xl font-bold text-primary">{settings.company_name || "Your Company"}</h3>
+                <p className="text-xs text-muted-foreground mt-1">{settings.company_address}</p>
+                {(settings.company_gstin || settings.company_pan) && (
+                  <p className="text-xs text-muted-foreground">
+                    {settings.company_gstin && `GSTIN: ${settings.company_gstin}`}
+                    {settings.company_gstin && settings.company_pan && " | "}
+                    {settings.company_pan && `PAN: ${settings.company_pan}`}
+                  </p>
+                )}
+                {(settings.company_email || settings.company_phone) && (
+                  <p className="text-xs text-muted-foreground">
+                    {settings.company_email && `Email: ${settings.company_email}`}
+                    {settings.company_email && settings.company_phone && " | "}
+                    {settings.company_phone && `Ph: ${settings.company_phone}`}
+                  </p>
+                )}
+                {settings.company_state && (
+                  <p className="text-xs text-muted-foreground">
+                    State: {settings.company_state}{settings.company_state_code ? ` (${settings.company_state_code})` : ""}
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className={`px-6 py-2 rounded-lg text-sm font-bold text-center ${
               doc.doc_type === "invoice" ? "bg-primary text-primary-foreground" :
               doc.doc_type === "credit_note" ? "bg-red-500 text-white" :
               doc.doc_type === "proforma" ? "bg-sky-500 text-white" : "bg-violet-500 text-white"
             }`}>
               {DOC_TYPE_LABELS[doc.doc_type]?.toUpperCase()}
-            </div>
-          </div>
-
-          {/* Company Header */}
-          <div className="flex items-start gap-4 mb-6">
-            {settings.logo_url && (
-              <img src={settings.logo_url} alt="Logo" className="h-14 w-auto object-contain rounded" />
-            )}
-            <div>
-              <h3 className="text-xl font-bold text-primary">{settings.company_name || "Your Company"}</h3>
-              <p className="text-xs text-muted-foreground mt-1">{settings.company_address}</p>
-              {(settings.company_gstin || settings.company_pan) && (
-                <p className="text-xs text-muted-foreground">
-                  {settings.company_gstin && `GSTIN: ${settings.company_gstin}`}
-                  {settings.company_gstin && settings.company_pan && " | "}
-                  {settings.company_pan && `PAN: ${settings.company_pan}`}
-                </p>
-              )}
-              {(settings.company_email || settings.company_phone) && (
-                <p className="text-xs text-muted-foreground">
-                  {settings.company_email && `Email: ${settings.company_email}`}
-                  {settings.company_email && settings.company_phone && " | "}
-                  {settings.company_phone && `Ph: ${settings.company_phone}`}
-                </p>
-              )}
-              {settings.company_state && (
-                <p className="text-xs text-muted-foreground">
-                  State: {settings.company_state}{settings.company_state_code ? ` (${settings.company_state_code})` : ""}
-                </p>
-              )}
             </div>
           </div>
           <div className="h-px bg-primary mb-6" />
