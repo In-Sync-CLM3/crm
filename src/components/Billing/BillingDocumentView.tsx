@@ -158,7 +158,7 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
                 )}
               </div>
             </div>
-            <div className={`px-6 py-2 rounded-lg text-sm font-bold text-center ${
+            <div className={`shrink-0 self-start px-6 py-2 rounded-lg text-sm font-bold text-center whitespace-nowrap ${
               doc.doc_type === "invoice" ? "bg-primary text-primary-foreground" :
               doc.doc_type === "credit_note" ? "bg-red-500 text-white" :
               doc.doc_type === "proforma" ? "bg-sky-500 text-white" : "bg-violet-500 text-white"
