@@ -303,6 +303,7 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
                 <TableRow>
                   <TableHead>Date</TableHead>
                   <TableHead className="text-right">Amount</TableHead>
+                  <TableHead className="text-right">TDS</TableHead>
                   <TableHead>Mode</TableHead>
                   <TableHead>Reference</TableHead>
                   <TableHead>Notes</TableHead>
@@ -313,6 +314,7 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
                   <TableRow key={p.id}>
                     <TableCell>{p.payment_date}</TableCell>
                     <TableCell className="text-right font-semibold text-emerald-600">{formatCurrencyINR(p.amount)}</TableCell>
+                    <TableCell className="text-right text-muted-foreground">{p.tds_amount ? formatCurrencyINR(p.tds_amount) : "—"}</TableCell>
                     <TableCell className="capitalize">{p.payment_mode?.replace(/_/g, " ")}</TableCell>
                     <TableCell className="font-mono text-muted-foreground">{p.reference_number || "—"}</TableCell>
                     <TableCell className="text-muted-foreground">{p.notes || "—"}</TableCell>

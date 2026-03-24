@@ -12,22 +12,28 @@ interface RecordPaymentDialogProps {
   open: boolean;
   onClose: () => void;
   doc: BillingDocument;
-  onRecordPayment: (payment: { document_id: string; amount: number; payment_date: string; payment_mode: string; reference_number: string; notes: string; org_id: string }) => void;
+  onRecordPayment: (payment: { document_id: string; amount: number; tds_amount: number; payment_date: string; payment_mode: string; reference_number: string; notes: string; org_id: string }) => void;
 }
 
 export function RecordPaymentDialog({ open, onClose, doc, onRecordPayment }: RecordPaymentDialogProps) {
   const [form, setForm] = useState({
     payment_date: new Date().toISOString().split("T")[0],
     amount: String(doc.balance_due),
+    tds_amount: "0",
     payment_mode: "bank_transfer",
     reference_number: "",
     notes: "",
   });
 
+  const amountReceived = parseFloat(form.amount) || 0;
+  const tdsAmount = parseFloat(form.tds_amount) || 0;
+  const totalSettled = amountReceived + tdsAmount;
+
   const handleSubmit = () => {
     onRecordPayment({
       document_id: doc.id,
-      amount: parseFloat(form.amount) || 0,
+      amount: amountReceived,
+      tds_amount: tdsAmount,
       payment_date: form.payment_date,
       payment_mode: form.payment_mode,
       reference_number: form.reference_number,
@@ -56,8 +62,18 @@ export function RecordPaymentDialog({ open, onClose, doc, onRecordPayment }: Rec
             <Input type="date" value={form.payment_date} onChange={e => setForm({ ...form, payment_date: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <Label>Amount <span className="text-red-500">*</span></Label>
+            <Label>Amount Received <span className="text-red-500">*</span></Label>
             <Input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>TDS Deducted</Label>
+            <Input type="number" value={form.tds_amount} onChange={e => setForm({ ...form, tds_amount: e.target.value })} placeholder="0" />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Total Settled</Label>
+            <div className="h-10 flex items-center px-3 rounded-md border bg-muted/30 text-sm font-semibold">
+              {formatCurrencyINR(totalSettled)}
+            </div>
           </div>
           <div className="space-y-1.5">
             <Label>Payment Mode</Label>

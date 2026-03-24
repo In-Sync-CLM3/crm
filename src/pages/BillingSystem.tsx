@@ -34,7 +34,7 @@ export default function BillingSystem() {
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<string | undefined>(undefined);
 
   const {
-    documents, payments, settings,
+    documents, payments, settings, loading: billingLoading,
     addDocument, updateDocument, deleteDocument, convertDocument,
     recordPayment, updateSettings, getDocumentPayments, getNextDocNumber,
     issueCreditNote,
@@ -150,7 +150,7 @@ export default function BillingSystem() {
     recordPayment(payment as any);
   }, [recordPayment]);
 
-  if (clientsLoading) {
+  if (clientsLoading || billingLoading) {
     return (
       <DashboardLayout>
         <LoadingState message="Loading billing data..." />

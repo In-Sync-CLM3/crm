@@ -86,6 +86,7 @@ export interface BillingPayment {
   document_id: string;
   payment_date: string;
   amount: number;
+  tds_amount?: number;
   payment_mode: PaymentMethod;
   reference_number?: string;
   notes?: string;

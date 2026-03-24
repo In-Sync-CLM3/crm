@@ -29,13 +29,14 @@ export function BillingPaymentsList({ payments, documents }: BillingPaymentsList
               <TableHead>Invoice #</TableHead>
               <TableHead>Client</TableHead>
               <TableHead className="text-right">Amount</TableHead>
+              <TableHead className="text-right">TDS</TableHead>
               <TableHead>Mode</TableHead>
               <TableHead>Reference</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {enriched.length === 0 ? (
-              <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground py-8">No payments recorded yet. Record payments from Tax Invoice views.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-8">No payments recorded yet. Record payments from Tax Invoice views.</TableCell></TableRow>
             ) : (
               enriched.map(p => (
                 <TableRow key={p.id}>
@@ -43,6 +44,7 @@ export function BillingPaymentsList({ payments, documents }: BillingPaymentsList
                   <TableCell className="font-semibold text-primary">{p.doc_number}</TableCell>
                   <TableCell>{p.client_name}</TableCell>
                   <TableCell className="text-right font-bold text-emerald-600">{formatCurrencyINR(p.amount)}</TableCell>
+                  <TableCell className="text-right text-muted-foreground">{p.tds_amount ? formatCurrencyINR(p.tds_amount) : "—"}</TableCell>
                   <TableCell className="capitalize">{p.payment_mode?.replace(/_/g, " ")}</TableCell>
                   <TableCell className="font-mono text-muted-foreground">{p.reference_number || "—"}</TableCell>
                 </TableRow>
