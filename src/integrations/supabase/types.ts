@@ -89,6 +89,330 @@ export type Database = {
           },
         ]
       }
+      billing_document_items: {
+        Row: {
+          id: string
+          document_id: string
+          description: string
+          hsn_sac: string | null
+          qty: number
+          unit: string | null
+          rate: number
+          discount: number | null
+          tax_rate: number | null
+          taxable: number | null
+          cgst: number | null
+          sgst: number | null
+          igst: number | null
+          total: number | null
+          sort_order: number | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          document_id: string
+          description: string
+          hsn_sac?: string | null
+          qty?: number
+          unit?: string | null
+          rate?: number
+          discount?: number | null
+          tax_rate?: number | null
+          taxable?: number | null
+          cgst?: number | null
+          sgst?: number | null
+          igst?: number | null
+          total?: number | null
+          sort_order?: number | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          document_id?: string
+          description?: string
+          hsn_sac?: string | null
+          qty?: number
+          unit?: string | null
+          rate?: number
+          discount?: number | null
+          tax_rate?: number | null
+          taxable?: number | null
+          cgst?: number | null
+          sgst?: number | null
+          igst?: number | null
+          total?: number | null
+          sort_order?: number | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "billing_document_items_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "billing_documents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      billing_documents: {
+        Row: {
+          id: string
+          org_id: string
+          doc_type: string
+          doc_number: string
+          client_id: string | null
+          client_name: string
+          doc_date: string
+          due_date: string | null
+          financial_year: string | null
+          supply_type: string | null
+          subtotal: number
+          total_tax: number
+          total_amount: number
+          amount_paid: number | null
+          balance_due: number
+          status: string | null
+          notes: string | null
+          terms_and_conditions: string | null
+          original_invoice_id: string | null
+          original_invoice_number: string | null
+          created_at: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          doc_type: string
+          doc_number: string
+          client_id?: string | null
+          client_name: string
+          doc_date: string
+          due_date?: string | null
+          financial_year?: string | null
+          supply_type?: string | null
+          subtotal?: number
+          total_tax?: number
+          total_amount?: number
+          amount_paid?: number | null
+          balance_due?: number
+          status?: string | null
+          notes?: string | null
+          terms_and_conditions?: string | null
+          original_invoice_id?: string | null
+          original_invoice_number?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          doc_type?: string
+          doc_number?: string
+          client_id?: string | null
+          client_name?: string
+          doc_date?: string
+          due_date?: string | null
+          financial_year?: string | null
+          supply_type?: string | null
+          subtotal?: number
+          total_tax?: number
+          total_amount?: number
+          amount_paid?: number | null
+          balance_due?: number
+          status?: string | null
+          notes?: string | null
+          terms_and_conditions?: string | null
+          original_invoice_id?: string | null
+          original_invoice_number?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "billing_documents_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      billing_payments: {
+        Row: {
+          id: string
+          org_id: string
+          document_id: string
+          payment_date: string
+          amount: number
+          tds_amount: number | null
+          payment_mode: string | null
+          reference_number: string | null
+          notes: string | null
+          created_by: string | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          document_id: string
+          payment_date: string
+          amount: number
+          tds_amount?: number | null
+          payment_mode?: string | null
+          reference_number?: string | null
+          notes?: string | null
+          created_by?: string | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          document_id?: string
+          payment_date?: string
+          amount?: number
+          tds_amount?: number | null
+          payment_mode?: string | null
+          reference_number?: string | null
+          notes?: string | null
+          created_by?: string | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "billing_payments_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "billing_documents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "billing_payments_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      billing_settings: {
+        Row: {
+          id: string
+          org_id: string
+          company_name: string | null
+          company_gstin: string | null
+          company_pan: string | null
+          company_state: string | null
+          company_state_code: string | null
+          company_address: string | null
+          company_email: string | null
+          company_phone: string | null
+          bank_name: string | null
+          bank_account_number: string | null
+          bank_ifsc: string | null
+          bank_branch: string | null
+          bank_upi_id: string | null
+          default_terms: string | null
+          default_quotation_terms: string | null
+          default_proforma_terms: string | null
+          default_credit_note_terms: string | null
+          default_tax_rate: number | null
+          default_due_days: number | null
+          default_hsn: string | null
+          invoice_prefix: string | null
+          quotation_prefix: string | null
+          proforma_prefix: string | null
+          credit_note_prefix: string | null
+          next_invoice_number: number | null
+          next_quotation_number: number | null
+          next_proforma_number: number | null
+          next_credit_note_number: number | null
+          logo_url: string | null
+          signature_url: string | null
+          created_at: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          company_name?: string | null
+          company_gstin?: string | null
+          company_pan?: string | null
+          company_state?: string | null
+          company_state_code?: string | null
+          company_address?: string | null
+          company_email?: string | null
+          company_phone?: string | null
+          bank_name?: string | null
+          bank_account_number?: string | null
+          bank_ifsc?: string | null
+          bank_branch?: string | null
+          bank_upi_id?: string | null
+          default_terms?: string | null
+          default_quotation_terms?: string | null
+          default_proforma_terms?: string | null
+          default_credit_note_terms?: string | null
+          default_tax_rate?: number | null
+          default_due_days?: number | null
+          default_hsn?: string | null
+          invoice_prefix?: string | null
+          quotation_prefix?: string | null
+          proforma_prefix?: string | null
+          credit_note_prefix?: string | null
+          next_invoice_number?: number | null
+          next_quotation_number?: number | null
+          next_proforma_number?: number | null
+          next_credit_note_number?: number | null
+          logo_url?: string | null
+          signature_url?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          org_id?: string
+          company_name?: string | null
+          company_gstin?: string | null
+          company_pan?: string | null
+          company_state?: string | null
+          company_state_code?: string | null
+          company_address?: string | null
+          company_email?: string | null
+          company_phone?: string | null
+          bank_name?: string | null
+          bank_account_number?: string | null
+          bank_ifsc?: string | null
+          bank_branch?: string | null
+          bank_upi_id?: string | null
+          default_terms?: string | null
+          default_quotation_terms?: string | null
+          default_proforma_terms?: string | null
+          default_credit_note_terms?: string | null
+          default_tax_rate?: number | null
+          default_due_days?: number | null
+          default_hsn?: string | null
+          invoice_prefix?: string | null
+          quotation_prefix?: string | null
+          proforma_prefix?: string | null
+          credit_note_prefix?: string | null
+          next_invoice_number?: number | null
+          next_quotation_number?: number | null
+          next_proforma_number?: number | null
+          next_credit_note_number?: number | null
+          logo_url?: string | null
+          signature_url?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "billing_settings_org_id_fkey"
+            columns: ["org_id"]
+            isOneToOne: true
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_call_sessions: {
         Row: {
           agent_id: string
