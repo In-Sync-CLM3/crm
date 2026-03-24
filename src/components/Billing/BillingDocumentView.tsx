@@ -128,38 +128,37 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
       {/* Invoice Preview */}
       <Card className="p-8" ref={invoiceRef}>
         <div className="border-2 border-gray-200 rounded-xl p-8">
-          {/* Company Header */}
-          <div className="flex justify-between items-start mb-6">
-            <div className="flex items-start gap-4">
-              {settings.logo_url && (
-                <img src={settings.logo_url} alt="Logo" className="h-14 w-auto object-contain rounded" />
+          {/* Company Header with centered doc type label */}
+          <div className="relative flex items-start gap-4 mb-6">
+            {settings.logo_url && (
+              <img src={settings.logo_url} alt="Logo" className="h-14 w-auto object-contain rounded" />
+            )}
+            <div className="flex-1">
+              <h3 className="text-xl font-bold text-primary">{settings.company_name || "Your Company"}</h3>
+              <p className="text-xs text-muted-foreground mt-1">{settings.company_address}</p>
+              {(settings.company_gstin || settings.company_pan) && (
+                <p className="text-xs text-muted-foreground">
+                  {settings.company_gstin && `GSTIN: ${settings.company_gstin}`}
+                  {settings.company_gstin && settings.company_pan && " | "}
+                  {settings.company_pan && `PAN: ${settings.company_pan}`}
+                </p>
               )}
-              <div>
-                <h3 className="text-xl font-bold text-primary">{settings.company_name || "Your Company"}</h3>
-                <p className="text-xs text-muted-foreground mt-1">{settings.company_address}</p>
-                {(settings.company_gstin || settings.company_pan) && (
-                  <p className="text-xs text-muted-foreground">
-                    {settings.company_gstin && `GSTIN: ${settings.company_gstin}`}
-                    {settings.company_gstin && settings.company_pan && " | "}
-                    {settings.company_pan && `PAN: ${settings.company_pan}`}
-                  </p>
-                )}
-                {(settings.company_email || settings.company_phone) && (
-                  <p className="text-xs text-muted-foreground">
-                    {settings.company_email && `Email: ${settings.company_email}`}
-                    {settings.company_email && settings.company_phone && " | "}
-                    {settings.company_phone && `Ph: ${settings.company_phone}`}
-                  </p>
-                )}
-                {settings.company_state && (
-                  <p className="text-xs text-muted-foreground">
-                    State: {settings.company_state}{settings.company_state_code ? ` (${settings.company_state_code})` : ""}
-                  </p>
-                )}
-              </div>
+              {(settings.company_email || settings.company_phone) && (
+                <p className="text-xs text-muted-foreground">
+                  {settings.company_email && `Email: ${settings.company_email}`}
+                  {settings.company_email && settings.company_phone && " | "}
+                  {settings.company_phone && `Ph: ${settings.company_phone}`}
+                </p>
+              )}
+              {settings.company_state && (
+                <p className="text-xs text-muted-foreground">
+                  State: {settings.company_state}{settings.company_state_code ? ` (${settings.company_state_code})` : ""}
+                </p>
+              )}
             </div>
-            <div className="text-right">
-              <div className={`inline-block px-4 py-1.5 rounded-lg text-sm font-bold ${
+            {/* Centered doc type label */}
+            <div className="absolute inset-x-0 top-0 flex justify-center pointer-events-none">
+              <div className={`pointer-events-auto px-6 py-2 rounded-lg text-sm font-bold ${
                 doc.doc_type === "invoice" ? "bg-primary text-primary-foreground" :
                 doc.doc_type === "credit_note" ? "bg-red-500 text-white" :
                 doc.doc_type === "proforma" ? "bg-sky-500 text-white" : "bg-violet-500 text-white"
@@ -244,6 +243,20 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
               )}
               <div className="h-px bg-border my-2" />
               <div className="flex justify-between text-base font-bold text-primary"><span>Grand Total</span><span>{formatCurrencyINR(doc.total_amount)}</span></div>
+              {(() => {
+                const totalTds = payments.reduce((sum, p) => sum + (p.tds_amount || 0), 0);
+                if (totalTds > 0) {
+                  const netPayable = doc.total_amount - totalTds;
+                  return (
+                    <>
+                      <div className="h-px bg-border my-2" />
+                      <div className="flex justify-between text-sm"><span className="text-muted-foreground">Less: TDS Deducted</span><span className="text-red-600">-{formatCurrencyINR(totalTds)}</span></div>
+                      <div className="flex justify-between text-base font-bold text-emerald-700"><span>Net Payable</span><span>{formatCurrencyINR(Math.max(0, netPayable))}</span></div>
+                    </>
+                  );
+                }
+                return null;
+              })()}
             </div>
           </div>
 
