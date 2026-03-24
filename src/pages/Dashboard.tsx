@@ -295,14 +295,14 @@ export default function Dashboard() {
     enabled: !!effectiveOrgId,
   });
 
-  // Fetch billing_payments (new billing system) for the date range
+  // Fetch billing_payments with parent document details for the date range
   const { data: billingPaymentsData, isLoading: billingPaymentsLoading } = useQuery({
     queryKey: ["billing-payments-stats", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
       const { data, error } = await supabase
         .from("billing_payments")
-        .select("amount, tds_amount, payment_date, document_id")
+        .select("id, amount, tds_amount, payment_date, document_id, billing_documents(doc_number, doc_type, client_name, subtotal, total_tax, total_amount, doc_date)")
         .eq("org_id", effectiveOrgId)
         .gte("payment_date", format(dateRange.from, "yyyy-MM-dd"))
         .lte("payment_date", format(dateRange.to, "yyyy-MM-dd"));
@@ -355,12 +355,9 @@ export default function Dashboard() {
 
   // Normalize billing_payments for received/TDS drill-downs
   const normalizedBillingPayments = useMemo(() => {
-    if (!billingPaymentsData || !billingDocsData) return [];
-    // Map payments to their parent document for display
-    const docMap: Record<string, any> = {};
-    (billingDocsData || []).forEach((d: any) => { docMap[d.id] = d; });
+    if (!billingPaymentsData) return [];
     return billingPaymentsData.map((p: any) => {
-      const doc = docMap[p.document_id] || {};
+      const doc = p.billing_documents || {};
       return {
         id: p.id || Math.random().toString(),
         invoice_number: doc.doc_number || "—",
@@ -373,12 +370,11 @@ export default function Dashboard() {
         document_type: doc.doc_type === "proforma" ? "proforma" : "invoice",
         net_received_amount: Number(p.amount || 0),
         actual_payment_received: Number(p.amount || 0),
-        client_id: doc.client_id,
         clients: { first_name: doc.client_name || "", last_name: "", company: doc.client_name || "" },
         _source: "billing",
       };
     });
-  }, [billingPaymentsData, billingDocsData]);
+  }, [billingPaymentsData]);
 
   // Combined revenue data — merges legacy client_invoices + new billing_documents
   const revenueData = useMemo(() => {
