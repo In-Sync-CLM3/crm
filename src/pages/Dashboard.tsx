@@ -518,6 +518,36 @@ export default function Dashboard() {
         }
       });
 
+      // Also fetch billing_documents for this year (exclude draft/cancelled)
+      const { data: billingDocs, error: billingError } = await supabase
+        .from("billing_documents")
+        .select("id, doc_number, doc_type, client_name, subtotal, total_tax, total_amount, amount_paid, balance_due, status, doc_date")
+        .eq("org_id", effectiveOrgId)
+        .in("doc_type", ["invoice", "proforma"])
+        .neq("status", "draft")
+        .neq("status", "cancelled")
+        .gte("doc_date", startOfYear)
+        .lte("doc_date", endOfYear);
+      if (billingError) throw billingError;
+
+      // Normalize billing_documents to client_invoices shape and merge
+      (billingDocs || []).forEach((doc: any) => {
+        allInvoices.push({
+          id: doc.id,
+          invoice_number: doc.doc_number,
+          amount: Number(doc.subtotal || 0),
+          tax_amount: Number(doc.total_tax || 0),
+          status: doc.status === "sent" ? "pending" : doc.status,
+          invoice_date: doc.doc_date,
+          payment_received_date: doc.status === "paid" ? doc.doc_date : null,
+          document_type: doc.doc_type,
+          net_received_amount: doc.amount_paid ? Number(doc.amount_paid) : null,
+          actual_payment_received: doc.amount_paid ? Number(doc.amount_paid) : null,
+          clients: { id: null, first_name: doc.client_name, last_name: "", company: doc.client_name },
+          _source: "billing",
+        });
+      });
+
       return allInvoices;
     },
     enabled: !!effectiveOrgId,
