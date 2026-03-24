@@ -103,22 +103,22 @@ export function BillingDocumentList({ documents, docType, onView, onCreate, onCo
                       <Button variant="ghost" size="icon" title="Download PDF" onClick={() => onView(d.id)}><Download className="h-4 w-4" /></Button>
                       <Button variant="ghost" size="icon" title="Send Email"><Mail className="h-4 w-4" /></Button>
                       {docType === "quotation" && onConvert && (
-                        <Button variant="ghost" size="icon" onClick={() => onConvert(d)} title="Convert to Proforma" className="text-sky-600 hover:text-sky-700">
+                        <Button variant="ghost" size="icon" onClick={() => { if (window.confirm(`Convert ${d.doc_number} to Proforma Invoice?`)) onConvert(d); }} title="Convert to Proforma" className="text-sky-600 hover:text-sky-700">
                           <ArrowRight className="h-4 w-4" />
                         </Button>
                       )}
                       {docType === "quotation" && onConvertToInvoice && (
-                        <Button variant="ghost" size="icon" onClick={() => onConvertToInvoice(d)} title="Convert to Tax Invoice" className="text-emerald-600 hover:text-emerald-700">
+                        <Button variant="ghost" size="icon" onClick={() => { if (window.confirm(`Convert ${d.doc_number} to Tax Invoice?`)) onConvertToInvoice(d); }} title="Convert to Tax Invoice" className="text-emerald-600 hover:text-emerald-700">
                           <IndianRupee className="h-4 w-4" />
                         </Button>
                       )}
                       {docType === "proforma" && onConvert && (d.status === "paid" || d.status === "partially_paid") && (
-                        <Button variant="ghost" size="sm" onClick={() => onConvert(d)} title="Convert to Tax Invoice" className="text-emerald-600 hover:text-emerald-700 gap-1 text-xs font-semibold">
+                        <Button variant="ghost" size="sm" onClick={() => { if (window.confirm(`Convert ${d.doc_number} to Tax Invoice?`)) onConvert(d); }} title="Convert to Tax Invoice" className="text-emerald-600 hover:text-emerald-700 gap-1 text-xs font-semibold">
                           <ArrowRight className="h-4 w-4" />Tax Inv.
                         </Button>
                       )}
                       {docType === "proforma" && onConvert && d.status !== "paid" && d.status !== "partially_paid" && d.status !== "cancelled" && (
-                        <Button variant="ghost" size="icon" onClick={() => onConvert(d)} title="Convert to Tax Invoice" className="text-muted-foreground hover:text-emerald-600">
+                        <Button variant="ghost" size="icon" onClick={() => { if (window.confirm(`Convert ${d.doc_number} to Tax Invoice?`)) onConvert(d); }} title="Convert to Tax Invoice" className="text-muted-foreground hover:text-emerald-600">
                           <ArrowRight className="h-4 w-4" />
                         </Button>
                       )}
