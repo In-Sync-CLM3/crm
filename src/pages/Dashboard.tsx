@@ -285,6 +285,8 @@ export default function Dashboard() {
         .select("doc_type, doc_number, client_name, doc_date, total_amount, total_tax, subtotal, amount_paid, balance_due, status")
         .eq("org_id", effectiveOrgId)
         .in("doc_type", ["invoice", "proforma"])
+        .neq("status", "draft")
+        .neq("status", "cancelled")
         .gte("doc_date", format(dateRange.from, "yyyy-MM-dd"))
         .lte("doc_date", format(dateRange.to, "yyyy-MM-dd"));
       if (error) throw error;
@@ -558,7 +560,7 @@ export default function Dashboard() {
       totalReceived += actualReceived;
     });
 
-    // --- New billing_documents ---
+    // --- New billing_documents (excludes draft/cancelled via query) ---
     const billingDocs = billingDocsData || [];
     billingDocs.forEach((doc: any) => {
       const amt = Number(doc.total_amount || 0);
@@ -566,6 +568,8 @@ export default function Dashboard() {
       if (doc.status !== "paid") {
         totalPending += Number(doc.balance_due || amt);
       }
+      // GST is liable when invoice is raised (sent or paid)
+      totalGST += Number(doc.total_tax || 0);
     });
 
     // New billing_payments
@@ -573,13 +577,6 @@ export default function Dashboard() {
     billingPays.forEach((p: any) => {
       totalReceived += Number(p.amount || 0);
       totalTDS += Number(p.tds_amount || 0);
-    });
-
-    // GST from paid billing_documents in date range
-    billingDocs.forEach((doc: any) => {
-      if (doc.status === "paid") {
-        totalGST += Number(doc.total_tax || 0);
-      }
     });
 
     return { totalInvoiced, totalReceived, totalPending, totalGST, totalTDS, dueToDept };
