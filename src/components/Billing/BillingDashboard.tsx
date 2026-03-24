@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
 import { TrendingUp, Clock, AlertTriangle, IndianRupee, Plus, FileX2 } from "lucide-react";
 import { formatCurrencyINR, statusLabel } from "@/utils/billingUtils";
@@ -41,12 +42,17 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
     creditNotes.reduce((s, d) => s + d.total_amount, 0),
   [creditNotes]);
 
-  // This month: all invoices + proformas generated this month
-  const thisMonth = useMemo(() => {
+  // This month: invoices generated this month (exclude draft/cancelled)
+  const thisMonthPrefix = useMemo(() => {
     const now = new Date();
-    const prefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    return billable.filter(d => d.doc_date?.startsWith(prefix)).reduce((s, d) => s + d.total_amount, 0);
-  }, [billable]);
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  }, []);
+  const thisMonthDocs = useMemo(() =>
+    invoices.filter(d => d.doc_date?.startsWith(thisMonthPrefix) && !["draft", "cancelled"].includes(d.status)),
+  [invoices, thisMonthPrefix]);
+  const thisMonth = useMemo(() =>
+    thisMonthDocs.reduce((s, d) => s + d.total_amount, 0),
+  [thisMonthDocs]);
 
   // Monthly data for bar chart — includes both invoices and proformas
   const monthlyData = useMemo(() => {
@@ -81,11 +87,23 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
 
   const thisMonthLabel = new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" });
 
+  // Document lists for each card dialog
+  const cardDocMap = useMemo<Record<string, BillingDocument[]>>(() => ({
+    paid: invoices.filter(d => d.status === "paid"),
+    sent: invoices.filter(d => ["sent", "partially_paid"].includes(d.status)),
+    overdue: invoices.filter(d => d.status === "overdue"),
+    this_month: thisMonthDocs,
+    credit_notes: creditNotes,
+  }), [invoices, thisMonthDocs, creditNotes]);
+
+  const [dialogCard, setDialogCard] = useState<string | null>(null);
+  const dialogDocs = dialogCard ? (cardDocMap[dialogCard] || []) : [];
+
   const kpiCards = [
     { label: "Total Revenue", value: formatCurrencyINR(totalRevenue), sub: "Paid invoices", icon: TrendingUp, color: "text-emerald-600", bg: "bg-emerald-50", filter: "paid" },
     { label: "Outstanding", value: formatCurrencyINR(outstanding), sub: `${invoices.filter(d => ["sent", "partially_paid"].includes(d.status)).length} invoices`, icon: Clock, color: "text-amber-600", bg: "bg-amber-50", filter: "sent" },
     { label: "Overdue", value: formatCurrencyINR(overdue), sub: `${invoices.filter(d => d.status === "overdue").length} invoices`, icon: AlertTriangle, color: "text-red-600", bg: "bg-red-50", filter: "overdue" },
-    { label: "This Month", value: formatCurrencyINR(thisMonth), sub: thisMonthLabel, icon: IndianRupee, color: "text-blue-600", bg: "bg-blue-50", filter: "all" },
+    { label: "This Month", value: formatCurrencyINR(thisMonth), sub: thisMonthLabel, icon: IndianRupee, color: "text-blue-600", bg: "bg-blue-50", filter: "this_month" },
     { label: "Credit Notes", value: formatCurrencyINR(totalCreditNotes), sub: `${creditNotes.length} issued`, icon: FileX2, color: "text-red-600", bg: "bg-red-50", filter: "credit_notes" },
   ];
 
@@ -105,7 +123,7 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
           <Card
             key={card.label}
             className="p-5 cursor-pointer transition-shadow hover:shadow-md hover:ring-1 hover:ring-border"
-            onClick={() => onCardClick?.(card.filter)}
+            onClick={() => setDialogCard(card.filter)}
           >
             <div className="flex items-start justify-between">
               <div>
@@ -202,6 +220,52 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
           </Table>
         </CardContent>
       </Card>
+
+      {/* Card Detail Dialog */}
+      <Dialog open={!!dialogCard} onOpenChange={(o) => !o && setDialogCard(null)}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="text-base">
+              {kpiCards.find(c => c.filter === dialogCard)?.label} ({dialogDocs.length})
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              {dialogCard === "this_month" ? thisMonthLabel : "All matching invoices"}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto">
+            {dialogDocs.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">No records found.</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs">Doc #</TableHead>
+                    <TableHead className="text-xs">Client</TableHead>
+                    <TableHead className="text-xs">Date</TableHead>
+                    <TableHead className="text-xs text-right">Amount</TableHead>
+                    <TableHead className="text-xs">Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {dialogDocs.map(d => (
+                    <TableRow
+                      key={d.id}
+                      className="cursor-pointer hover:bg-muted/50 h-8"
+                      onClick={() => { setDialogCard(null); onViewDocument(d.id); }}
+                    >
+                      <TableCell className="text-xs font-medium text-primary">{d.doc_number}</TableCell>
+                      <TableCell className="text-xs">{d.client_name || "-"}</TableCell>
+                      <TableCell className="text-xs">{d.doc_date}</TableCell>
+                      <TableCell className="text-xs text-right font-medium">{formatCurrencyINR(d.total_amount)}</TableCell>
+                      <TableCell><Badge variant="secondary" className={`text-xs ${STATUS_COLORS[d.status]}`}>{statusLabel(d.status)}</Badge></TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
