@@ -331,8 +331,64 @@ export default function Dashboard() {
 
   const revenueLoading = invoicedLoading || paymentsLoading || billingDocsLoading || billingPaymentsLoading;
 
-  // Combined revenue data for charts (using invoiced data)
-  const revenueData = invoicedData;
+  // Normalize billing_documents to match client_invoices shape for unified display
+  const normalizedBillingDocs = useMemo(() => {
+    if (!billingDocsData) return [];
+    return billingDocsData.map((doc: any) => ({
+      id: doc.id || Math.random().toString(),
+      invoice_number: doc.doc_number,
+      amount: Number(doc.subtotal || 0),
+      tax_amount: Number(doc.total_tax || 0),
+      tds_amount: 0,
+      status: doc.status === "sent" ? "pending" : doc.status,
+      invoice_date: doc.doc_date,
+      payment_received_date: doc.status === "paid" ? doc.doc_date : null,
+      due_date: doc.due_date,
+      document_type: doc.doc_type === "proforma" ? "proforma" : "invoice",
+      net_received_amount: doc.amount_paid ? Number(doc.amount_paid) : null,
+      actual_payment_received: doc.amount_paid ? Number(doc.amount_paid) : null,
+      client_id: doc.client_id,
+      clients: { first_name: doc.client_name, last_name: "", company: doc.client_name },
+      _source: "billing",
+    }));
+  }, [billingDocsData]);
+
+  // Normalize billing_payments for received/TDS drill-downs
+  const normalizedBillingPayments = useMemo(() => {
+    if (!billingPaymentsData || !billingDocsData) return [];
+    // Map payments to their parent document for display
+    const docMap: Record<string, any> = {};
+    (billingDocsData || []).forEach((d: any) => { docMap[d.id] = d; });
+    return billingPaymentsData.map((p: any) => {
+      const doc = docMap[p.document_id] || {};
+      return {
+        id: p.id || Math.random().toString(),
+        invoice_number: doc.doc_number || "—",
+        amount: Number(doc.subtotal || 0),
+        tax_amount: Number(doc.total_tax || 0),
+        tds_amount: Number(p.tds_amount || 0),
+        status: "paid",
+        invoice_date: doc.doc_date || p.payment_date,
+        payment_received_date: p.payment_date,
+        document_type: doc.doc_type === "proforma" ? "proforma" : "invoice",
+        net_received_amount: Number(p.amount || 0),
+        actual_payment_received: Number(p.amount || 0),
+        client_id: doc.client_id,
+        clients: { first_name: doc.client_name || "", last_name: "", company: doc.client_name || "" },
+        _source: "billing",
+      };
+    });
+  }, [billingPaymentsData, billingDocsData]);
+
+  // Combined revenue data — merges legacy client_invoices + new billing_documents
+  const revenueData = useMemo(() => {
+    return [...(invoicedData || []), ...normalizedBillingDocs];
+  }, [invoicedData, normalizedBillingDocs]);
+
+  // Combined payments data — merges legacy paid invoices + new billing_payments
+  const mergedPaymentsData = useMemo(() => {
+    return [...(paymentsData || []), ...normalizedBillingPayments];
+  }, [paymentsData, normalizedBillingPayments]);
 
   // Fetch all-time paid invoices for total GST collected (used for Due to Dept calculation)
   const { data: allPaidInvoicesGst } = useQuery({
@@ -526,61 +582,41 @@ export default function Dashboard() {
     return totalCollectedAllTime - totalPaidToDept;
   }, [allPaidInvoicesGst, allBillingPaidGst, gstPaymentTracking]);
 
-  // Process revenue stats - invoiced/pending from invoice_date, payments from payment_received_date
+  // Process revenue stats from unified merged data
   const revenueStats: RevenueStats = useMemo(() => {
-    // --- Legacy client_invoices ---
-    const invoicesOnly = invoicedData || [];
     let totalInvoiced = 0;
     let totalPending = 0;
 
-    invoicesOnly.forEach((invoice: any) => {
-      const amount = invoice.amount || 0;
-      const taxAmount = invoice.tax_amount || 0;
+    // Total Invoiced & Pending from merged revenueData (legacy + billing_documents)
+    (revenueData || []).forEach((inv: any) => {
+      const amount = inv.amount || 0;
+      const taxAmount = inv.tax_amount || 0;
       const totalAmount = amount + taxAmount;
       totalInvoiced += totalAmount;
-      if (invoice.status !== "paid") {
+      if (inv.status !== "paid") {
         totalPending += totalAmount;
       }
     });
 
-    const paidInvoices = paymentsData || [];
+    // Received, GST, TDS from merged payments (legacy + billing_payments)
     let totalReceived = 0;
     let totalGST = 0;
     let totalTDS = 0;
 
-    paidInvoices.forEach((invoice: any) => {
-      const taxAmount = invoice.tax_amount || 0;
-      const tdsAmount = invoice.tds_amount || 0;
+    (mergedPaymentsData || []).forEach((inv: any) => {
+      const taxAmount = inv.tax_amount || 0;
+      const tdsAmount = inv.tds_amount || 0;
       totalGST += taxAmount;
       totalTDS += tdsAmount;
-      const amount = invoice.amount || 0;
-      const actualReceived = invoice.actual_payment_received ||
-                            invoice.net_received_amount ||
+      const amount = inv.amount || 0;
+      const actualReceived = inv.actual_payment_received ||
+                            inv.net_received_amount ||
                             (amount + taxAmount - tdsAmount);
       totalReceived += actualReceived;
     });
 
-    // --- New billing_documents (excludes draft/cancelled via query) ---
-    const billingDocs = billingDocsData || [];
-    billingDocs.forEach((doc: any) => {
-      const amt = Number(doc.total_amount || 0);
-      totalInvoiced += amt;
-      if (doc.status !== "paid") {
-        totalPending += Number(doc.balance_due || amt);
-      }
-      // GST is liable when invoice is raised (sent or paid)
-      totalGST += Number(doc.total_tax || 0);
-    });
-
-    // New billing_payments
-    const billingPays = billingPaymentsData || [];
-    billingPays.forEach((p: any) => {
-      totalReceived += Number(p.amount || 0);
-      totalTDS += Number(p.tds_amount || 0);
-    });
-
     return { totalInvoiced, totalReceived, totalPending, totalGST, totalTDS, dueToDept };
-  }, [invoicedData, paymentsData, billingDocsData, billingPaymentsData, dueToDept]);
+  }, [revenueData, mergedPaymentsData, dueToDept]);
 
   // Resolve entity name from client join (left join, may be null)
   const getEntityName = (inv: any): string => {
@@ -1043,8 +1079,8 @@ export default function Dashboard() {
 
   // Get invoices for revenue card dialog based on card type
   const getRevenueCardInvoices = useMemo(() => {
-    if (!invoicedData && !paymentsData) return [];
-    
+    if (!revenueData && !mergedPaymentsData) return [];
+
     const mapInvoice = (inv: any) => ({
       id: inv.id,
       invoice_number: inv.invoice_number,
@@ -1059,19 +1095,19 @@ export default function Dashboard() {
 
     switch (selectedCardType) {
       case "invoiced":
-        return (invoicedData || []).map(mapInvoice);
+        return (revenueData || []).map(mapInvoice);
       case "received":
-        return (paymentsData || []).map(mapInvoice);
+        return (mergedPaymentsData || []).map(mapInvoice);
       case "pending":
-        return (invoicedData || []).filter((inv: any) => inv.status !== "paid").map(mapInvoice);
+        return (revenueData || []).filter((inv: any) => inv.status !== "paid").map(mapInvoice);
       case "gst":
-        return (paymentsData || []).filter((inv: any) => (inv.tax_amount || 0) > 0).map(mapInvoice);
+        return (mergedPaymentsData || []).filter((inv: any) => (inv.tax_amount || 0) > 0).map(mapInvoice);
       case "tds":
-        return (paymentsData || []).filter((inv: any) => (inv.tds_amount || 0) > 0).map(mapInvoice);
+        return (mergedPaymentsData || []).filter((inv: any) => (inv.tds_amount || 0) > 0).map(mapInvoice);
       default:
         return [];
     }
-  }, [selectedCardType, invoicedData, paymentsData]);
+  }, [selectedCardType, revenueData, mergedPaymentsData]);
 
   // Format currency in Indian format
   const formatCurrency = (amount: number) => {
