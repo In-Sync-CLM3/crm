@@ -302,7 +302,7 @@ export default function Dashboard() {
       if (!effectiveOrgId) throw new Error("No organization context");
       const { data, error } = await supabase
         .from("billing_payments")
-        .select("id, amount, tds_amount, payment_date, document_id, billing_documents(doc_number, doc_type, client_name, subtotal, total_tax, total_amount, doc_date)")
+        .select("id, amount, tds_amount, payment_date, document_id")
         .eq("org_id", effectiveOrgId)
         .gte("payment_date", format(dateRange.from, "yyyy-MM-dd"))
         .lte("payment_date", format(dateRange.to, "yyyy-MM-dd"));
@@ -353,28 +353,47 @@ export default function Dashboard() {
     }));
   }, [billingDocsData]);
 
+  // Fetch all billing_documents (no date/status filter) for payment lookups
+  const { data: allBillingDocs } = useQuery({
+    queryKey: ["all-billing-docs-lookup", effectiveOrgId],
+    queryFn: async () => {
+      if (!effectiveOrgId) throw new Error("No organization context");
+      const { data, error } = await supabase
+        .from("billing_documents")
+        .select("id, doc_number, doc_type, client_name, subtotal, total_tax, total_amount, doc_date")
+        .eq("org_id", effectiveOrgId);
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!effectiveOrgId,
+  });
+
   // Normalize billing_payments for received/TDS drill-downs
   const normalizedBillingPayments = useMemo(() => {
     if (!billingPaymentsData) return [];
+    const docMap: Record<string, any> = {};
+    (allBillingDocs || []).forEach((d: any) => { docMap[d.id] = d; });
     return billingPaymentsData.map((p: any) => {
-      const doc = p.billing_documents || {};
+      const doc = docMap[p.document_id] || {};
+      const paymentAmount = Number(p.amount || 0);
+      const tdsAmount = Number(p.tds_amount || 0);
       return {
         id: p.id || Math.random().toString(),
         invoice_number: doc.doc_number || "—",
-        amount: Number(doc.subtotal || 0),
+        amount: paymentAmount + tdsAmount,
         tax_amount: Number(doc.total_tax || 0),
-        tds_amount: Number(p.tds_amount || 0),
+        tds_amount: tdsAmount,
         status: "paid",
         invoice_date: doc.doc_date || p.payment_date,
         payment_received_date: p.payment_date,
         document_type: doc.doc_type === "proforma" ? "proforma" : "invoice",
-        net_received_amount: Number(p.amount || 0),
-        actual_payment_received: Number(p.amount || 0),
+        net_received_amount: paymentAmount,
+        actual_payment_received: paymentAmount,
         clients: { first_name: doc.client_name || "", last_name: "", company: doc.client_name || "" },
         _source: "billing",
       };
     });
-  }, [billingPaymentsData]);
+  }, [billingPaymentsData, allBillingDocs]);
 
   // Combined revenue data — merges legacy client_invoices + new billing_documents
   const revenueData = useMemo(() => {
