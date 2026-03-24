@@ -8,6 +8,7 @@ import { formatCurrencyINR, numberToWords, statusLabel, formatFinancialYear } fr
 import { DOC_TYPE_LABELS, STATUS_COLORS } from "@/types/billing";
 import type { BillingDocument, BillingPayment, BillingSettings } from "@/types/billing";
 import { RecordPaymentDialog } from "./RecordPaymentDialog";
+import { SendInvoiceEmailDialog } from "./SendInvoiceEmailDialog";
 
 interface BillingDocumentViewProps {
   doc: BillingDocument;
@@ -19,11 +20,13 @@ interface BillingDocumentViewProps {
   onDelete?: (id: string) => void;
   onIssueCreditNote?: (doc: BillingDocument) => void;
   onConvertToInvoice?: (doc: BillingDocument) => void;
+  onStatusUpdate?: (id: string, updates: Partial<BillingDocument>) => void;
 }
 
-export function BillingDocumentView({ doc, payments, settings, onBack, onRecordPayment, onEdit, onDelete, onIssueCreditNote, onConvertToInvoice }: BillingDocumentViewProps) {
+export function BillingDocumentView({ doc, payments, settings, onBack, onRecordPayment, onEdit, onDelete, onIssueCreditNote, onConvertToInvoice, onStatusUpdate }: BillingDocumentViewProps) {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showEmailModal, setShowEmailModal] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const invoiceRef = useRef<HTMLDivElement>(null);
 
@@ -93,7 +96,7 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
             {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             PDF
           </Button>
-          <Button variant="outline" className="gap-1.5"><Mail className="h-4 w-4" />Email</Button>
+          <Button variant="outline" className="gap-1.5" onClick={() => setShowEmailModal(true)}><Mail className="h-4 w-4" />Email</Button>
           {onEdit && (
             <Button variant="outline" className="gap-1.5" onClick={() => onEdit(doc)}>
               <Pencil className="h-4 w-4" />Edit
@@ -365,6 +368,14 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
           </Card>
         </div>
       )}
+
+      <SendInvoiceEmailDialog
+        open={showEmailModal}
+        onClose={() => setShowEmailModal(false)}
+        doc={doc}
+        settings={settings}
+        onStatusUpdate={onStatusUpdate ? (id, status) => onStatusUpdate(id, { status: status as any }) : undefined}
+      />
     </div>
   );
 }

@@ -173,6 +173,7 @@ export default function BillingSystem() {
           onDelete={handleDeleteDoc}
           onIssueCreditNote={handleIssueCreditNote}
           onConvertToInvoice={doc.doc_type === "proforma" ? handleConvert : undefined}
+          onStatusUpdate={(id, updates) => updateDocument(id, updates)}
         />
       );
     }
