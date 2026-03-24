@@ -19,39 +19,57 @@ interface BillingDashboardProps {
 }
 
 export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, onCardClick }: BillingDashboardProps) {
+  // All billable documents (invoices + proformas)
+  const billable = useMemo(() => documents.filter(d => d.doc_type === "invoice" || d.doc_type === "proforma"), [documents]);
   const invoices = useMemo(() => documents.filter(d => d.doc_type === "invoice"), [documents]);
-
   const creditNotes = useMemo(() => documents.filter(d => d.doc_type === "credit_note"), [documents]);
 
-  const totalRevenue = useMemo(() => invoices.filter(d => d.status === "paid").reduce((s, d) => s + d.total_amount, 0), [invoices]);
-  const outstanding = useMemo(() => invoices.filter(d => ["sent", "partially_paid"].includes(d.status)).reduce((s, d) => s + d.balance_due, 0), [invoices]);
-  const overdue = useMemo(() => invoices.filter(d => d.status === "overdue").reduce((s, d) => s + d.balance_due, 0), [invoices]);
-  const totalCreditNotes = useMemo(() => creditNotes.reduce((s, d) => s + d.total_amount, 0), [creditNotes]);
+  // Revenue = paid invoices + sent/paid proformas (proformas represent confirmed business)
+  const totalRevenue = useMemo(() =>
+    invoices.filter(d => d.status === "paid").reduce((s, d) => s + d.total_amount, 0),
+  [invoices]);
 
+  const outstanding = useMemo(() =>
+    invoices.filter(d => ["sent", "partially_paid"].includes(d.status)).reduce((s, d) => s + d.balance_due, 0),
+  [invoices]);
+
+  const overdue = useMemo(() =>
+    invoices.filter(d => d.status === "overdue").reduce((s, d) => s + d.balance_due, 0),
+  [invoices]);
+
+  const totalCreditNotes = useMemo(() =>
+    creditNotes.reduce((s, d) => s + d.total_amount, 0),
+  [creditNotes]);
+
+  // This month: all invoices + proformas generated this month
   const thisMonth = useMemo(() => {
     const now = new Date();
     const prefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-    return invoices.filter(d => d.doc_date?.startsWith(prefix)).reduce((s, d) => s + d.total_amount, 0);
-  }, [invoices]);
+    return billable.filter(d => d.doc_date?.startsWith(prefix)).reduce((s, d) => s + d.total_amount, 0);
+  }, [billable]);
 
-  // Monthly data for bar chart
+  // Monthly data for bar chart — includes both invoices and proformas
   const monthlyData = useMemo(() => {
     const months = ["Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"];
-    const data = months.map(m => ({ month: m, amount: 0 }));
-    invoices.forEach(inv => {
-      const d = new Date(inv.doc_date);
+    const data = months.map(m => ({ month: m, invoices: 0, proformas: 0 }));
+    billable.forEach(doc => {
+      const d = new Date(doc.doc_date);
       const monthIdx = (d.getMonth() - 3 + 12) % 12; // FY starts April
       if (monthIdx >= 0 && monthIdx < 12) {
-        data[monthIdx].amount += inv.total_amount;
+        if (doc.doc_type === "invoice") {
+          data[monthIdx].invoices += doc.total_amount;
+        } else {
+          data[monthIdx].proformas += doc.total_amount;
+        }
       }
     });
     return data;
-  }, [invoices]);
+  }, [billable]);
 
-  // Client-wise revenue for pie chart
+  // Client-wise revenue for pie chart — includes both invoices and proformas
   const pieData = useMemo(() => {
     const clientRev: Record<string, number> = {};
-    invoices.forEach(d => {
+    billable.forEach(d => {
       const name = d.client_name || "Unknown";
       clientRev[name] = (clientRev[name] || 0) + d.total_amount;
     });
@@ -59,13 +77,15 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
       .map(([name, value]) => ({ name: name.split(" ").slice(0, 2).join(" "), value }));
-  }, [invoices]);
+  }, [billable]);
+
+  const thisMonthLabel = new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" });
 
   const kpiCards = [
     { label: "Total Revenue", value: formatCurrencyINR(totalRevenue), sub: "Paid invoices", icon: TrendingUp, color: "text-emerald-600", bg: "bg-emerald-50", filter: "paid" },
     { label: "Outstanding", value: formatCurrencyINR(outstanding), sub: `${invoices.filter(d => ["sent", "partially_paid"].includes(d.status)).length} invoices`, icon: Clock, color: "text-amber-600", bg: "bg-amber-50", filter: "sent" },
     { label: "Overdue", value: formatCurrencyINR(overdue), sub: `${invoices.filter(d => d.status === "overdue").length} invoices`, icon: AlertTriangle, color: "text-red-600", bg: "bg-red-50", filter: "overdue" },
-    { label: "This Month", value: formatCurrencyINR(thisMonth), sub: new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" }), icon: IndianRupee, color: "text-blue-600", bg: "bg-blue-50", filter: "all" },
+    { label: "This Month", value: formatCurrencyINR(thisMonth), sub: thisMonthLabel, icon: IndianRupee, color: "text-blue-600", bg: "bg-blue-50", filter: "all" },
     { label: "Credit Notes", value: formatCurrencyINR(totalCreditNotes), sub: `${creditNotes.length} issued`, icon: FileX2, color: "text-red-600", bg: "bg-red-50", filter: "credit_notes" },
   ];
 
@@ -109,12 +129,14 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={monthlyData} barSize={32}>
+              <BarChart data={monthlyData} barSize={16}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#999" }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11, fill: "#999" }} axisLine={false} tickLine={false} tickFormatter={v => `₹${(Number(v) / 1000).toFixed(0)}K`} />
-                <Tooltip formatter={(v) => [formatCurrencyINR(Number(v)), "Revenue"]} contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 4px 20px rgba(0,0,0,0.1)" }} />
-                <Bar dataKey="amount" fill="#1a5276" radius={[6, 6, 0, 0]} />
+                <Tooltip formatter={(v, name) => [formatCurrencyINR(Number(v)), name === "invoices" ? "Tax Invoices" : "Proforma Invoices"]} contentStyle={{ borderRadius: 12, border: "none", boxShadow: "0 4px 20px rgba(0,0,0,0.1)" }} />
+                <Bar dataKey="invoices" fill="#1a5276" radius={[6, 6, 0, 0]} name="Tax Invoices" stackId="revenue" />
+                <Bar dataKey="proformas" fill="#3498db" radius={[6, 6, 0, 0]} name="Proforma Invoices" stackId="revenue" />
+                <Legend iconSize={8} wrapperStyle={{ fontSize: 11 }} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -165,7 +187,7 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
                   <TableCell colSpan={6} className="text-center text-muted-foreground py-8">No documents yet. Create your first invoice.</TableCell>
                 </TableRow>
               ) : (
-                documents.slice(0, 7).map(d => (
+                documents.slice(0, 10).map(d => (
                   <TableRow key={d.id} className="cursor-pointer hover:bg-muted/50" onClick={() => onViewDocument(d.id)}>
                     <TableCell className="font-semibold text-primary">{d.doc_number}</TableCell>
                     <TableCell><Badge variant="secondary" className={DOC_TYPE_COLORS[d.doc_type]}>{DOC_TYPE_LABELS[d.doc_type]}</Badge></TableCell>
