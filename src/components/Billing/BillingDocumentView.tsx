@@ -128,12 +128,23 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
       {/* Invoice Preview */}
       <Card className="p-8" ref={invoiceRef}>
         <div className="border-2 border-gray-200 rounded-xl p-8">
-          {/* Company Header with centered doc type label */}
-          <div className="relative flex items-start gap-4 mb-6">
+          {/* Document type label - centered */}
+          <div className="text-center mb-5">
+            <div className={`inline-block px-6 py-2 rounded-lg text-sm font-bold ${
+              doc.doc_type === "invoice" ? "bg-primary text-primary-foreground" :
+              doc.doc_type === "credit_note" ? "bg-red-500 text-white" :
+              doc.doc_type === "proforma" ? "bg-sky-500 text-white" : "bg-violet-500 text-white"
+            }`}>
+              {DOC_TYPE_LABELS[doc.doc_type]?.toUpperCase()}
+            </div>
+          </div>
+
+          {/* Company Header */}
+          <div className="flex items-start gap-4 mb-6">
             {settings.logo_url && (
               <img src={settings.logo_url} alt="Logo" className="h-14 w-auto object-contain rounded" />
             )}
-            <div className="flex-1">
+            <div>
               <h3 className="text-xl font-bold text-primary">{settings.company_name || "Your Company"}</h3>
               <p className="text-xs text-muted-foreground mt-1">{settings.company_address}</p>
               {(settings.company_gstin || settings.company_pan) && (
@@ -155,16 +166,6 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
                   State: {settings.company_state}{settings.company_state_code ? ` (${settings.company_state_code})` : ""}
                 </p>
               )}
-            </div>
-            {/* Centered doc type label */}
-            <div className="absolute inset-x-0 top-0 flex justify-center pointer-events-none">
-              <div className={`pointer-events-auto px-6 py-2 rounded-lg text-sm font-bold ${
-                doc.doc_type === "invoice" ? "bg-primary text-primary-foreground" :
-                doc.doc_type === "credit_note" ? "bg-red-500 text-white" :
-                doc.doc_type === "proforma" ? "bg-sky-500 text-white" : "bg-violet-500 text-white"
-              }`}>
-                {DOC_TYPE_LABELS[doc.doc_type]?.toUpperCase()}
-              </div>
             </div>
           </div>
           <div className="h-px bg-primary mb-6" />
