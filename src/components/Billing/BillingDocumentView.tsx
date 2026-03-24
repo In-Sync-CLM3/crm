@@ -109,14 +109,14 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
           )}
         </div>
         {/* Workflow action buttons */}
-        <div className="flex items-center gap-3 flex-wrap pl-12">
+        <div className="flex items-center gap-3 flex-wrap pl-12 relative z-10">
           {doc.doc_type === "invoice" && doc.status !== "cancelled" && doc.status !== "paid" && (
             <Button className="gap-1.5 bg-emerald-600 hover:bg-emerald-700" onClick={() => setShowPaymentModal(true)}>
               <CreditCard className="h-4 w-4" />Record Payment
             </Button>
           )}
           {doc.doc_type === "proforma" && doc.status !== "cancelled" && onConvertToInvoice && (
-            <Button className="gap-1.5 bg-primary hover:bg-primary/90" onClick={() => onConvertToInvoice(doc)}>
+            <Button className="gap-1.5 bg-primary hover:bg-primary/90" onClick={() => { if (window.confirm(`Convert ${doc.doc_number} to Tax Invoice?`)) onConvertToInvoice(doc); }}>
               <ArrowRight className="h-4 w-4" />Convert to Tax Invoice
             </Button>
           )}
