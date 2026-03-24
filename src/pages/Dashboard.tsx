@@ -275,8 +275,60 @@ export default function Dashboard() {
     dateRange: { from: format(dateRange.from, "yyyy-MM-dd"), to: format(dateRange.to, "yyyy-MM-dd") }
   });
 
-  const revenueLoading = invoicedLoading || paymentsLoading;
-  
+  // Fetch billing_documents (new billing system) for the date range
+  const { data: billingDocsData, isLoading: billingDocsLoading } = useQuery({
+    queryKey: ["billing-docs-stats", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
+    queryFn: async () => {
+      if (!effectiveOrgId) throw new Error("No organization context");
+      const { data, error } = await supabase
+        .from("billing_documents")
+        .select("doc_type, doc_number, client_name, doc_date, total_amount, total_tax, subtotal, amount_paid, balance_due, status")
+        .eq("org_id", effectiveOrgId)
+        .in("doc_type", ["invoice", "proforma"])
+        .gte("doc_date", format(dateRange.from, "yyyy-MM-dd"))
+        .lte("doc_date", format(dateRange.to, "yyyy-MM-dd"));
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!effectiveOrgId,
+  });
+
+  // Fetch billing_payments (new billing system) for the date range
+  const { data: billingPaymentsData, isLoading: billingPaymentsLoading } = useQuery({
+    queryKey: ["billing-payments-stats", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
+    queryFn: async () => {
+      if (!effectiveOrgId) throw new Error("No organization context");
+      const { data, error } = await supabase
+        .from("billing_payments")
+        .select("amount, tds_amount, payment_date, document_id")
+        .eq("org_id", effectiveOrgId)
+        .gte("payment_date", format(dateRange.from, "yyyy-MM-dd"))
+        .lte("payment_date", format(dateRange.to, "yyyy-MM-dd"));
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!effectiveOrgId,
+  });
+
+  // Fetch all-time billing_documents for GST due calculation
+  const { data: allBillingPaidGst } = useQuery({
+    queryKey: ["all-billing-paid-gst", effectiveOrgId],
+    queryFn: async () => {
+      if (!effectiveOrgId) throw new Error("No organization context");
+      const { data, error } = await supabase
+        .from("billing_documents")
+        .select("total_tax")
+        .eq("org_id", effectiveOrgId)
+        .eq("doc_type", "invoice")
+        .eq("status", "paid");
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!effectiveOrgId,
+  });
+
+  const revenueLoading = invoicedLoading || paymentsLoading || billingDocsLoading || billingPaymentsLoading;
+
   // Combined revenue data for charts (using invoiced data)
   const revenueData = invoicedData;
 
@@ -456,26 +508,26 @@ export default function Dashboard() {
 
   // Calculate Due to Dept (all-time GST collected - all-time GST paid to dept)
   const dueToDept = useMemo(() => {
-    const totalCollectedAllTime = allPaidInvoicesGst?.reduce((sum, inv) => 
+    const legacyGst = allPaidInvoicesGst?.reduce((sum, inv) =>
       sum + (inv.tax_amount || 0), 0) || 0;
-    
+    const billingGst = allBillingPaidGst?.reduce((sum, inv) =>
+      sum + Number(inv.total_tax || 0), 0) || 0;
+    const totalCollectedAllTime = legacyGst + billingGst;
+
     const totalPaidToDept = gstPaymentTracking?.reduce((sum, p) => {
       if (p.payment_status === "paid" || p.payment_status === "partial") {
         return sum + (p.amount_paid || 0);
       }
       return sum;
     }, 0) || 0;
-    
+
     return totalCollectedAllTime - totalPaidToDept;
-  }, [allPaidInvoicesGst, gstPaymentTracking]);
+  }, [allPaidInvoicesGst, allBillingPaidGst, gstPaymentTracking]);
 
   // Process revenue stats - invoiced/pending from invoice_date, payments from payment_received_date
   const revenueStats: RevenueStats = useMemo(() => {
-    console.log('Computing revenueStats:', { invoicedData, paymentsData });
-    
-    // Calculate Total Invoiced and Pending from invoices by invoice_date (including quotations)
+    // --- Legacy client_invoices ---
     const invoicesOnly = invoicedData || [];
-    
     let totalInvoiced = 0;
     let totalPending = 0;
 
@@ -484,16 +536,12 @@ export default function Dashboard() {
       const taxAmount = invoice.tax_amount || 0;
       const totalAmount = amount + taxAmount;
       totalInvoiced += totalAmount;
-      
       if (invoice.status !== "paid") {
         totalPending += totalAmount;
       }
     });
 
-    // Calculate Payments Received, GST, and TDS from payments by payment_received_date (including quotations)
     const paidInvoices = paymentsData || [];
-    console.log('Paid invoices for GST/TDS calculation:', paidInvoices);
-    
     let totalReceived = 0;
     let totalGST = 0;
     let totalTDS = 0;
@@ -501,30 +549,41 @@ export default function Dashboard() {
     paidInvoices.forEach((invoice: any) => {
       const taxAmount = invoice.tax_amount || 0;
       const tdsAmount = invoice.tds_amount || 0;
-      
       totalGST += taxAmount;
       totalTDS += tdsAmount;
-
-      // Use actual payment received if set, otherwise calculate
       const amount = invoice.amount || 0;
-      const actualReceived = invoice.actual_payment_received || 
-                            invoice.net_received_amount || 
+      const actualReceived = invoice.actual_payment_received ||
+                            invoice.net_received_amount ||
                             (amount + taxAmount - tdsAmount);
       totalReceived += actualReceived;
-      
-      console.log('Invoice calculation:', {
-        invoice_number: invoice.invoice_number,
-        amount,
-        taxAmount,
-        tdsAmount,
-        actualReceived,
-        net_received_amount: invoice.net_received_amount
-      });
     });
 
-    console.log('Final stats:', { totalInvoiced, totalReceived, totalPending, totalGST, totalTDS, dueToDept });
+    // --- New billing_documents ---
+    const billingDocs = billingDocsData || [];
+    billingDocs.forEach((doc: any) => {
+      const amt = Number(doc.total_amount || 0);
+      totalInvoiced += amt;
+      if (doc.status !== "paid") {
+        totalPending += Number(doc.balance_due || amt);
+      }
+    });
+
+    // New billing_payments
+    const billingPays = billingPaymentsData || [];
+    billingPays.forEach((p: any) => {
+      totalReceived += Number(p.amount || 0);
+      totalTDS += Number(p.tds_amount || 0);
+    });
+
+    // GST from paid billing_documents in date range
+    billingDocs.forEach((doc: any) => {
+      if (doc.status === "paid") {
+        totalGST += Number(doc.total_tax || 0);
+      }
+    });
+
     return { totalInvoiced, totalReceived, totalPending, totalGST, totalTDS, dueToDept };
-  }, [invoicedData, paymentsData, dueToDept]);
+  }, [invoicedData, paymentsData, billingDocsData, billingPaymentsData, dueToDept]);
 
   // Resolve entity name from client join (left join, may be null)
   const getEntityName = (inv: any): string => {
