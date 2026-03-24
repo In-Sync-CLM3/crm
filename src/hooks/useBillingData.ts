@@ -47,6 +47,7 @@ export function useBillingData() {
   const [payments, setPayments] = useState<BillingPayment[]>([]);
   const [settings, setSettingsState] = useState<BillingSettings>({ ...DEFAULT_SETTINGS });
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
 
   // ─── Fetch all billing data from Supabase ───
   const fetchAll = useCallback(async () => {
@@ -250,7 +251,7 @@ export function useBillingData() {
 
   // ─── Document CRUD ───
   const addDocument = useCallback(async (doc: BillingDocument) => {
-    if (!effectiveOrgId) return;
+    if (!effectiveOrgId || busy) return;
     const { items, client, ...docData } = doc as any;
     const row = {
       org_id: effectiveOrgId,
@@ -317,27 +318,61 @@ export function useBillingData() {
   }, []);
 
   const convertDocument = useCallback(async (doc: BillingDocument, targetType: BillingDocumentType) => {
-    if (!effectiveOrgId) return doc;
-    const fy = getCurrentFinancialYear();
-    const prefix = targetType === "proforma" ? settings.proforma_prefix : settings.invoice_prefix;
-    const nextNum = targetType === "proforma" ? settings.next_proforma_number : settings.next_invoice_number;
+    if (!effectiveOrgId || busy) return doc;
+    setBusy(true);
+    try {
+      // Fetch latest settings to get correct next number
+      const { data: latestSettings } = await supabase
+        .from("billing_settings")
+        .select("*")
+        .eq("org_id", effectiveOrgId)
+        .maybeSingle();
 
-    const newDoc: BillingDocument = {
-      ...doc,
-      id: "", // will be set by Supabase
-      doc_type: targetType,
-      doc_number: `${prefix}-${fy}-${String(nextNum).padStart(4, "0")}`,
-      status: "draft",
-      amount_paid: 0,
-      balance_due: doc.total_amount,
-      created_at: new Date().toISOString(),
-      org_id: effectiveOrgId,
-    };
+      const currentSettings = latestSettings || settings;
+      const fy = getCurrentFinancialYear();
+      const prefix = targetType === "proforma" ? (currentSettings.proforma_prefix || "PI") : (currentSettings.invoice_prefix || "INV");
+      const nextNum = targetType === "proforma" ? (currentSettings.next_proforma_number || 1) : (currentSettings.next_invoice_number || 1);
 
-    // addDocument will handle DB insert + increment
-    await addDocument(newDoc);
-    return newDoc;
-  }, [settings, addDocument, effectiveOrgId]);
+      const { items, client, id, ...docData } = doc as any;
+      const row = {
+        org_id: effectiveOrgId,
+        doc_type: targetType,
+        doc_number: `${prefix}-${fy}-${String(nextNum).padStart(4, "0")}`,
+        client_id: docData.client_id || null,
+        client_name: docData.client_name,
+        doc_date: docData.doc_date,
+        due_date: docData.due_date || null,
+        financial_year: docData.financial_year || null,
+        supply_type: docData.supply_type || null,
+        subtotal: docData.subtotal,
+        total_tax: docData.total_tax,
+        total_amount: docData.total_amount,
+        amount_paid: 0,
+        balance_due: docData.total_amount,
+        status: "draft",
+        notes: docData.notes || null,
+        terms_and_conditions: docData.terms_and_conditions || null,
+      };
+
+      const { data, error } = await supabase.from("billing_documents").insert(row).select().single();
+      if (error) { console.error("Error converting document:", error); return doc; }
+
+      // Save items
+      await saveItems(data.id, items || []);
+
+      // Increment next number
+      const numKey = targetType === "proforma" ? "next_proforma_number" : "next_invoice_number";
+      if (currentSettings.id) {
+        await supabase.from("billing_settings").update({ [numKey]: nextNum + 1, updated_at: new Date().toISOString() }).eq("id", currentSettings.id);
+      }
+
+      // Refetch all data to sync state
+      await fetchAll();
+      return { ...doc, id: data.id, doc_type: targetType, doc_number: row.doc_number } as BillingDocument;
+    } finally {
+      setBusy(false);
+    }
+  }, [effectiveOrgId, busy, settings, fetchAll]);
 
   // ─── Payment CRUD ───
   const recordPayment = useCallback(async (payment: Omit<BillingPayment, "id" | "created_at">) => {
@@ -476,6 +511,7 @@ export function useBillingData() {
     payments,
     settings,
     loading,
+    busy,
     addDocument,
     updateDocument,
     deleteDocument,
