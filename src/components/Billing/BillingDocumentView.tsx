@@ -14,7 +14,7 @@ interface BillingDocumentViewProps {
   payments: BillingPayment[];
   settings: BillingSettings;
   onBack: () => void;
-  onRecordPayment: (payment: { document_id: string; amount: number; payment_date: string; payment_mode: string; reference_number: string; notes: string; org_id: string }) => void;
+  onRecordPayment: (payment: { document_id: string; amount: number; tds_amount?: number; payment_date: string; payment_mode: string; reference_number: string; notes: string; org_id: string }) => void;
   onEdit?: (doc: BillingDocument) => void;
   onDelete?: (id: string) => void;
   onIssueCreditNote?: (doc: BillingDocument) => void;
