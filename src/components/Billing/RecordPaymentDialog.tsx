@@ -63,7 +63,11 @@ export function RecordPaymentDialog({ open, onClose, doc, onRecordPayment }: Rec
           </div>
           <div className="space-y-1.5">
             <Label>Amount Received <span className="text-red-500">*</span></Label>
-            <Input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} />
+            <Input type="number" value={form.amount} onChange={e => {
+              const received = parseFloat(e.target.value) || 0;
+              const autoTds = Math.max(0, doc.balance_due - received);
+              setForm({ ...form, amount: e.target.value, tds_amount: autoTds > 0 ? String(Math.round(autoTds * 100) / 100) : "0" });
+            }} />
           </div>
           <div className="space-y-1.5">
             <Label>TDS Deducted</Label>
