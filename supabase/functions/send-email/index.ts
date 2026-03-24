@@ -10,13 +10,17 @@ const corsHeaders = {
 
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
 
-const sendEmail = async (to: string, subject: string, html: string, fromEmail: string, fromName: string, replyToEmail?: string, unsubscribeUrl?: string) => {
+const sendEmail = async (to: string, subject: string, html: string, fromEmail: string, fromName: string, replyToEmail?: string, unsubscribeUrl?: string, cc?: string[]) => {
   const emailPayload: any = {
     from: `${fromName} <${fromEmail}>`,
     to: [to],
     subject: subject,
     html: html,
   };
+
+  if (cc && cc.length > 0) {
+    emailPayload.cc = cc;
+  }
   
   // Add reply_to if provided and different from sender
   if (replyToEmail && replyToEmail !== fromEmail) {
@@ -57,6 +61,7 @@ interface SendEmailRequest {
   conversationId?: string;
   trackingPixelId?: string;
   unsubscribeToken?: string;
+  cc?: string[];
 }
 
 serve(async (req) => {
@@ -130,15 +135,16 @@ serve(async (req) => {
 
     console.log('✓ User authenticated:', user.email);
 
-    const { 
-      to, 
-      subject, 
-      htmlContent, 
-      html, 
-      contactId, 
+    const {
+      to,
+      subject,
+      htmlContent,
+      html,
+      contactId,
       conversationId,
       trackingPixelId,
-      unsubscribeToken 
+      unsubscribeToken,
+      cc,
     }: SendEmailRequest = await req.json();
 
     const emailHtml = htmlContent || html || '';
@@ -242,7 +248,7 @@ serve(async (req) => {
       : emailHtml + unsubscribeFooter;
 
     // Send email via Resend
-    const emailData = await sendEmail(to, subject, finalHtml, fromEmail, fromName, replyToEmail, unsubscribeUrl);
+    const emailData = await sendEmail(to, subject, finalHtml, fromEmail, fromName, replyToEmail, unsubscribeUrl, cc);
 
     console.log("Email sent successfully:", emailData);
 

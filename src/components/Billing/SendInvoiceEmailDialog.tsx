@@ -110,11 +110,29 @@ function buildInvoiceHtml(doc: BillingDocument, settings: BillingSettings): stri
   `;
 }
 
+const EMAIL_CACHE_KEY = "billing_email_cc_cache";
+
+function loadCachedCC(clientId: string): string {
+  try {
+    const cache = JSON.parse(localStorage.getItem(EMAIL_CACHE_KEY) || "{}");
+    return cache[clientId] || "";
+  } catch { return ""; }
+}
+
+function saveCachedCC(clientId: string, cc: string) {
+  try {
+    const cache = JSON.parse(localStorage.getItem(EMAIL_CACHE_KEY) || "{}");
+    cache[clientId] = cc;
+    localStorage.setItem(EMAIL_CACHE_KEY, JSON.stringify(cache));
+  } catch { /* ignore */ }
+}
+
 export function SendInvoiceEmailDialog({ open, onClose, doc, settings, onStatusUpdate }: SendInvoiceEmailDialogProps) {
   const docLabel = DOC_TYPE_LABELS[doc.doc_type] || "Invoice";
   const [sending, setSending] = useState(false);
   const [form, setForm] = useState({
     to: doc.client?.email || "",
+    cc: loadCachedCC(doc.client_id),
     subject: `${docLabel} ${doc.doc_number} from ${settings.company_name || ""}`.trim(),
     message: `Dear ${doc.client_name},\n\nPlease find the details of ${docLabel.toLowerCase()} ${doc.doc_number} for ${formatCurrencyINR(doc.total_amount)}.\n\nKindly arrange payment by ${doc.due_date}.\n\nRegards,\n${settings.company_name || ""}`,
   });
@@ -126,15 +144,21 @@ export function SendInvoiceEmailDialog({ open, onClose, doc, settings, onStatusU
     }
     setSending(true);
     try {
+      // Save CC for this client for future use
+      if (doc.client_id) saveCachedCC(doc.client_id, form.cc);
+
       const invoiceHtml = buildInvoiceHtml(doc, settings);
       const messageHtml = form.message.replace(/\n/g, "<br/>");
       const fullHtml = `${messageHtml}<br/><br/><hr style="border:none;border-top:1px solid #ddd;margin:24px 0"/>${invoiceHtml}`;
+
+      const ccList = form.cc.split(",").map(e => e.trim()).filter(Boolean);
 
       const { error } = await supabase.functions.invoke("send-email", {
         body: {
           to: form.to,
           subject: form.subject,
           htmlContent: fullHtml,
+          ...(ccList.length > 0 ? { cc: ccList } : {}),
         },
       });
 
@@ -172,6 +196,11 @@ export function SendInvoiceEmailDialog({ open, onClose, doc, settings, onStatusU
           <div className="space-y-1.5">
             <Label>To <span className="text-red-500">*</span></Label>
             <Input type="email" value={form.to} onChange={e => setForm({ ...form, to: e.target.value })} placeholder="client@example.com" />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>CC <span className="text-muted-foreground text-xs">(comma separated)</span></Label>
+            <Input value={form.cc} onChange={e => setForm({ ...form, cc: e.target.value })} placeholder="accounts@client.com, manager@client.com" />
           </div>
 
           <div className="space-y-1.5">
