@@ -110,12 +110,12 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
         </div>
         {/* Workflow action buttons */}
         <div className="flex items-center gap-3 flex-wrap pl-12">
-          {(doc.doc_type === "invoice" || doc.doc_type === "proforma") && doc.status !== "cancelled" && doc.status !== "paid" && (
+          {doc.doc_type === "invoice" && doc.status !== "cancelled" && doc.status !== "paid" && (
             <Button className="gap-1.5 bg-emerald-600 hover:bg-emerald-700" onClick={() => setShowPaymentModal(true)}>
               <CreditCard className="h-4 w-4" />Record Payment
             </Button>
           )}
-          {doc.doc_type === "proforma" && (doc.status === "paid" || doc.status === "partially_paid") && onConvertToInvoice && (
+          {doc.doc_type === "proforma" && doc.status !== "cancelled" && onConvertToInvoice && (
             <Button className="gap-1.5 bg-primary hover:bg-primary/90" onClick={() => onConvertToInvoice(doc)}>
               <ArrowRight className="h-4 w-4" />Convert to Tax Invoice
             </Button>
@@ -301,8 +301,8 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
         </div>
       </Card>
 
-      {/* Payment History for Invoices & Proformas */}
-      {(doc.doc_type === "invoice" || doc.doc_type === "proforma") && (
+      {/* Payment History for Invoices only */}
+      {doc.doc_type === "invoice" && (
         <Card>
           <div className="px-5 py-4 border-b flex items-center justify-between">
             <h3 className="text-sm font-bold text-muted-foreground uppercase tracking-wider">Payment History</h3>
