@@ -114,7 +114,7 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
           <h2 className="text-2xl font-bold">Billing Dashboard</h2>
           <p className="text-sm text-muted-foreground mt-0.5">Financial overview</p>
         </div>
-        <Button onClick={onCreateInvoice}><Plus className="h-4 w-4 mr-1" />New Invoice</Button>
+        <Button onClick={onCreateInvoice}><Plus className="h-4 w-4 mr-1" />New Proforma Invoice</Button>
       </div>
 
       {/* KPI Cards */}

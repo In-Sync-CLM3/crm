@@ -198,7 +198,7 @@ export default function BillingSystem() {
         return (
           <BillingDashboard
             documents={documents}
-            onCreateInvoice={() => handleCreateDoc("invoice")}
+            onCreateInvoice={() => handleCreateDoc("proforma")}
             onViewDocument={handleViewDoc}
             onCardClick={handleDashboardCardClick}
           />
