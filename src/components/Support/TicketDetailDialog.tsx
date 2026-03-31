@@ -8,6 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TicketStatusBadge, TicketPriorityBadge } from "./TicketStatusBadge";
+import { formatSourceName } from "./TicketDashboardCharts";
 import { useTicketComments, type SupportTicket } from "@/hooks/useSupportTickets";
 import { useTicketHistory } from "@/hooks/useTicketHistory";
 import { useTicketNotifications } from "@/hooks/useTicketNotifications";
@@ -206,7 +207,7 @@ export function TicketDetailDialog({ ticket, open, onOpenChange, onUpdateStatus,
               <TicketPriorityBadge priority={ticket.priority} />
               <span className="text-muted-foreground capitalize">{ticket.category.replace("_", " ")}</span>
               <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 capitalize">
-                {(ticket.source || "crm").replace(/_/g, " ")}
+                {formatSourceName(ticket.source || "crm")}
               </span>
               <span className="text-muted-foreground flex items-center gap-1">
                 <Clock size={14} />

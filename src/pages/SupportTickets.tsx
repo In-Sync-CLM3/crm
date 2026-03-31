@@ -17,7 +17,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Plus, LifeBuoy, Search, AlertTriangle, Ticket, Clock, CheckCircle2, AlertCircle, Flame, Bell, BellOff } from "lucide-react";
 import { format, isPast } from "date-fns";
 import { Card, CardContent } from "@/components/ui/card";
-import { TicketDashboardCharts } from "@/components/Support/TicketDashboardCharts";
+import { TicketDashboardCharts, formatSourceName } from "@/components/Support/TicketDashboardCharts";
 
 export default function SupportTickets() {
   const [statusFilter, setStatusFilter] = useState("all");
@@ -198,7 +198,7 @@ export default function SupportTickets() {
               <SelectItem value="crm">CRM</SelectItem>
               <SelectItem value="rmpl">RMPL</SelectItem>
               <SelectItem value="paisaa_saarthi">Paisaa Saarthi</SelectItem>
-              <SelectItem value="whatsapp">WhatsApp</SelectItem>
+              <SelectItem value="help_widget">WhatsApp</SelectItem>
               <SelectItem value="in_sync_website">In-Sync Website</SelectItem>
               <SelectItem value="website">Website</SelectItem>
               <SelectItem value="email">Email</SelectItem>
@@ -241,7 +241,7 @@ export default function SupportTickets() {
                         <TableCell className="font-mono text-xs">{ticket.ticket_number}</TableCell>
                         <TableCell className="text-sm">
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground capitalize">
-                            {(ticket.source || "crm").replace(/_/g, " ")}
+                            {formatSourceName(ticket.source || "crm")}
                           </span>
                         </TableCell>
                         <TableCell className="max-w-[200px] truncate font-medium">{ticket.subject}</TableCell>

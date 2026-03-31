@@ -28,12 +28,19 @@ const SOURCE_COLORS: Record<string, string> = {
   crm: "hsl(217, 91%, 60%)",
   rmpl: "hsl(271, 91%, 65%)",
   paisaa_saarthi: "hsl(142, 71%, 45%)",
-  whatsapp: "hsl(142, 76%, 36%)",
   in_sync_website: "hsl(25, 95%, 53%)",
   website: "hsl(45, 93%, 47%)",
   email: "hsl(0, 84%, 60%)",
-  help_widget: "hsl(199, 89%, 48%)",
+  help_widget: "hsl(142, 76%, 36%)",
 };
+
+export const SOURCE_DISPLAY_NAMES: Record<string, string> = {
+  help_widget: "WhatsApp",
+};
+
+export function formatSourceName(source: string): string {
+  return SOURCE_DISPLAY_NAMES[source] || source.replace(/_/g, " ");
+}
 
 const STATUS_COLORS: Record<string, string> = {
   new: "hsl(217, 91%, 60%)",
@@ -125,7 +132,7 @@ export function TicketDashboardCharts({ tickets, onSourceClick }: TicketDashboar
     });
     const sourceData = Object.entries(sourceMap)
       .map(([name, value]) => ({
-        name: name.replace(/_/g, " "),
+        name: formatSourceName(name),
         value,
         fill: SOURCE_COLORS[name] || "hsl(var(--muted))",
       }))
@@ -173,7 +180,7 @@ export function TicketDashboardCharts({ tickets, onSourceClick }: TicketDashboar
             ) / srcResolved.length
           : 0;
         sourceWiseData.push({
-          source: src.replace(/_/g, " "),
+          source: formatSourceName(src),
           sourceKey: src,
           total: srcTickets.length,
           open,
