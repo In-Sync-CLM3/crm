@@ -25,6 +25,7 @@ export default function SupportTickets() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [viewFilter, setViewFilter] = useState<"all" | "open" | "resolved" | "overdue" | "critical">("all");
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState<SupportTicket | null>(null);
 
@@ -51,6 +52,16 @@ export default function SupportTickets() {
       return data as { id: string; first_name: string; last_name: string }[];
     },
     enabled: !!orgId,
+  });
+
+  // Client-side view filter (for overdue, open, resolved, critical within source)
+  const displayedTickets = (ticketsQuery.data || []).filter((t) => {
+    if (viewFilter === "all") return true;
+    if (viewFilter === "open") return ["new", "assigned", "in_progress", "awaiting_client"].includes(t.status);
+    if (viewFilter === "resolved") return ["resolved", "closed"].includes(t.status);
+    if (viewFilter === "overdue") return t.due_at && isPast(new Date(t.due_at)) && !["resolved", "closed"].includes(t.status);
+    if (viewFilter === "critical") return t.priority === "critical" && !["resolved", "closed"].includes(t.status);
+    return true;
   });
 
   const handleCreate = (data: {
@@ -134,12 +145,13 @@ export default function SupportTickets() {
         {/* Dashboard Charts */}
         <TicketDashboardCharts
           tickets={ticketsQuery.data || []}
-          onSourceClick={(sourceKey) => {
+          onSourceClick={(sourceKey, filter) => {
             setSourceFilter(sourceKey);
             setStatusFilter("all");
             setPriorityFilter("all");
             setCategoryFilter("all");
             setSearchQuery("");
+            setViewFilter(filter || "all");
             // Scroll to the ticket table
             setTimeout(() => {
               document.getElementById("tickets-table-section")?.scrollIntoView({ behavior: "smooth" });
@@ -158,7 +170,7 @@ export default function SupportTickets() {
               className="pl-8 w-56"
             />
           </div>
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setViewFilter("all"); }}>
             <SelectTrigger className="w-40"><SelectValue placeholder="Status" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Status</SelectItem>
@@ -170,7 +182,7 @@ export default function SupportTickets() {
               <SelectItem value="closed">Closed</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+          <Select value={priorityFilter} onValueChange={(v) => { setPriorityFilter(v); setViewFilter("all"); }}>
             <SelectTrigger className="w-36"><SelectValue placeholder="Priority" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Priority</SelectItem>
@@ -180,7 +192,7 @@ export default function SupportTickets() {
               <SelectItem value="critical">Critical</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+          <Select value={categoryFilter} onValueChange={(v) => { setCategoryFilter(v); setViewFilter("all"); }}>
             <SelectTrigger className="w-40"><SelectValue placeholder="Category" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Categories</SelectItem>
@@ -191,7 +203,7 @@ export default function SupportTickets() {
               <SelectItem value="technical">Technical</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={sourceFilter} onValueChange={setSourceFilter}>
+          <Select value={sourceFilter} onValueChange={(v) => { setSourceFilter(v); setViewFilter("all"); }}>
             <SelectTrigger className="w-40"><SelectValue placeholder="Source" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Sources</SelectItem>
@@ -204,13 +216,22 @@ export default function SupportTickets() {
               <SelectItem value="email">Email</SelectItem>
             </SelectContent>
           </Select>
+          {viewFilter !== "all" && (
+            <button
+              onClick={() => setViewFilter("all")}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors"
+            >
+              Showing: {viewFilter.charAt(0).toUpperCase() + viewFilter.slice(1)}
+              <span className="ml-1">&times;</span>
+            </button>
+          )}
         </div>
 
         {/* Table */}
         {ticketsQuery.isLoading ? (
           <LoadingState />
-        ) : !ticketsQuery.data?.length ? (
-          <EmptyState icon={<LifeBuoy className="h-12 w-12" />} message="No support tickets found" />
+        ) : !displayedTickets.length ? (
+          <EmptyState icon={<LifeBuoy className="h-12 w-12" />} message={viewFilter !== "all" ? `No ${viewFilter} tickets found` : "No support tickets found"} />
         ) : (
           <div className="rounded-md border overflow-hidden">
             <div className="overflow-x-auto">
@@ -230,7 +251,7 @@ export default function SupportTickets() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {ticketsQuery.data.map((ticket) => {
+                  {displayedTickets.map((ticket) => {
                     const overdue = ticket.due_at && isPast(new Date(ticket.due_at)) && !["resolved", "closed"].includes(ticket.status);
                     return (
                       <TableRow

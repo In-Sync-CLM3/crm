@@ -6,7 +6,7 @@ import type { SupportTicket } from "@/hooks/useSupportTickets";
 
 interface TicketDashboardChartsProps {
   tickets: SupportTicket[];
-  onSourceClick?: (sourceKey: string) => void;
+  onSourceClick?: (sourceKey: string, filter?: "all" | "open" | "resolved" | "overdue" | "critical") => void;
 }
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -352,8 +352,8 @@ export function TicketDashboardCharts({ tickets, onSourceClick }: TicketDashboar
                   {stats.sourceWiseData.map((row) => {
                     const resRate = row.total ? Math.round((row.resolved / row.total) * 100) : 0;
                     return (
-                      <tr key={row.sourceKey} className="border-b last:border-0 hover:bg-muted/50 cursor-pointer" onClick={() => onSourceClick?.(row.sourceKey)}>
-                        <td className="py-2.5 pr-4">
+                      <tr key={row.sourceKey} className="border-b last:border-0 hover:bg-muted/50">
+                        <td className="py-2.5 pr-4 cursor-pointer" onClick={() => onSourceClick?.(row.sourceKey, "all")}>
                           <span className="flex items-center gap-2 capitalize font-medium">
                             <span
                               className="w-2.5 h-2.5 rounded-full shrink-0"
@@ -362,21 +362,21 @@ export function TicketDashboardCharts({ tickets, onSourceClick }: TicketDashboar
                             {row.source}
                           </span>
                         </td>
-                        <td className="py-2.5 px-3 text-center font-semibold">{row.total}</td>
-                        <td className="py-2.5 px-3 text-center">
+                        <td className="py-2.5 px-3 text-center font-semibold cursor-pointer" onClick={() => onSourceClick?.(row.sourceKey, "all")}>{row.total}</td>
+                        <td className="py-2.5 px-3 text-center cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-950/20 rounded" onClick={() => onSourceClick?.(row.sourceKey, "open")}>
                           <span className="text-blue-600 font-medium">{row.open}</span>
                         </td>
-                        <td className="py-2.5 px-3 text-center">
+                        <td className="py-2.5 px-3 text-center cursor-pointer hover:bg-green-50 dark:hover:bg-green-950/20 rounded" onClick={() => onSourceClick?.(row.sourceKey, "resolved")}>
                           <span className="text-green-600 font-medium">{row.resolved}</span>
                         </td>
-                        <td className="py-2.5 px-3 text-center">
+                        <td className="py-2.5 px-3 text-center cursor-pointer hover:bg-red-50 dark:hover:bg-red-950/20 rounded" onClick={() => onSourceClick?.(row.sourceKey, "overdue")}>
                           {row.overdue > 0 ? (
                             <span className="text-destructive font-medium">{row.overdue}</span>
                           ) : (
                             <span className="text-muted-foreground">0</span>
                           )}
                         </td>
-                        <td className="py-2.5 px-3 text-center">
+                        <td className="py-2.5 px-3 text-center cursor-pointer hover:bg-orange-50 dark:hover:bg-orange-950/20 rounded" onClick={() => onSourceClick?.(row.sourceKey, "critical")}>
                           {row.critical > 0 ? (
                             <span className="text-orange-600 font-medium">{row.critical}</span>
                           ) : (
