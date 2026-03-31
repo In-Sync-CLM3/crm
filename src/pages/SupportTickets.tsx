@@ -132,10 +132,23 @@ export default function SupportTickets() {
         })()}
 
         {/* Dashboard Charts */}
-        <TicketDashboardCharts tickets={ticketsQuery.data || []} />
+        <TicketDashboardCharts
+          tickets={ticketsQuery.data || []}
+          onSourceClick={(sourceKey) => {
+            setSourceFilter(sourceKey);
+            setStatusFilter("all");
+            setPriorityFilter("all");
+            setCategoryFilter("all");
+            setSearchQuery("");
+            // Scroll to the ticket table
+            setTimeout(() => {
+              document.getElementById("tickets-table-section")?.scrollIntoView({ behavior: "smooth" });
+            }, 100);
+          }}
+        />
 
         {/* Search & Filters */}
-        <div className="flex flex-wrap gap-2">
+        <div id="tickets-table-section" className="flex flex-wrap gap-2">
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input

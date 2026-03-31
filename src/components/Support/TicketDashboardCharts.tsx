@@ -6,6 +6,7 @@ import type { SupportTicket } from "@/hooks/useSupportTickets";
 
 interface TicketDashboardChartsProps {
   tickets: SupportTicket[];
+  onSourceClick?: (sourceKey: string) => void;
 }
 
 const PRIORITY_COLORS: Record<string, string> = {
@@ -43,7 +44,7 @@ const STATUS_COLORS: Record<string, string> = {
   closed: "hsl(var(--muted-foreground))",
 };
 
-export function TicketDashboardCharts({ tickets }: TicketDashboardChartsProps) {
+export function TicketDashboardCharts({ tickets, onSourceClick }: TicketDashboardChartsProps) {
   const stats = useMemo(() => {
     // Average resolution time (hours) for resolved/closed tickets
     const resolvedTickets = tickets.filter(
@@ -344,7 +345,7 @@ export function TicketDashboardCharts({ tickets }: TicketDashboardChartsProps) {
                   {stats.sourceWiseData.map((row) => {
                     const resRate = row.total ? Math.round((row.resolved / row.total) * 100) : 0;
                     return (
-                      <tr key={row.sourceKey} className="border-b last:border-0 hover:bg-muted/50">
+                      <tr key={row.sourceKey} className="border-b last:border-0 hover:bg-muted/50 cursor-pointer" onClick={() => onSourceClick?.(row.sourceKey)}>
                         <td className="py-2.5 pr-4">
                           <span className="flex items-center gap-2 capitalize font-medium">
                             <span
