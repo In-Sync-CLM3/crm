@@ -32,14 +32,32 @@ const SOURCE_COLORS: Record<string, string> = {
   website: "hsl(45, 93%, 47%)",
   email: "hsl(0, 84%, 60%)",
   help_widget: "hsl(142, 76%, 36%)",
+  smb_connect: "hsl(280, 67%, 55%)",
 };
+
+// Fallback palette for sources not in SOURCE_COLORS
+const FALLBACK_COLORS = [
+  "hsl(190, 80%, 45%)", "hsl(330, 70%, 55%)", "hsl(60, 80%, 45%)",
+  "hsl(160, 70%, 40%)", "hsl(240, 60%, 60%)", "hsl(15, 80%, 55%)",
+];
+
+export function getSourceColor(source: string, index = 0): string {
+  return SOURCE_COLORS[source] || FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+}
 
 export const SOURCE_DISPLAY_NAMES: Record<string, string> = {
   help_widget: "WhatsApp",
+  smb_connect: "SMB Connect",
+  crm: "CRM",
+  rmpl: "RMPL",
+  paisaa_saarthi: "Paisaa Saarthi",
+  in_sync_website: "In-Sync Website",
 };
 
 export function formatSourceName(source: string): string {
-  return SOURCE_DISPLAY_NAMES[source] || source.replace(/_/g, " ");
+  if (SOURCE_DISPLAY_NAMES[source]) return SOURCE_DISPLAY_NAMES[source];
+  // Title-case the snake_case name
+  return source.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -131,10 +149,10 @@ export function TicketDashboardCharts({ tickets, onSourceClick }: TicketDashboar
       sourceMap[src] = (sourceMap[src] || 0) + 1;
     });
     const sourceData = Object.entries(sourceMap)
-      .map(([name, value]) => ({
+      .map(([name, value], i) => ({
         name: formatSourceName(name),
         value,
-        fill: SOURCE_COLORS[name] || "hsl(var(--muted))",
+        fill: getSourceColor(name, i),
       }))
       .sort((a, b) => b.value - a.value);
 
@@ -357,7 +375,7 @@ export function TicketDashboardCharts({ tickets, onSourceClick }: TicketDashboar
                           <span className="flex items-center gap-2 capitalize font-medium">
                             <span
                               className="w-2.5 h-2.5 rounded-full shrink-0"
-                              style={{ background: SOURCE_COLORS[row.sourceKey] || "hsl(var(--muted-foreground))" }}
+                              style={{ background: getSourceColor(row.sourceKey) }}
                             />
                             {row.source}
                           </span>

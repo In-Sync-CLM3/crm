@@ -40,6 +40,21 @@ export default function SupportTickets() {
     search: searchQuery || undefined,
   });
 
+  // Fetch distinct sources from all tickets
+  const sourcesQuery = useQuery({
+    queryKey: ["ticket-sources", orgId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("support_tickets")
+        .select("source")
+        .eq("org_id", orgId!);
+      if (error) throw error;
+      const unique = [...new Set((data || []).map((t: { source: string }) => t.source || "crm"))].sort();
+      return unique as string[];
+    },
+    enabled: !!orgId,
+  });
+
   // Fetch team members for assignment
   const teamQuery = useQuery({
     queryKey: ["team-members", orgId],
@@ -207,13 +222,9 @@ export default function SupportTickets() {
             <SelectTrigger className="w-40"><SelectValue placeholder="Source" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Sources</SelectItem>
-              <SelectItem value="crm">CRM</SelectItem>
-              <SelectItem value="rmpl">RMPL</SelectItem>
-              <SelectItem value="paisaa_saarthi">Paisaa Saarthi</SelectItem>
-              <SelectItem value="help_widget">WhatsApp</SelectItem>
-              <SelectItem value="in_sync_website">In-Sync Website</SelectItem>
-              <SelectItem value="website">Website</SelectItem>
-              <SelectItem value="email">Email</SelectItem>
+              {(sourcesQuery.data || []).map((src) => (
+                <SelectItem key={src} value={src}>{formatSourceName(src)}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
           {viewFilter !== "all" && (
