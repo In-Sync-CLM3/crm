@@ -130,7 +130,60 @@ export function TicketDashboardCharts({ tickets }: TicketDashboardChartsProps) {
       }))
       .sort((a, b) => b.value - a.value);
 
-    return { avgResolutionHours, categoryData, priorityData, statusData, sourceData, trendData, resolvedCount: resolvedTickets.length };
+    // Source-wise detailed breakdown
+    const sourceWiseData: {
+      source: string;
+      sourceKey: string;
+      total: number;
+      open: number;
+      resolved: number;
+      overdue: number;
+      critical: number;
+      avgResolutionHours: number;
+    }[] = [];
+    const sourceGroups: Record<string, typeof tickets> = {};
+    tickets.forEach((t) => {
+      const src = t.source || "crm";
+      if (!sourceGroups[src]) sourceGroups[src] = [];
+      sourceGroups[src].push(t);
+    });
+    Object.entries(sourceGroups)
+      .sort((a, b) => b[1].length - a[1].length)
+      .forEach(([src, srcTickets]) => {
+        const open = srcTickets.filter((t) =>
+          ["new", "assigned", "in_progress", "awaiting_client"].includes(t.status)
+        ).length;
+        const resolved = srcTickets.filter((t) =>
+          ["resolved", "closed"].includes(t.status)
+        ).length;
+        const overdue = srcTickets.filter(
+          (t) => t.due_at && new Date(t.due_at) < new Date() && !["resolved", "closed"].includes(t.status)
+        ).length;
+        const critical = srcTickets.filter(
+          (t) => t.priority === "critical" && !["resolved", "closed"].includes(t.status)
+        ).length;
+        const srcResolved = srcTickets.filter(
+          (t) => ["resolved", "closed"].includes(t.status) && t.resolved_at
+        );
+        const srcAvgHours = srcResolved.length
+          ? srcResolved.reduce(
+              (sum, t) => sum + differenceInHours(new Date(t.resolved_at!), new Date(t.created_at)),
+              0
+            ) / srcResolved.length
+          : 0;
+        sourceWiseData.push({
+          source: src.replace(/_/g, " "),
+          sourceKey: src,
+          total: srcTickets.length,
+          open,
+          resolved,
+          overdue,
+          critical,
+          avgResolutionHours: srcAvgHours,
+        });
+      });
+
+    return { avgResolutionHours, categoryData, priorityData, statusData, sourceData, sourceWiseData, trendData, resolvedCount: resolvedTickets.length };
   }, [tickets]);
 
   const formatHours = (h: number) => {
@@ -260,6 +313,91 @@ export function TicketDashboardCharts({ tickets }: TicketDashboardChartsProps) {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Source-wise Detailed Breakdown */}
+      <Card className="md:col-span-2 xl:col-span-4">
+        <CardHeader className="pb-2 pt-3 px-4">
+          <CardTitle className="text-sm font-medium">Source-wise Breakdown</CardTitle>
+        </CardHeader>
+        <CardContent className="p-2 px-4">
+          {stats.sourceWiseData.length === 0 ? (
+            <div className="h-[100px] flex items-center justify-center text-sm text-muted-foreground">No data</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left">
+                    <th className="py-2 pr-4 font-medium text-muted-foreground text-xs uppercase tracking-wide">Source</th>
+                    <th className="py-2 px-3 font-medium text-muted-foreground text-xs uppercase tracking-wide text-center">Total</th>
+                    <th className="py-2 px-3 font-medium text-muted-foreground text-xs uppercase tracking-wide text-center">Open</th>
+                    <th className="py-2 px-3 font-medium text-muted-foreground text-xs uppercase tracking-wide text-center">Resolved</th>
+                    <th className="py-2 px-3 font-medium text-muted-foreground text-xs uppercase tracking-wide text-center">Overdue</th>
+                    <th className="py-2 px-3 font-medium text-muted-foreground text-xs uppercase tracking-wide text-center">Critical</th>
+                    <th className="py-2 px-3 font-medium text-muted-foreground text-xs uppercase tracking-wide text-center">Avg Resolution</th>
+                    <th className="py-2 pl-3 font-medium text-muted-foreground text-xs uppercase tracking-wide text-center">Resolution %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.sourceWiseData.map((row) => {
+                    const resRate = row.total ? Math.round((row.resolved / row.total) * 100) : 0;
+                    return (
+                      <tr key={row.sourceKey} className="border-b last:border-0 hover:bg-muted/50">
+                        <td className="py-2.5 pr-4">
+                          <span className="flex items-center gap-2 capitalize font-medium">
+                            <span
+                              className="w-2.5 h-2.5 rounded-full shrink-0"
+                              style={{ background: SOURCE_COLORS[row.sourceKey] || "hsl(var(--muted-foreground))" }}
+                            />
+                            {row.source}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center font-semibold">{row.total}</td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="text-blue-600 font-medium">{row.open}</span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span className="text-green-600 font-medium">{row.resolved}</span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          {row.overdue > 0 ? (
+                            <span className="text-destructive font-medium">{row.overdue}</span>
+                          ) : (
+                            <span className="text-muted-foreground">0</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          {row.critical > 0 ? (
+                            <span className="text-orange-600 font-medium">{row.critical}</span>
+                          ) : (
+                            <span className="text-muted-foreground">0</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-center text-muted-foreground">
+                          {row.resolved > 0 ? formatHours(row.avgResolutionHours) : "-"}
+                        </td>
+                        <td className="py-2.5 pl-3 text-center">
+                          <div className="flex items-center justify-center gap-2">
+                            <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
+                              <div
+                                className="h-full rounded-full transition-all"
+                                style={{
+                                  width: `${resRate}%`,
+                                  backgroundColor: resRate >= 80 ? "hsl(142, 71%, 45%)" : resRate >= 50 ? "hsl(45, 93%, 47%)" : "hsl(0, 84%, 60%)",
+                                }}
+                              />
+                            </div>
+                            <span className="text-xs font-medium w-8">{resRate}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </CardContent>
       </Card>
