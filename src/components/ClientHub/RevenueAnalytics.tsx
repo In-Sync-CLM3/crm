@@ -15,7 +15,7 @@ interface RevenueAnalyticsProps {
 }
 
 type DurationOption = "3months" | "6months" | "12months" | "thisQuarter" | "thisYear" | "all";
-type CategoryType = "invoiced" | "received" | "outstanding" | "overdue" | "quotations" | null;
+type CategoryType = "invoiced" | "received" | "outstanding" | "overdue" | "proformas" | null;
 
 export function RevenueAnalytics({ invoices }: RevenueAnalyticsProps) {
   const [duration, setDuration] = useState<DurationOption>("6months");
@@ -50,12 +50,12 @@ export function RevenueAnalytics({ invoices }: RevenueAnalyticsProps) {
     return isAfter(invDate, rangeStart) || invDate.getTime() === rangeStart.getTime();
   };
 
-  // Calculate totals (only for invoices, not quotations)
-  const allInvoicesOnly = invoices?.filter((inv) => inv.document_type !== "quotation") || [];
-  const allQuotationsOnly = invoices?.filter((inv) => inv.document_type === "quotation") || [];
+  // Calculate totals (only for invoices, not proformas)
+  const allInvoicesOnly = invoices?.filter((inv) => inv.document_type !== "quotation" && inv.document_type !== "proforma") || [];
+  const allProformasOnly = invoices?.filter((inv) => inv.document_type === "quotation" || inv.document_type === "proforma") || [];
   
   const invoicesOnly = allInvoicesOnly.filter(filterByDateRange);
-  const quotationsOnly = allQuotationsOnly.filter(filterByDateRange);
+  const proformasOnly = allProformasOnly.filter(filterByDateRange);
 
   const totalInvoiced = invoicesOnly.reduce((sum, inv) => sum + (inv.amount || 0) + (inv.tax_amount || 0), 0);
   const totalPaid = invoicesOnly
@@ -67,7 +67,7 @@ export function RevenueAnalytics({ invoices }: RevenueAnalyticsProps) {
   const totalOverdue = invoicesOnly
     .filter((inv) => inv.status === "overdue")
     .reduce((sum, inv) => sum + (inv.amount || 0) + (inv.tax_amount || 0), 0);
-  const quotationsValue = quotationsOnly.reduce((sum, inv) => sum + (inv.amount || 0) + (inv.tax_amount || 0), 0);
+  const proformasValue = proformasOnly.reduce((sum, inv) => sum + (inv.amount || 0) + (inv.tax_amount || 0), 0);
 
   // Monthly trend data - respects the selected date range
   const getMonthlyData = () => {
@@ -132,8 +132,8 @@ export function RevenueAnalytics({ invoices }: RevenueAnalyticsProps) {
         return invoicesOnly.filter((inv) => inv.status !== "paid" && inv.status !== "cancelled");
       case "overdue":
         return invoicesOnly.filter((inv) => inv.status === "overdue");
-      case "quotations":
-        return quotationsOnly;
+      case "proformas":
+        return proformasOnly;
       default:
         return [];
     }
@@ -149,8 +149,8 @@ export function RevenueAnalytics({ invoices }: RevenueAnalyticsProps) {
         return "Outstanding Invoices";
       case "overdue":
         return "Overdue Invoices";
-      case "quotations":
-        return "Quotations";
+      case "proformas":
+        return "Proforma Invoices";
       default:
         return "";
     }
@@ -271,22 +271,22 @@ export function RevenueAnalytics({ invoices }: RevenueAnalyticsProps) {
           </CardContent>
         </Card>
 
-        <Card 
+        <Card
           className={cn(
             "cursor-pointer transition-all hover:shadow-md",
-            selectedCategory === "quotations" 
-              ? "border-blue-500 ring-2 ring-blue-500/20" 
+            selectedCategory === "proformas"
+              ? "border-blue-500 ring-2 ring-blue-500/20"
               : "hover:border-blue-500/50"
           )}
-          onClick={() => setSelectedCategory("quotations")}
+          onClick={() => setSelectedCategory("proformas")}
         >
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Quotations</CardTitle>
+            <CardTitle className="text-sm font-medium">Proforma Invoices</CardTitle>
             <FileCheck className="h-4 w-4 text-blue-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold text-blue-500">{formatCurrency(quotationsValue)}</div>
-            <p className="text-xs text-muted-foreground">{quotationsOnly.length} pending</p>
+            <div className="text-xl font-bold text-blue-500">{formatCurrency(proformasValue)}</div>
+            <p className="text-xs text-muted-foreground">{proformasOnly.length} pending</p>
           </CardContent>
         </Card>
       </div>

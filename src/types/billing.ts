@@ -20,7 +20,7 @@ export const INDIAN_STATES = [
 ] as const;
 
 export type SupplyType = "intra_state" | "inter_state";
-export type BillingDocumentType = "quotation" | "proforma" | "invoice" | "credit_note";
+export type BillingDocumentType = "proforma" | "invoice" | "credit_note";
 export type BillingDocumentStatus = "draft" | "sent" | "paid" | "partially_paid" | "overdue" | "cancelled" | "accepted" | "rejected" | "expired" | "issued";
 export type PaymentMethod = "bank_transfer" | "upi" | "cheque" | "cash" | "online";
 
@@ -115,16 +115,13 @@ export interface BillingSettings {
   bank_branch: string;
   bank_upi_id: string;
   default_terms: string;
-  default_quotation_terms?: string;
   default_proforma_terms?: string;
   default_tax_rate: number;
   default_due_days: number;
   default_hsn: string;
   invoice_prefix: string;
-  quotation_prefix: string;
   proforma_prefix: string;
   next_invoice_number: number;
-  next_quotation_number: number;
   next_proforma_number: number;
   credit_note_prefix: string;
   next_credit_note_number: number;
@@ -151,7 +148,6 @@ export interface BillingClient {
 }
 
 export const DOC_TYPE_LABELS: Record<BillingDocumentType, string> = {
-  quotation: "Quotation",
   proforma: "Proforma Invoice",
   invoice: "Tax Invoice",
   credit_note: "Credit Note",
@@ -171,7 +167,6 @@ export const STATUS_COLORS: Record<string, string> = {
 };
 
 export const DOC_TYPE_COLORS: Record<string, string> = {
-  quotation: "bg-violet-100 text-violet-700",
   proforma: "bg-sky-100 text-sky-700",
   invoice: "bg-emerald-100 text-emerald-700",
   credit_note: "bg-red-100 text-red-700",

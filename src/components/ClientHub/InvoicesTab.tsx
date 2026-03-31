@@ -44,7 +44,7 @@ export function InvoicesTab() {
 
   // Form state
   const [selectedEntity, setSelectedEntity] = useState<SelectedEntity | null>(null);
-  const [documentType, setDocumentType] = useState<"invoice" | "quotation">("invoice");
+  const [documentType, setDocumentType] = useState<"invoice" | "proforma">("invoice");
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [invoiceDate, setInvoiceDate] = useState("");
   const [dueDate, setDueDate] = useState("");
@@ -94,7 +94,7 @@ export function InvoicesTab() {
       inv.notes?.toLowerCase().includes(searchLower);
     
     const matchesStatus = statusFilter === "all" || inv.status === statusFilter;
-    const matchesType = typeFilter === "all" || inv.document_type === typeFilter;
+    const matchesType = typeFilter === "all" || inv.document_type === typeFilter || (typeFilter === "proforma" && inv.document_type === "quotation");
     
     let matchesEntityType = true;
     if (entityTypeFilter === "client") matchesEntityType = !!inv.client_id;
@@ -235,7 +235,7 @@ export function InvoicesTab() {
       if (error) throw error;
     },
     onSuccess: () => {
-      notify.success("Added", `${documentType === "quotation" ? "Quotation" : "Invoice"} added successfully`);
+      notify.success("Added", `${documentType === "proforma" ? "Proforma Invoice" : "Invoice"} added successfully`);
       queryClient.invalidateQueries({ queryKey: ["all-invoices"] });
       resetForm();
       setIsDialogOpen(false);
@@ -345,7 +345,7 @@ export function InvoicesTab() {
   };
 
   const convertToInvoiceMutation = useMutation({
-    mutationFn: async (quotation: any) => {
+    mutationFn: async (proforma: any) => {
       const invoiceCount = invoices?.filter((inv) => inv.document_type === "invoice").length || 0;
       const newInvoiceNumber = `INV-${String(invoiceCount + 1).padStart(3, "0")}`;
 
@@ -353,25 +353,25 @@ export function InvoicesTab() {
         org_id: effectiveOrgId,
         invoice_number: newInvoiceNumber,
         invoice_date: new Date().toISOString().split("T")[0],
-        due_date: quotation.due_date,
-        amount: quotation.amount,
-        tax_amount: quotation.tax_amount,
-        currency: quotation.currency,
+        due_date: proforma.due_date,
+        amount: proforma.amount,
+        tax_amount: proforma.tax_amount,
+        currency: proforma.currency,
         status: "draft",
-        notes: `Converted from ${quotation.invoice_number}`,
-        file_url: quotation.file_url,
+        notes: `Converted from ${proforma.invoice_number}`,
+        file_url: proforma.file_url,
         document_type: "invoice",
-        converted_from_quotation_id: quotation.id,
-        client_id: quotation.client_id,
-        contact_id: quotation.contact_id,
-        external_entity_id: quotation.external_entity_id,
+        converted_from_quotation_id: proforma.id,
+        client_id: proforma.client_id,
+        contact_id: proforma.contact_id,
+        external_entity_id: proforma.external_entity_id,
       };
 
       const { error } = await supabase.from("client_invoices").insert(insertData);
       if (error) throw error;
     },
     onSuccess: () => {
-      notify.success("Converted", "Quotation converted to invoice");
+      notify.success("Converted", "Proforma Invoice converted to invoice");
       queryClient.invalidateQueries({ queryKey: ["all-invoices"] });
     },
   });
@@ -428,7 +428,7 @@ export function InvoicesTab() {
             <SelectContent>
               <SelectItem value="all">All Types</SelectItem>
               <SelectItem value="invoice">Invoice</SelectItem>
-              <SelectItem value="quotation">Quotation</SelectItem>
+              <SelectItem value="proforma">Proforma Invoice</SelectItem>
             </SelectContent>
           </Select>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -469,7 +469,7 @@ export function InvoicesTab() {
             </DialogTrigger>
           <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Add New {documentType === "quotation" ? "Quotation" : "Invoice"}</DialogTitle>
+              <DialogTitle>Add New {documentType === "proforma" ? "Proforma Invoice" : "Invoice"}</DialogTitle>
             </DialogHeader>
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* Document Type Toggle */}
@@ -477,16 +477,16 @@ export function InvoicesTab() {
                 <div className="space-y-0.5">
                   <Label className="text-sm font-medium">Document Type</Label>
                   <p className="text-xs text-muted-foreground">
-                    {documentType === "quotation" ? "Pre-revenue, no tax liability" : "Revenue with tax liability"}
+                    {documentType === "proforma" ? "Pre-revenue, no tax liability" : "Revenue with tax liability"}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`text-xs ${documentType === "invoice" ? "font-medium" : "text-muted-foreground"}`}>Invoice</span>
                   <Switch
-                    checked={documentType === "quotation"}
-                    onCheckedChange={(checked) => setDocumentType(checked ? "quotation" : "invoice")}
+                    checked={documentType === "proforma"}
+                    onCheckedChange={(checked) => setDocumentType(checked ? "proforma" : "invoice")}
                   />
-                  <span className={`text-xs ${documentType === "quotation" ? "font-medium" : "text-muted-foreground"}`}>Quotation</span>
+                  <span className={`text-xs ${documentType === "proforma" ? "font-medium" : "text-muted-foreground"}`}>Proforma</span>
                 </div>
               </div>
 
@@ -514,11 +514,11 @@ export function InvoicesTab() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>{documentType === "quotation" ? "Quotation" : "Invoice"} Number *</Label>
+                  <Label>{documentType === "proforma" ? "Proforma" : "Invoice"} Number *</Label>
                   <Input
                     value={invoiceNumber}
                     onChange={(e) => setInvoiceNumber(e.target.value)}
-                    placeholder={documentType === "quotation" ? "QT-001" : "INV-001"}
+                    placeholder={documentType === "proforma" ? "PI-001" : "INV-001"}
                   />
                 </div>
                 <div className="space-y-2">
@@ -601,7 +601,7 @@ export function InvoicesTab() {
               </div>
 
               <Button type="submit" className="w-full" disabled={isUploading}>
-                {isUploading ? "Saving..." : `Add ${documentType === "quotation" ? "Quotation" : "Invoice"}`}
+                {isUploading ? "Saving..." : `Add ${documentType === "proforma" ? "Proforma Invoice" : "Invoice"}`}
               </Button>
             </form>
           </DialogContent>
@@ -621,7 +621,7 @@ export function InvoicesTab() {
         <EmptyState
           icon={<Receipt className="h-12 w-12" />}
           title="No invoices found"
-          message="Add invoices and quotations to track your revenue"
+          message="Add invoices and proforma invoices to track your revenue"
         />
       ) : (
         <Card>
@@ -646,7 +646,7 @@ export function InvoicesTab() {
                   const entityInfo = getEntityInfo(inv);
                   const statusInfo = invoiceStatuses.find((s) => s.value === inv.status);
                   const total = (inv.amount || 0) + (inv.tax_amount || 0);
-                  const isQuotation = inv.document_type === "quotation";
+                  const isProforma = inv.document_type === "quotation" || inv.document_type === "proforma";
                  const isEditing = editingInvoiceId === inv.id;
                  const tdsDeducted = inv.tds_amount || 0;
 
@@ -658,8 +658,8 @@ export function InvoicesTab() {
                     >
                       <TableCell className="font-medium">{inv.invoice_number}</TableCell>
                       <TableCell>
-                        <Badge variant={isQuotation ? "secondary" : "default"}>
-                          {isQuotation ? "Quotation" : "Invoice"}
+                        <Badge variant={isProforma ? "secondary" : "default"}>
+                          {isProforma ? "Proforma" : "Invoice"}
                         </Badge>
                       </TableCell>
                       <TableCell>
@@ -749,7 +749,7 @@ export function InvoicesTab() {
                            </Button>
                          </>
                        )}
-                        {isQuotation && (
+                        {isProforma && (
                           <Button
                             variant="ghost"
                             size="icon"

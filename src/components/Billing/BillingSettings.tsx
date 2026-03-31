@@ -167,10 +167,6 @@ export function BillingSettingsPanel({ settings: initial, onSave }: BillingSetti
             <Textarea value={s.default_terms} onChange={e => u("default_terms", e.target.value)} rows={3} />
           </div>
           <div className="col-span-3 space-y-1.5">
-            <Label>Default Terms & Conditions (Quotations)</Label>
-            <Textarea value={s.default_quotation_terms || ""} onChange={e => u("default_quotation_terms", e.target.value)} rows={3} placeholder="Leave blank to use invoice terms" />
-          </div>
-          <div className="col-span-3 space-y-1.5">
             <Label>Default Terms & Conditions (Proforma Invoices)</Label>
             <Textarea value={s.default_proforma_terms || ""} onChange={e => u("default_proforma_terms", e.target.value)} rows={3} placeholder="Leave blank to use invoice terms" />
           </div>
@@ -186,7 +182,6 @@ export function BillingSettingsPanel({ settings: initial, onSave }: BillingSetti
         <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-4">Number Sequences</h3>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
           <div className="space-y-1.5"><Label>Invoice Prefix</Label><Input value={s.invoice_prefix} onChange={e => u("invoice_prefix", e.target.value)} /></div>
-          <div className="space-y-1.5"><Label>Quotation Prefix</Label><Input value={s.quotation_prefix} onChange={e => u("quotation_prefix", e.target.value)} /></div>
           <div className="space-y-1.5"><Label>Proforma Prefix</Label><Input value={s.proforma_prefix} onChange={e => u("proforma_prefix", e.target.value)} /></div>
           <div className="space-y-1.5"><Label>Credit Note Prefix</Label><Input value={s.credit_note_prefix} onChange={e => u("credit_note_prefix", e.target.value)} /></div>
         </div>
@@ -201,7 +196,6 @@ export function BillingSettingsPanel({ settings: initial, onSave }: BillingSetti
           <TableBody>
             {[
               { type: "Tax Invoice", prefix: s.invoice_prefix, next: s.next_invoice_number },
-              { type: "Quotation", prefix: s.quotation_prefix, next: s.next_quotation_number },
               { type: "Proforma Invoice", prefix: s.proforma_prefix, next: s.next_proforma_number },
               { type: "Credit Note", prefix: s.credit_note_prefix, next: s.next_credit_note_number },
             ].map(row => (

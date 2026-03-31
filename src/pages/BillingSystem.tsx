@@ -16,7 +16,7 @@ import { LoadingState } from "@/components/common/LoadingState";
 import type { BillingDocument, BillingDocumentType, BillingClient } from "@/types/billing";
 import { INDIAN_STATES } from "@/types/billing";
 
-type BillingView = "dashboard" | "quotations" | "proformas" | "invoices" | "credit_notes" | "payments" | "settings";
+type BillingView = "dashboard" | "proformas" | "invoices" | "credit_notes" | "payments" | "settings";
 
 // Map CRM client state name to state code
 function getStateCode(stateName: string | null): string {
@@ -138,7 +138,7 @@ export default function BillingSystem() {
   }, [issueCreditNote, updateDocument]);
 
   const handleConvert = useCallback((doc: BillingDocument) => {
-    const nextType: BillingDocumentType = doc.doc_type === "quotation" ? "proforma" : "invoice";
+    const nextType: BillingDocumentType = "invoice";
     convertDocument(doc, nextType);
   }, [convertDocument]);
 
@@ -203,18 +203,6 @@ export default function BillingSystem() {
             onCardClick={handleDashboardCardClick}
           />
         );
-      case "quotations":
-        return (
-          <BillingDocumentList
-            documents={documents}
-            docType="quotation"
-            onView={handleViewDoc}
-            onCreate={() => handleCreateDoc("quotation")}
-            onConvert={handleConvert}
-            onConvertToInvoice={handleConvertToInvoice}
-            onDelete={handleDeleteDoc}
-          />
-        );
       case "proformas":
         return (
           <BillingDocumentList
@@ -263,7 +251,6 @@ export default function BillingSystem() {
           <Tabs value={view} onValueChange={v => navigate(v as BillingView)}>
             <TabsList className="bg-muted/50 h-auto flex-wrap gap-0.5">
               <TabsTrigger value="dashboard" className="gap-1.5 text-xs"><Home className="h-3.5 w-3.5" />Dashboard</TabsTrigger>
-              <TabsTrigger value="quotations" className="gap-1.5 text-xs"><FileText className="h-3.5 w-3.5" />Quotations</TabsTrigger>
               <TabsTrigger value="proformas" className="gap-1.5 text-xs"><Receipt className="h-3.5 w-3.5" />Proforma Inv.</TabsTrigger>
               <TabsTrigger value="invoices" className="gap-1.5 text-xs"><IndianRupee className="h-3.5 w-3.5" />Tax Invoices</TabsTrigger>
               <TabsTrigger value="credit_notes" className="gap-1.5 text-xs"><FileX2 className="h-3.5 w-3.5" />Credit Notes</TabsTrigger>

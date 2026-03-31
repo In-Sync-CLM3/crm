@@ -32,7 +32,7 @@ const invoiceStatuses = [
 
 const documentTypes = [
   { value: "invoice", label: "Invoice", prefix: "INV-" },
-  { value: "quotation", label: "Quotation", prefix: "QT-" },
+  { value: "proforma", label: "Proforma Invoice", prefix: "PI-" },
 ];
 
 const gstRates = [
@@ -67,7 +67,7 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractedData, setExtractedData] = useState<Record<string, unknown> | null>(null);
-  const [documentType, setDocumentType] = useState<"invoice" | "quotation">("invoice");
+  const [documentType, setDocumentType] = useState<"invoice" | "proforma">("invoice");
   
   // New GST/TDS fields
   const [gstRate, setGstRate] = useState("18");
@@ -329,11 +329,11 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
   };
 
   const convertToInvoiceMutation = useMutation({
-    mutationFn: async (quotation: any) => {
+    mutationFn: async (proforma: any) => {
       // Generate new invoice number
       const invoiceCount = invoices?.filter(inv => (inv as any).document_type === 'invoice').length || 0;
       const newInvoiceNumber = `INV-${String(invoiceCount + 1).padStart(3, '0')}`;
-      
+
       const { error } = await supabase
         .from("client_invoices")
         .insert({
@@ -341,25 +341,25 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
           org_id: orgId,
           invoice_number: newInvoiceNumber,
           invoice_date: new Date().toISOString().split('T')[0],
-          due_date: quotation.due_date,
-          amount: quotation.amount,
-          tax_amount: quotation.tax_amount,
-          currency: quotation.currency,
+          due_date: proforma.due_date,
+          amount: proforma.amount,
+          tax_amount: proforma.tax_amount,
+          currency: proforma.currency,
           status: "draft",
-          notes: quotation.notes ? `Converted from ${quotation.invoice_number}. ${quotation.notes}` : `Converted from ${quotation.invoice_number}`,
-          file_url: quotation.file_url,
+          notes: proforma.notes ? `Converted from ${proforma.invoice_number}. ${proforma.notes}` : `Converted from ${proforma.invoice_number}`,
+          file_url: proforma.file_url,
           document_type: "invoice",
-          converted_from_quotation_id: quotation.id,
+          converted_from_quotation_id: proforma.id,
         });
-      
+
       if (error) throw error;
     },
     onSuccess: () => {
-      notify.success("Converted", "Quotation has been converted to an invoice");
+      notify.success("Converted", "Proforma Invoice has been converted to an invoice");
       queryClient.invalidateQueries({ queryKey: ["client-invoices", clientId] });
     },
     onError: (error: Error) => {
-      notify.error("Error", error.message || "Failed to convert quotation");
+      notify.error("Error", error.message || "Failed to convert proforma invoice");
     },
   });
 
@@ -398,8 +398,8 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
     }).format(value);
   };
 
-  // Only count invoices (not quotations) for revenue totals
-  const invoicesOnly = invoices?.filter((inv) => (inv as any).document_type !== 'quotation') || [];
+  // Only count invoices (not proformas) for revenue totals
+  const invoicesOnly = invoices?.filter((inv) => (inv as any).document_type !== 'quotation' && (inv as any).document_type !== 'proforma') || [];
   const totalAmount = invoicesOnly.reduce((sum, inv) => sum + (inv.amount || 0) + ((inv as any).tax_amount || 0), 0);
   const paidAmount = invoicesOnly.filter((inv) => inv.status === "paid").reduce((sum, inv) => sum + (inv.amount || 0) + ((inv as any).tax_amount || 0), 0);
   const totalTds = invoicesOnly.reduce((sum, inv) => sum + ((inv as any).tds_amount || 0), 0);
@@ -413,7 +413,7 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
-          <CardTitle>Invoices / Quotations</CardTitle>
+          <CardTitle>Invoices / Proforma Invoices</CardTitle>
           <div className="flex flex-wrap gap-4 mt-2 text-sm">
             <span>Invoiced: <strong>{formatCurrency(totalAmount, "INR")}</strong></span>
             <span className="text-orange-600">TDS: <strong>{formatCurrency(totalTds, "INR")}</strong></span>
@@ -429,7 +429,7 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
           </DialogTrigger>
           <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Add New {documentType === 'quotation' ? 'Quotation' : 'Invoice'}</DialogTitle>
+              <DialogTitle>Add New {documentType === 'proforma' ? 'Proforma Invoice' : 'Invoice'}</DialogTitle>
             </DialogHeader>
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* Document Type Toggle */}
@@ -437,18 +437,18 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
                 <div className="space-y-0.5">
                   <Label className="text-sm font-medium">Document Type</Label>
                   <p className="text-xs text-muted-foreground">
-                    {documentType === 'quotation' 
-                      ? 'Quotation - Pre-revenue, no tax liability' 
+                    {documentType === 'proforma'
+                      ? 'Proforma Invoice - Pre-revenue, no tax liability'
                       : 'Invoice - Revenue with tax liability'}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`text-xs ${documentType === 'invoice' ? 'font-medium' : 'text-muted-foreground'}`}>Invoice</span>
                   <Switch
-                    checked={documentType === 'quotation'}
-                    onCheckedChange={(checked) => setDocumentType(checked ? 'quotation' : 'invoice')}
+                    checked={documentType === 'proforma'}
+                    onCheckedChange={(checked) => setDocumentType(checked ? 'proforma' : 'invoice')}
                   />
-                  <span className={`text-xs ${documentType === 'quotation' ? 'font-medium' : 'text-muted-foreground'}`}>Quotation</span>
+                  <span className={`text-xs ${documentType === 'proforma' ? 'font-medium' : 'text-muted-foreground'}`}>Proforma</span>
                 </div>
               </div>
 
@@ -476,15 +476,15 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>{documentType === 'quotation' ? 'Quotation' : 'Invoice'} Number *</Label>
+                  <Label>{documentType === 'proforma' ? 'Proforma' : 'Invoice'} Number *</Label>
                   <Input
                     value={invoiceNumber}
                     onChange={(e) => setInvoiceNumber(e.target.value)}
-                    placeholder={documentType === 'quotation' ? 'QT-001' : 'INV-001'}
+                    placeholder={documentType === 'proforma' ? 'PI-001' : 'INV-001'}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>{documentType === 'quotation' ? 'Quotation' : 'Invoice'} Date *</Label>
+                  <Label>{documentType === 'proforma' ? 'Proforma' : 'Invoice'} Date *</Label>
                   <Input
                     type="date"
                     value={invoiceDate}
@@ -661,7 +661,7 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
                 />
               </div>
               <Button type="submit" className="w-full" disabled={isUploading || isExtracting}>
-                {isUploading ? "Uploading..." : `Add ${documentType === 'quotation' ? 'Quotation' : 'Invoice'}`}
+                {isUploading ? "Uploading..." : `Add ${documentType === 'proforma' ? 'Proforma Invoice' : 'Invoice'}`}
               </Button>
             </form>
           </DialogContent>
@@ -673,7 +673,7 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
           <EmptyState
             icon={<Receipt className="h-12 w-12" />}
             title="No invoices"
-            message="Add invoices and quotations for this client"
+            message="Add invoices and proforma invoices for this client"
           />
         ) : (
           <Table>
@@ -699,7 +699,7 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
                 const netReceived = (invoice as any).net_received_amount || (invoice.amount + gstAmount - tdsDeducted);
                 const paymentDate = (invoice as any).payment_received_date;
                 const actualPayment = (invoice as any).actual_payment_received;
-                const isQuotation = (invoice as any).document_type === 'quotation';
+                const isProforma = (invoice as any).document_type === 'quotation' || (invoice as any).document_type === 'proforma';
                 const isEditing = editingInvoiceId === invoice.id;
                 
                 return (
@@ -709,8 +709,8 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
                     onClick={() => !isEditing && invoice.file_url && setViewingFile(invoice.file_url)}
                   >
                     <TableCell>
-                      <Badge variant={isQuotation ? "secondary" : "default"} className="text-xs">
-                        {isQuotation ? "Quote" : "Invoice"}
+                      <Badge variant={isProforma ? "secondary" : "default"} className="text-xs">
+                        {isProforma ? "Proforma" : "Invoice"}
                       </Badge>
                     </TableCell>
                     <TableCell className="font-medium">{invoice.invoice_number}</TableCell>
@@ -813,8 +813,8 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
                             </Button>
                           </>
                         )}
-                        {/* Convert to Invoice for quotations */}
-                        {isQuotation && (
+                        {/* Convert to Invoice for proforma invoices */}
+                        {isProforma && (
                           <Button
                             variant="ghost"
                             size="icon"

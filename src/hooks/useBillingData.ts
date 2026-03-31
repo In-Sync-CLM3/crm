@@ -32,10 +32,8 @@ const DEFAULT_SETTINGS: BillingSettings = {
   default_due_days: 30,
   default_hsn: "998314",
   invoice_prefix: "INV",
-  quotation_prefix: "QTN",
   proforma_prefix: "PI",
   next_invoice_number: 1,
-  next_quotation_number: 1,
   next_proforma_number: 1,
   credit_note_prefix: "CN",
   next_credit_note_number: 1,
@@ -173,18 +171,15 @@ export function useBillingData() {
           bank_branch: settingsData.bank_branch || "",
           bank_upi_id: settingsData.bank_upi_id || "",
           default_terms: settingsData.default_terms || DEFAULT_SETTINGS.default_terms,
-          default_quotation_terms: settingsData.default_quotation_terms || undefined,
           default_proforma_terms: settingsData.default_proforma_terms || undefined,
           default_credit_note_terms: settingsData.default_credit_note_terms || undefined,
           default_tax_rate: Number(settingsData.default_tax_rate ?? 18),
           default_due_days: settingsData.default_due_days ?? 30,
           default_hsn: settingsData.default_hsn || "998314",
           invoice_prefix: settingsData.invoice_prefix || "INV",
-          quotation_prefix: settingsData.quotation_prefix || "QTN",
           proforma_prefix: settingsData.proforma_prefix || "PI",
           credit_note_prefix: settingsData.credit_note_prefix || "CN",
           next_invoice_number: settingsData.next_invoice_number ?? 1,
-          next_quotation_number: settingsData.next_quotation_number ?? 1,
           next_proforma_number: settingsData.next_proforma_number ?? 1,
           next_credit_note_number: settingsData.next_credit_note_number ?? 1,
           logo_url: settingsData.logo_url || undefined,
@@ -233,8 +228,7 @@ export function useBillingData() {
 
   // ─── Helper: increment next doc number in settings ───
   const incrementDocNumber = async (docType: BillingDocumentType) => {
-    const key = docType === "quotation" ? "next_quotation_number"
-      : docType === "proforma" ? "next_proforma_number"
+    const key = docType === "proforma" ? "next_proforma_number"
       : docType === "credit_note" ? "next_credit_note_number"
       : "next_invoice_number";
     const nextVal = (settings[key] as number) + 1;
@@ -425,8 +419,8 @@ export function useBillingData() {
 
   const getNextDocNumber = useCallback((docType: BillingDocumentType) => {
     const fy = getCurrentFinancialYear();
-    const prefix = docType === "quotation" ? settings.quotation_prefix : docType === "proforma" ? settings.proforma_prefix : docType === "credit_note" ? settings.credit_note_prefix : settings.invoice_prefix;
-    const nextNum = docType === "quotation" ? settings.next_quotation_number : docType === "proforma" ? settings.next_proforma_number : docType === "credit_note" ? settings.next_credit_note_number : settings.next_invoice_number;
+    const prefix = docType === "proforma" ? settings.proforma_prefix : docType === "credit_note" ? settings.credit_note_prefix : settings.invoice_prefix;
+    const nextNum = docType === "proforma" ? settings.next_proforma_number : docType === "credit_note" ? settings.next_credit_note_number : settings.next_invoice_number;
     return `${prefix}-${fy}-${String(nextNum).padStart(4, "0")}`;
   }, [settings]);
 
@@ -450,18 +444,15 @@ export function useBillingData() {
       bank_branch: data.bank_branch || null,
       bank_upi_id: data.bank_upi_id || null,
       default_terms: data.default_terms || null,
-      default_quotation_terms: data.default_quotation_terms || null,
       default_proforma_terms: data.default_proforma_terms || null,
       default_credit_note_terms: data.default_credit_note_terms || null,
       default_tax_rate: data.default_tax_rate,
       default_due_days: data.default_due_days,
       default_hsn: data.default_hsn || null,
       invoice_prefix: data.invoice_prefix || "INV",
-      quotation_prefix: data.quotation_prefix || "QTN",
       proforma_prefix: data.proforma_prefix || "PI",
       credit_note_prefix: data.credit_note_prefix || "CN",
       next_invoice_number: data.next_invoice_number,
-      next_quotation_number: data.next_quotation_number,
       next_proforma_number: data.next_proforma_number,
       next_credit_note_number: data.next_credit_note_number,
       logo_url: data.logo_url || null,

@@ -35,7 +35,6 @@ interface RawItem {
 }
 
 function getDefaultTerms(settings: BillingSettings, docType: BillingDocumentType): string {
-  if (docType === "quotation" && settings.default_quotation_terms) return settings.default_quotation_terms;
   if (docType === "proforma" && settings.default_proforma_terms) return settings.default_proforma_terms;
   if (docType === "credit_note" && settings.default_credit_note_terms) return settings.default_credit_note_terms;
   return settings.default_terms || "";
@@ -218,7 +217,7 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
             <Input type="date" value={form.doc_date} onChange={e => setForm({ ...form, doc_date: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <Label>{docType === "quotation" ? "Valid Until" : "Due Date"}</Label>
+            <Label>Due Date</Label>
             <Input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} />
           </div>
           <div className="space-y-1.5">
@@ -403,8 +402,7 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
               size="sm"
               className="text-xs text-muted-foreground hover:text-primary inline-flex items-center gap-1.5"
               onClick={() => {
-                const key = docType === "quotation" ? "default_quotation_terms"
-                  : docType === "proforma" ? "default_proforma_terms"
+                const key = docType === "proforma" ? "default_proforma_terms"
                   : docType === "credit_note" ? "default_credit_note_terms"
                   : "default_terms";
                 onUpdateSettings({ ...settings, [key]: form.notes });

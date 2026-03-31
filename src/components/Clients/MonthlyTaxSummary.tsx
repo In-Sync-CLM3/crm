@@ -45,9 +45,9 @@ export function MonthlyTaxSummary({ invoices, currency = "INR" }: MonthlyTaxSumm
   const [selectedMonth, setSelectedMonth] = useState<MonthlyData | null>(null);
 
   const monthlyData = useMemo(() => {
-    // Filter: only paid invoices with payment_received_date, exclude quotations
-    const paidInvoicesWithDate = invoices.filter(inv => 
-      inv.document_type !== 'quotation' && 
+    // Filter: only paid invoices with payment_received_date, exclude proformas
+    const paidInvoicesWithDate = invoices.filter(inv =>
+      inv.document_type !== 'quotation' && inv.document_type !== 'proforma' &&
       inv.status === 'paid' && 
       inv.payment_received_date
     );

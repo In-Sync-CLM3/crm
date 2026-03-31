@@ -74,7 +74,7 @@ export default function SupportTickets() {
   };
 
   const handleAssign = (id: string, userId: string | null) => {
-    updateTicket.mutate({ id, assigned_to: userId, status: "assigned" });
+    updateTicket.mutate({ id, assigned_to: userId });
   };
 
   return (
