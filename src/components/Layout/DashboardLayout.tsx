@@ -41,6 +41,8 @@ import {
   Sparkles,
   Briefcase,
   CalendarDays,
+  Megaphone,
+  Palette,
   IndianRupee,
   LifeBuoy,
 } from "lucide-react";
@@ -256,6 +258,22 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
               >
                 <TrendingUp size={16} className="shrink-0 text-sidebar-muted" />
                 <span>Marketing</span>
+              </Link>
+              <Link
+                to="/marketing/campaigns"
+                className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Megaphone size={16} className="shrink-0 text-sidebar-muted" />
+                <span>Campaigns</span>
+              </Link>
+              <Link
+                to="/marketing/templates"
+                className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Palette size={16} className="shrink-0 text-sidebar-muted" />
+                <span>Templates</span>
               </Link>
 
               {/* Operations Section */}

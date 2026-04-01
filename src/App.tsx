@@ -57,6 +57,8 @@ const EmailAutomationSettings = lazy(() => import("./pages/EmailAutomationSettin
 const CampaignOverview = lazy(() => import("./pages/Campaigns/CampaignOverview"));
 const AIInsightsDashboard = lazy(() => import("./pages/Campaigns/AIInsightsDashboard"));
 const MarketingDashboard = lazy(() => import("./pages/MarketingDashboard"));
+const CampaignManager = lazy(() => import("./pages/CampaignManager"));
+const TemplateEditor = lazy(() => import("./pages/TemplateEditor"));
 const Communications = lazy(() => import("./pages/Communications"));
 const QueueStatus = lazy(() => import("./pages/QueueStatus"));
 
@@ -288,7 +290,17 @@ const App = () => (
               <MarketingDashboard />
             </ProtectedRoute>
           } />
-          
+          <Route path="/marketing/campaigns" element={
+            <ProtectedRoute>
+              <CampaignManager />
+            </ProtectedRoute>
+          } />
+          <Route path="/marketing/templates" element={
+            <ProtectedRoute>
+              <TemplateEditor />
+            </ProtectedRoute>
+          } />
+
           <Route path="/communications" element={
             <ProtectedRoute>
               <Communications />
