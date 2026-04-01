@@ -21,9 +21,143 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Check, ChevronsUpDown } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PayloadTemplateBuilder } from "./PayloadTemplateBuilder";
 import { FilterConditionsBuilder } from "./FilterConditionsBuilder";
+
+const TARGET_TABLES = [
+  { group: "Contacts & Leads", items: [
+    { value: "contacts", label: "Contacts" },
+    { value: "contact_activities", label: "Contact Activities" },
+    { value: "contact_emails", label: "Contact Emails" },
+    { value: "contact_phones", label: "Contact Phones" },
+    { value: "contact_tags", label: "Contact Tags" },
+    { value: "contact_tag_assignments", label: "Contact Tag Assignments" },
+    { value: "contact_custom_fields", label: "Contact Custom Fields" },
+    { value: "contact_lead_scores", label: "Contact Lead Scores" },
+    { value: "contact_enrichment_runs", label: "Contact Enrichment Runs" },
+  ]},
+  { group: "Clients & Invoicing", items: [
+    { value: "clients", label: "Clients" },
+    { value: "client_invoices", label: "Client Invoices" },
+    { value: "client_documents", label: "Client Documents" },
+    { value: "client_alternate_contacts", label: "Client Alternate Contacts" },
+    { value: "payment_transactions", label: "Payment Transactions" },
+    { value: "wallet_transactions", label: "Wallet Transactions" },
+    { value: "gst_payment_tracking", label: "GST Payment Tracking" },
+  ]},
+  { group: "Pipeline & Tasks", items: [
+    { value: "pipeline_stages", label: "Pipeline Stages" },
+    { value: "pipeline_movement_history", label: "Pipeline Movement History" },
+    { value: "tasks", label: "Tasks" },
+    { value: "activity_participants", label: "Activity Participants" },
+    { value: "recurring_activity_patterns", label: "Recurring Activity Patterns" },
+  ]},
+  { group: "Email", items: [
+    { value: "email_conversations", label: "Email Conversations" },
+    { value: "email_bulk_campaigns", label: "Email Campaigns" },
+    { value: "email_campaign_recipients", label: "Email Campaign Recipients" },
+    { value: "email_templates", label: "Email Templates" },
+    { value: "email_settings", label: "Email Settings" },
+    { value: "email_unsubscribes", label: "Email Unsubscribes" },
+  ]},
+  { group: "Email Automation", items: [
+    { value: "email_automation_rules", label: "Email Automation Rules" },
+    { value: "email_automation_executions", label: "Email Automation Executions" },
+  ]},
+  { group: "WhatsApp", items: [
+    { value: "whatsapp_messages", label: "WhatsApp Messages" },
+    { value: "whatsapp_bulk_campaigns", label: "WhatsApp Campaigns" },
+    { value: "whatsapp_campaign_recipients", label: "WhatsApp Campaign Recipients" },
+    { value: "whatsapp_settings", label: "WhatsApp Settings" },
+  ]},
+  { group: "SMS", items: [
+    { value: "sms_messages", label: "SMS Messages" },
+    { value: "sms_bulk_campaigns", label: "SMS Campaigns" },
+    { value: "sms_campaign_recipients", label: "SMS Campaign Recipients" },
+  ]},
+  { group: "Calls", items: [
+    { value: "call_logs", label: "Call Logs" },
+    { value: "call_dispositions", label: "Call Dispositions" },
+    { value: "call_sub_dispositions", label: "Call Sub-Dispositions" },
+    { value: "agent_call_sessions", label: "Agent Call Sessions" },
+  ]},
+  { group: "Support Tickets", items: [
+    { value: "support_tickets", label: "Support Tickets" },
+    { value: "support_ticket_comments", label: "Ticket Comments" },
+    { value: "support_ticket_history", label: "Ticket History" },
+    { value: "support_ticket_escalations", label: "Ticket Escalations" },
+    { value: "support_ticket_notifications", label: "Ticket Notifications" },
+  ]},
+  { group: "Chat", items: [
+    { value: "chat_conversations", label: "Chat Conversations" },
+    { value: "chat_messages", label: "Chat Messages" },
+    { value: "chat_message_reactions", label: "Chat Message Reactions" },
+  ]},
+  { group: "Content & Forms", items: [
+    { value: "blog_posts", label: "Blog Posts" },
+    { value: "forms", label: "Forms" },
+    { value: "form_fields", label: "Form Fields" },
+    { value: "communication_templates", label: "Communication Templates" },
+  ]},
+  { group: "Inventory", items: [
+    { value: "inventory_items", label: "Inventory Items" },
+  ]},
+  { group: "Approvals & Automation", items: [
+    { value: "approval_rules", label: "Approval Rules" },
+    { value: "automation_approvals", label: "Automation Approvals" },
+  ]},
+  { group: "Imports", items: [
+    { value: "bulk_import_history", label: "Bulk Import History" },
+    { value: "import_jobs", label: "Import Jobs" },
+  ]},
+  { group: "Organization & Users", items: [
+    { value: "profiles", label: "Users/Profiles" },
+    { value: "teams", label: "Teams" },
+    { value: "team_members", label: "Team Members" },
+    { value: "user_roles", label: "User Roles" },
+    { value: "designations", label: "Designations" },
+    { value: "organizations", label: "Organizations" },
+    { value: "org_invites", label: "Org Invites" },
+    { value: "notifications", label: "Notifications" },
+  ]},
+  { group: "Analytics & Reports", items: [
+    { value: "campaign_analytics", label: "Campaign Analytics" },
+    { value: "campaign_insights", label: "Campaign Insights" },
+    { value: "revenue_goals", label: "Revenue Goals" },
+    { value: "saved_reports", label: "Saved Reports" },
+  ]},
+  { group: "Subscriptions", items: [
+    { value: "organization_subscriptions", label: "Organization Subscriptions" },
+    { value: "subscription_invoices", label: "Subscription Invoices" },
+  ]},
+  { group: "API & Integrations", items: [
+    { value: "api_keys", label: "API Keys" },
+    { value: "exotel_settings", label: "Exotel Settings" },
+    { value: "calendar_shares", label: "Calendar Shares" },
+    { value: "custom_fields", label: "Custom Fields" },
+  ]},
+];
+
+const ALL_TABLES = TARGET_TABLES.flatMap(g => g.items);
+
+const getTableLabel = (value: string) =>
+  ALL_TABLES.find(t => t.value === value)?.label || value;
 
 interface OutboundWebhookDialogProps {
   open: boolean;
@@ -44,6 +178,7 @@ export const OutboundWebhookDialog = ({
   const [description, setDescription] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
   const [targetTable, setTargetTable] = useState("contacts");
+  const [tableSearchOpen, setTableSearchOpen] = useState(false);
   const [targetOperation, setTargetOperation] = useState("INSERT");
   const [httpMethod, setHttpMethod] = useState("POST");
   const [headers, setHeaders] = useState<Record<string, string>>({});
@@ -214,29 +349,50 @@ export const OutboundWebhookDialog = ({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="table">Target Table *</Label>
-              <Select value={targetTable} onValueChange={setTargetTable}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="contacts">Contacts</SelectItem>
-                  <SelectItem value="contact_activities">Contact Activities</SelectItem>
-                  <SelectItem value="email_bulk_campaigns">Email Campaigns</SelectItem>
-                  <SelectItem value="blog_posts">Blog Posts</SelectItem>
-                  <SelectItem value="whatsapp_bulk_campaigns">WhatsApp Campaigns</SelectItem>
-                  <SelectItem value="call_logs">Call Logs</SelectItem>
-                  <SelectItem value="email_conversations">Email Conversations</SelectItem>
-                  <SelectItem value="whatsapp_messages">WhatsApp Messages</SelectItem>
-                  <SelectItem value="pipeline_stages">Pipeline Stages</SelectItem>
-                  <SelectItem value="teams">Teams</SelectItem>
-                  <SelectItem value="profiles">Users/Profiles</SelectItem>
-                  <SelectItem value="support_tickets">Support Tickets</SelectItem>
-                  <SelectItem value="support_ticket_comments">Ticket Comments</SelectItem>
-                  <SelectItem value="support_ticket_history">Ticket History</SelectItem>
-                  <SelectItem value="support_ticket_escalations">Ticket Escalations</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label>Target Table *</Label>
+              <Popover open={tableSearchOpen} onOpenChange={setTableSearchOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={tableSearchOpen}
+                    className="w-full justify-between font-normal"
+                  >
+                    {getTableLabel(targetTable)}
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                  <Command>
+                    <CommandInput placeholder="Search tables..." />
+                    <CommandList>
+                      <CommandEmpty>No table found.</CommandEmpty>
+                      {TARGET_TABLES.map((group) => (
+                        <CommandGroup key={group.group} heading={group.group}>
+                          {group.items.map((table) => (
+                            <CommandItem
+                              key={table.value}
+                              value={`${table.label} ${table.value}`}
+                              onSelect={() => {
+                                setTargetTable(table.value);
+                                setTableSearchOpen(false);
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 h-4 w-4",
+                                  targetTable === table.value ? "opacity-100" : "opacity-0"
+                                )}
+                              />
+                              {table.label}
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      ))}
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
 
             <div className="grid grid-cols-2 gap-4">

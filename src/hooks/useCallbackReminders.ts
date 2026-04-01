@@ -88,8 +88,8 @@ export function useCallbackReminders() {
       }));
     },
     enabled: !!effectiveOrgId,
-    refetchInterval: 30000, // Poll every 30 seconds
-    staleTime: 15000,
+    refetchInterval: 120000, // Poll every 2 minutes
+    staleTime: 60000,
   });
 
   // Update due reminders when activities change

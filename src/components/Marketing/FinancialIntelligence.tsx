@@ -27,13 +27,13 @@ import {
 } from "recharts";
 
 function formatRupees(paise: number): string {
-  const r = Math.round(paise / 100);
+  const r = Math.round((paise ?? 0) / 100);
   if (Math.abs(r) >= 100000) return `\u20B9${(r / 100000).toFixed(2)}L`;
   return `\u20B9${r.toLocaleString("en-IN")}`;
 }
 
 function formatPct(value: number): string {
-  return `${(value / 100).toFixed(1)}%`;
+  return `${((value ?? 0) / 100).toFixed(1)}%`;
 }
 
 type HealthLevel = "green" | "amber" | "red";
@@ -279,7 +279,7 @@ export function FinancialIntelligence() {
             <span className="text-xs font-medium text-muted-foreground">LTV:CAC Ratio</span>
             <BarChart3 className="h-3.5 w-3.5 text-muted-foreground" />
           </div>
-          <div className="text-xl font-bold mt-1">{ltvCacRatio.toFixed(1)}x</div>
+          <div className="text-xl font-bold mt-1">{(ltvCacRatio ?? 0).toFixed(1)}x</div>
           <div className="mt-1">{getHealthBadge(ltvCacHealth(ltvCacRatio))}</div>
         </Card>
       </div>
@@ -308,7 +308,7 @@ export function FinancialIntelligence() {
                   <XAxis dataKey="week" tick={{ fontSize: 9 }} />
                   <YAxis
                     tick={{ fontSize: 9 }}
-                    tickFormatter={(v) => `\u20B9${(v / 1000).toFixed(0)}k`}
+                    tickFormatter={(v) => `\u20B9${((v ?? 0) / 1000).toFixed(0)}k`}
                   />
                   <Tooltip
                     contentStyle={tooltipStyle}
@@ -380,7 +380,7 @@ export function FinancialIntelligence() {
                 const riskAdj = Math.round(ltv * 0.85);
                 const cac = blendedCac;
                 const ratio = cac > 0 ? ltv / cac : 0;
-                const payback = cac > 0 ? ((cac / 100) / ((ltv / 100) / 24)).toFixed(1) : "N/A";
+                const payback = cac > 0 && ltv > 0 ? ((cac / 100) / ((ltv / 100) / 24)).toFixed(1) : "N/A";
                 const health = ltvCacHealth(ratio);
 
                 return (
@@ -389,7 +389,7 @@ export function FinancialIntelligence() {
                     <TableCell className="text-xs text-right">{formatRupees(ltv)}</TableCell>
                     <TableCell className="text-xs text-right">{formatRupees(riskAdj)}</TableCell>
                     <TableCell className="text-xs text-right">{formatRupees(cac)}</TableCell>
-                    <TableCell className="text-xs text-right">{ratio.toFixed(1)}x</TableCell>
+                    <TableCell className="text-xs text-right">{(ratio ?? 0).toFixed(1)}x</TableCell>
                     <TableCell className="text-xs text-right">{payback} mo</TableCell>
                     <TableCell className="text-xs text-center">{getHealthBadge(health)}</TableCell>
                   </TableRow>
@@ -420,16 +420,16 @@ export function FinancialIntelligence() {
                 type="number"
                 tick={{ fontSize: 9 }}
                 tickFormatter={(v) =>
-                  `\u20B9${Math.abs(v) >= 100000 ? `${(v / 100000).toFixed(1)}L` : v.toLocaleString("en-IN")}`
+                  `\u20B9${Math.abs(v ?? 0) >= 100000 ? `${((v ?? 0) / 100000).toFixed(1)}L` : (v ?? 0).toLocaleString("en-IN")}`
                 }
               />
               <YAxis type="category" dataKey="category" tick={{ fontSize: 10 }} width={80} />
               <Tooltip
                 contentStyle={tooltipStyle}
                 formatter={(value: number, _name: string, entry: { payload: { pct: number } }) => {
-                  const pct = entry.payload.pct;
+                  const pct = entry.payload.pct ?? 0;
                   return [
-                    `\u20B9${Math.abs(value).toLocaleString("en-IN")} (${pct.toFixed(1)}% of MRR)`,
+                    `\u20B9${Math.abs(value ?? 0).toLocaleString("en-IN")} (${pct.toFixed(1)}% of MRR)`,
                     undefined,
                   ];
                 }}

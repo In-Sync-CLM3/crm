@@ -32,8 +32,8 @@ const channelColors: Record<string, string> = {
 };
 
 function safePct(numerator: number, denominator: number): number {
-  if (denominator === 0) return 0;
-  return parseFloat(((numerator / denominator) * 100).toFixed(1));
+  if (!denominator) return 0;
+  return parseFloat((((numerator ?? 0) / denominator) * 100).toFixed(1));
 }
 
 export function ChannelAnalytics({ days }: ChannelAnalyticsProps) {
@@ -110,7 +110,7 @@ export function ChannelAnalytics({ days }: ChannelAnalyticsProps) {
               <div className="grid grid-cols-3 gap-2">
                 {metrics.map((m) => (
                   <div key={m.label} className="text-center">
-                    <div className="text-lg font-bold">{m.value.toLocaleString()}</div>
+                    <div className="text-lg font-bold">{(m.value ?? 0).toLocaleString()}</div>
                     <div className="text-[10px] text-muted-foreground">{m.label}</div>
                   </div>
                 ))}

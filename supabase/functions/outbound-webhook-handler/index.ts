@@ -64,21 +64,47 @@ Deno.serve(async (req) => {
         webhooks = [webhook];
       }
     } else {
-      // Standard flow: query by org, table, and trigger event
-      const { data, error: webhooksError } = await supabase
-        .from('outbound_webhooks')
-        .select('*')
-        .eq('org_id', payload.orgId)
-        .eq('target_table', payload.tableName || 'contacts')
-        .eq('trigger_event', payload.triggerEvent)
-        .eq('is_active', true);
+      // Derive table and operation from payload
+      const tableName = payload.tableName || 'contacts';
+      const operation = payload.operation ||
+        (payload.triggerEvent?.endsWith('_created') ? 'INSERT' :
+         payload.triggerEvent?.endsWith('_updated') ? 'UPDATE' :
+         payload.triggerEvent?.endsWith('_deleted') ? 'DELETE' : null);
 
-      if (webhooksError) {
-        console.error('[OutboundWebhook] Error fetching webhooks:', webhooksError);
-        throw webhooksError;
+      // Primary: match by target_table + target_operation (most reliable)
+      if (operation) {
+        const { data, error: webhooksError } = await supabase
+          .from('outbound_webhooks')
+          .select('*')
+          .eq('org_id', payload.orgId)
+          .eq('target_table', tableName)
+          .eq('target_operation', operation)
+          .eq('is_active', true);
+
+        if (webhooksError) {
+          console.error('[OutboundWebhook] Error fetching webhooks:', webhooksError);
+          throw webhooksError;
+        }
+
+        webhooks = data || [];
       }
 
-      webhooks = data || [];
+      // Fallback: match by trigger_event (legacy compatibility)
+      if (webhooks.length === 0) {
+        const { data, error: webhooksError } = await supabase
+          .from('outbound_webhooks')
+          .select('*')
+          .eq('org_id', payload.orgId)
+          .eq('trigger_event', payload.triggerEvent)
+          .eq('is_active', true);
+
+        if (webhooksError) {
+          console.error('[OutboundWebhook] Error fetching webhooks (fallback):', webhooksError);
+          throw webhooksError;
+        }
+
+        webhooks = data || [];
+      }
     }
 
     if (webhooks.length === 0) {
@@ -449,12 +475,18 @@ async function executeWithRetry(
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutSeconds * 1000);
 
-      const response = await fetch(url, {
+      const fetchOptions: RequestInit = {
         method,
         headers,
-        body: JSON.stringify(body),
         signal: controller.signal,
-      });
+      };
+
+      // GET requests should not have a body
+      if (method.toUpperCase() !== 'GET') {
+        fetchOptions.body = JSON.stringify(body);
+      }
+
+      const response = await fetch(url, fetchOptions);
 
       clearTimeout(timeoutId);
 

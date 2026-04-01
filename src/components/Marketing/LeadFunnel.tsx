@@ -100,14 +100,14 @@ export function LeadFunnel({ days }: LeadFunnelProps) {
             <span className="text-xs font-medium text-muted-foreground">Avg Score</span>
             <TrendingUp className="h-3.5 w-3.5 text-green-500" />
           </div>
-          <div className="text-xl font-bold mt-1">{avgScore.toFixed(1)}</div>
+          <div className="text-xl font-bold mt-1">{(avgScore ?? 0).toFixed(1)}</div>
         </Card>
         <Card className="p-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-muted-foreground">Conversion Rate</span>
             <Target className="h-3.5 w-3.5 text-purple-500" />
           </div>
-          <div className="text-xl font-bold mt-1">{conversionRate.toFixed(1)}%</div>
+          <div className="text-xl font-bold mt-1">{(conversionRate ?? 0).toFixed(1)}%</div>
         </Card>
       </div>
 
@@ -142,7 +142,7 @@ export function LeadFunnel({ days }: LeadFunnelProps) {
                 <Tooltip
                   contentStyle={tooltipStyle}
                   formatter={(value: number, _name: string, entry: { payload: { conversion_rate: number } }) => [
-                    `${value.toLocaleString()} (${entry.payload.conversion_rate.toFixed(1)}% conv.)`,
+                    `${(value ?? 0).toLocaleString()} (${(entry.payload.conversion_rate ?? 0).toFixed(1)}% conv.)`,
                     "Leads",
                   ]}
                 />

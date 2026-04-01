@@ -184,53 +184,32 @@ export default function PipelineBoard() {
   const { data: contactsData } = useQuery({
     queryKey: ['pipeline-contacts', effectiveOrgId, activeTab, tablePagination.currentPage, tablePagination.pageSize],
     queryFn: async () => {
+      const selectFields = "id, first_name, last_name, email, phone, company, pipeline_stage_id, job_title, source, status, notes, website, address, city, state, country, created_at, updated_at, industry_type, nature_of_business, created_by, contact_phones(phone, is_primary)";
+
       if (activeTab === "board") {
-        // Board view: load all contacts
-        const query = supabase
+        // Board view: load contacts with primary phones in one query
+        const { data, error } = await supabase
           .from("contacts")
-          .select("id, first_name, last_name, email, phone, company, pipeline_stage_id, job_title, source, status, notes, website, address, city, state, country, created_at, updated_at, industry_type, nature_of_business, created_by")
+          .select(selectFields)
           .order("updated_at", { ascending: false })
           .limit(500);
-        
-        const { data, error } = await query;
+
         if (error) throw error;
-        return { data: data as Contact[], count: data?.length || 0 };
+        return { data: data as (Contact & { contact_phones?: { phone: string; is_primary: boolean }[] })[], count: data?.length || 0 };
       } else {
         // Table view: use pagination
         const offset = (tablePagination.currentPage - 1) * tablePagination.pageSize;
-        const query = supabase
+        const { data, error, count } = await supabase
           .from("contacts")
-          .select("id, first_name, last_name, email, phone, company, pipeline_stage_id, job_title, source, status, notes, website, address, city, state, country, created_at, updated_at, industry_type, nature_of_business, created_by", { count: 'exact' })
-          .order("updated_at", { ascending: false });
-        
-        const { data, error, count } = await query.range(offset, offset + tablePagination.pageSize - 1);
+          .select(selectFields, { count: 'exact' })
+          .order("updated_at", { ascending: false })
+          .range(offset, offset + tablePagination.pageSize - 1);
+
         if (error) throw error;
-        return { data: data as Contact[], count: count || 0 };
+        return { data: data as (Contact & { contact_phones?: { phone: string; is_primary: boolean }[] })[], count: count || 0 };
       }
     },
     enabled: !!effectiveOrgId,
-  });
-
-  // Fetch primary phones for all contacts
-  const { data: primaryPhonesData } = useQuery({
-    queryKey: ['contact-primary-phones', contactsData?.data?.map(c => c.id)],
-    queryFn: async () => {
-      if (!contactsData?.data?.length) return {};
-      const contactIds = contactsData.data.map(c => c.id);
-      const { data, error } = await supabase
-        .from("contact_phones")
-        .select("contact_id, phone")
-        .in("contact_id", contactIds)
-        .eq("is_primary", true);
-      if (error) throw error;
-      // Create a map of contact_id -> primary phone
-      const phoneMap: Record<string, string> = {};
-      data?.forEach(p => {
-        phoneMap[p.contact_id] = p.phone;
-      });
-      return phoneMap;
-    },
-    enabled: !!contactsData?.data?.length,
   });
 
   // Memoize contacts excluding those converted to clients, with primary phones attached
@@ -241,9 +220,9 @@ export default function PipelineBoard() {
       .filter(c => !excludeIds.has(c.id))
       .map(c => ({
         ...c,
-        primaryPhone: primaryPhonesData?.[c.id] || null,
+        primaryPhone: (c as any).contact_phones?.find((p: any) => p.is_primary)?.phone || null,
       }));
-  }, [contactsData?.data, clientContactIds, primaryPhonesData]);
+  }, [contactsData?.data, clientContactIds]);
 
   // Update pagination when data changes
   useEffect(() => {

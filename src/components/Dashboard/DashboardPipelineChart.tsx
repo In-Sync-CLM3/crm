@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Card } from "@/components/ui/card";
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from "recharts";
 
@@ -13,7 +14,7 @@ interface DashboardPipelineChartProps {
 
 const COLORS = ['#01B8AA', '#168980', '#8AD4EB', '#F2C80F', '#A66999', '#FE9666', '#FD625E'];
 
-export function DashboardPipelineChart({ data }: DashboardPipelineChartProps) {
+export const DashboardPipelineChart = memo(function DashboardPipelineChart({ data }: DashboardPipelineChartProps) {
   return (
     <Card className="p-3">
       <div className="mb-2">
@@ -47,4 +48,4 @@ export function DashboardPipelineChart({ data }: DashboardPipelineChartProps) {
       )}
     </Card>
   );
-}
+});

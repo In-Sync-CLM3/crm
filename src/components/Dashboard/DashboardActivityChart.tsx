@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Card } from "@/components/ui/card";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,7 +16,7 @@ interface DashboardActivityChartProps {
   isLoading?: boolean;
 }
 
-export function DashboardActivityChart({ data, isLoading }: DashboardActivityChartProps) {
+export const DashboardActivityChart = memo(function DashboardActivityChart({ data, isLoading }: DashboardActivityChartProps) {
   if (isLoading) {
     return (
       <Card className="p-3">
@@ -113,4 +114,4 @@ export function DashboardActivityChart({ data, isLoading }: DashboardActivityCha
       )}
     </Card>
   );
-}
+});

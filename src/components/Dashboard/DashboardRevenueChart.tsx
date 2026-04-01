@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Card } from "@/components/ui/card";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Legend, Tooltip } from "recharts";
 
@@ -21,7 +22,7 @@ const clientColors = [
   "#20BF6B",
 ];
 
-export function DashboardRevenueChart({ data, clients, formatCurrency }: DashboardRevenueChartProps) {
+export const DashboardRevenueChart = memo(function DashboardRevenueChart({ data, clients, formatCurrency }: DashboardRevenueChartProps) {
   return (
     <Card className="p-3">
       <div className="mb-2">
@@ -80,4 +81,4 @@ export function DashboardRevenueChart({ data, clients, formatCurrency }: Dashboa
       )}
     </Card>
   );
-}
+});

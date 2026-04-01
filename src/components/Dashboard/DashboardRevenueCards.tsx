@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Card } from "@/components/ui/card";
 import { IndianRupee, Clock, Percent, Scissors } from "lucide-react";
 
@@ -18,7 +19,7 @@ interface DashboardRevenueCardsProps {
   onCardClick?: (cardType: RevenueCardType) => void;
 }
 
-export function DashboardRevenueCards({ revenueStats, formatCurrency, onCardClick }: DashboardRevenueCardsProps) {
+export const DashboardRevenueCards = memo(function DashboardRevenueCards({ revenueStats, formatCurrency, onCardClick }: DashboardRevenueCardsProps) {
   const handleClick = (cardType: RevenueCardType) => {
     if (onCardClick) {
       onCardClick(cardType);
@@ -91,4 +92,4 @@ export function DashboardRevenueCards({ revenueStats, formatCurrency, onCardClic
       </Card>
     </div>
   );
-}
+});

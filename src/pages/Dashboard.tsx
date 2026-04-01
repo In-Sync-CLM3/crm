@@ -113,6 +113,7 @@ export default function Dashboard() {
       return data;
     },
     enabled: !!effectiveOrgId,
+    staleTime: 60000,
   });
 
   // Fetch pipeline distribution
@@ -127,6 +128,7 @@ export default function Dashboard() {
       return data || [];
     },
     enabled: !!effectiveOrgId,
+    staleTime: 60000,
   });
 
   // Fetch communication activity from correct data sources
@@ -211,15 +213,12 @@ export default function Dashboard() {
       const { data, error } = await supabase
         .from("client_invoices")
         .select(`
-          amount,
+          amount, 
           tax_amount,
-          status,
-          due_date,
-          document_type,
+          status, 
+          due_date, 
+          document_type, 
           invoice_date,
-          client_id,
-          contact_id,
-          external_entity_id,
           clients(first_name, last_name, company)
         `)
         .eq("org_id", effectiveOrgId)
@@ -233,7 +232,7 @@ export default function Dashboard() {
   });
 
   // Fetch paid invoices by payment_received_date for "Payments Received", "GST", and "TDS"
-  const { data: paymentsData, isLoading: paymentsLoading, error: paymentsError } = useQuery({
+  const { data: paymentsData, isLoading: paymentsLoading } = useQuery({
     queryKey: ["payments-stats", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
@@ -241,18 +240,15 @@ export default function Dashboard() {
       const { data, error } = await supabase
         .from("client_invoices")
         .select(`
-          amount,
-          status,
-          document_type,
+          amount, 
+          status, 
+          document_type, 
           invoice_date,
           payment_received_date,
           tax_amount,
           tds_amount,
           net_received_amount,
           actual_payment_received,
-          client_id,
-          contact_id,
-          external_entity_id,
           clients(first_name, last_name, company)
         `)
         .eq("org_id", effectiveOrgId)
@@ -267,179 +263,45 @@ export default function Dashboard() {
     enabled: !!effectiveOrgId,
   });
 
-  // Debug log for payments data
-  console.log('Payments data for GST/TDS:', {
-    paymentsData,
-    paymentsError,
-    count: paymentsData?.length,
-    dateRange: { from: format(dateRange.from, "yyyy-MM-dd"), to: format(dateRange.to, "yyyy-MM-dd") }
-  });
+  const revenueLoading = invoicedLoading || paymentsLoading;
 
-  // Fetch billing_documents (new billing system) for the date range
-  const { data: billingDocsData, isLoading: billingDocsLoading } = useQuery({
-    queryKey: ["billing-docs-stats", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
+  // Combined revenue data for charts (using invoiced data)
+  const revenueData = invoicedData;
+
+  // Fetch all-time GST collected + GST paid to dept in a single combined query
+  const { data: gstSummary } = useQuery({
+    queryKey: ["gst-summary-dashboard", effectiveOrgId],
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
-      const { data, error } = await supabase
-        .from("billing_documents")
-        .select("doc_type, doc_number, client_name, doc_date, total_amount, total_tax, subtotal, amount_paid, balance_due, status")
-        .eq("org_id", effectiveOrgId)
-        .in("doc_type", ["invoice", "proforma"])
-        .neq("status", "draft")
-        .neq("status", "cancelled")
-        .gte("doc_date", format(dateRange.from, "yyyy-MM-dd"))
-        .lte("doc_date", format(dateRange.to, "yyyy-MM-dd"));
-      if (error) throw error;
-      return data || [];
-    },
-    enabled: !!effectiveOrgId,
-  });
 
-  // Fetch billing_payments with parent document details for the date range
-  const { data: billingPaymentsData, isLoading: billingPaymentsLoading } = useQuery({
-    queryKey: ["billing-payments-stats", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
-    queryFn: async () => {
-      if (!effectiveOrgId) throw new Error("No organization context");
-      const { data, error } = await supabase
-        .from("billing_payments")
-        .select("id, amount, tds_amount, payment_date, document_id")
-        .eq("org_id", effectiveOrgId)
-        .gte("payment_date", format(dateRange.from, "yyyy-MM-dd"))
-        .lte("payment_date", format(dateRange.to, "yyyy-MM-dd"));
-      if (error) throw error;
-      return data || [];
-    },
-    enabled: !!effectiveOrgId,
-  });
+      // Fetch both in parallel instead of 2 sequential queries
+      const [invoicesResult, trackingResult] = await Promise.all([
+        supabase
+          .from("client_invoices")
+          .select("tax_amount")
+          .eq("org_id", effectiveOrgId)
+          .eq("status", "paid")
+          .neq("document_type", "quotation"),
+        supabase
+          .from("gst_payment_tracking")
+          .select("amount_paid, payment_status")
+          .eq("org_id", effectiveOrgId),
+      ]);
 
-  // Fetch all-time billing_documents for GST due calculation
-  const { data: allBillingPaidGst } = useQuery({
-    queryKey: ["all-billing-paid-gst", effectiveOrgId],
-    queryFn: async () => {
-      if (!effectiveOrgId) throw new Error("No organization context");
-      const { data, error } = await supabase
-        .from("billing_documents")
-        .select("total_tax")
-        .eq("org_id", effectiveOrgId)
-        .eq("doc_type", "invoice")
-        .eq("status", "paid");
-      if (error) throw error;
-      return data || [];
-    },
-    enabled: !!effectiveOrgId,
-  });
+      if (invoicesResult.error) throw invoicesResult.error;
+      if (trackingResult.error) throw trackingResult.error;
 
-  const revenueLoading = invoicedLoading || paymentsLoading || billingDocsLoading || billingPaymentsLoading;
-
-  // Normalize billing_documents to match client_invoices shape for unified display
-  const normalizedBillingDocs = useMemo(() => {
-    if (!billingDocsData) return [];
-    return billingDocsData.map((doc: any) => ({
-      id: doc.id || Math.random().toString(),
-      invoice_number: doc.doc_number,
-      amount: Number(doc.subtotal || 0),
-      tax_amount: Number(doc.total_tax || 0),
-      tds_amount: 0,
-      status: doc.status === "sent" ? "pending" : doc.status,
-      invoice_date: doc.doc_date,
-      payment_received_date: doc.status === "paid" ? doc.doc_date : null,
-      due_date: doc.due_date,
-      document_type: doc.doc_type === "proforma" ? "proforma" : "invoice",
-      net_received_amount: doc.amount_paid ? Number(doc.amount_paid) : null,
-      actual_payment_received: doc.amount_paid ? Number(doc.amount_paid) : null,
-      client_id: doc.client_id,
-      clients: { first_name: doc.client_name, last_name: "", company: doc.client_name },
-      _source: "billing",
-    }));
-  }, [billingDocsData]);
-
-  // Fetch all billing_documents (no date/status filter) for payment lookups
-  const { data: allBillingDocs } = useQuery({
-    queryKey: ["all-billing-docs-lookup", effectiveOrgId],
-    queryFn: async () => {
-      if (!effectiveOrgId) throw new Error("No organization context");
-      const { data, error } = await supabase
-        .from("billing_documents")
-        .select("id, doc_number, doc_type, client_name, subtotal, total_tax, total_amount, doc_date")
-        .eq("org_id", effectiveOrgId);
-      if (error) throw error;
-      return data || [];
-    },
-    enabled: !!effectiveOrgId,
-  });
-
-  // Normalize billing_payments for received/TDS drill-downs
-  const normalizedBillingPayments = useMemo(() => {
-    if (!billingPaymentsData) return [];
-    const docMap: Record<string, any> = {};
-    (allBillingDocs || []).forEach((d: any) => { docMap[d.id] = d; });
-    return billingPaymentsData.map((p: any) => {
-      const doc = docMap[p.document_id] || {};
-      const paymentAmount = Number(p.amount || 0);
-      const tdsAmount = Number(p.tds_amount || 0);
       return {
-        id: p.id || Math.random().toString(),
-        invoice_number: doc.doc_number || "—",
-        amount: paymentAmount + tdsAmount,
-        tax_amount: Number(doc.total_tax || 0),
-        tds_amount: tdsAmount,
-        status: "paid",
-        invoice_date: doc.doc_date || p.payment_date,
-        payment_received_date: p.payment_date,
-        document_type: doc.doc_type === "proforma" ? "proforma" : "invoice",
-        net_received_amount: paymentAmount,
-        actual_payment_received: paymentAmount,
-        clients: { first_name: doc.client_name || "", last_name: "", company: doc.client_name || "" },
-        _source: "billing",
+        allPaidInvoicesGst: invoicesResult.data || [],
+        gstPaymentTracking: trackingResult.data || [],
       };
-    });
-  }, [billingPaymentsData, allBillingDocs]);
-
-  // Combined revenue data — merges legacy client_invoices + new billing_documents
-  const revenueData = useMemo(() => {
-    return [...(invoicedData || []), ...normalizedBillingDocs];
-  }, [invoicedData, normalizedBillingDocs]);
-
-  // Combined payments data — merges legacy paid invoices + new billing_payments
-  const mergedPaymentsData = useMemo(() => {
-    return [...(paymentsData || []), ...normalizedBillingPayments];
-  }, [paymentsData, normalizedBillingPayments]);
-
-  // Fetch all-time paid invoices for total GST collected (used for Due to Dept calculation)
-  const { data: allPaidInvoicesGst } = useQuery({
-    queryKey: ["all-paid-invoices-gst", effectiveOrgId],
-    queryFn: async () => {
-      if (!effectiveOrgId) throw new Error("No organization context");
-      
-      const { data, error } = await supabase
-        .from("client_invoices")
-        .select("tax_amount")
-        .eq("org_id", effectiveOrgId)
-        .eq("status", "paid")
-        .neq("document_type", "quotation");
-      
-      if (error) throw error;
-      return data || [];
     },
     enabled: !!effectiveOrgId,
+    staleTime: 60000,
   });
 
-  // Fetch GST payment tracking records (amounts already remitted to dept)
-  const { data: gstPaymentTracking } = useQuery({
-    queryKey: ["gst-payment-tracking-dashboard", effectiveOrgId],
-    queryFn: async () => {
-      if (!effectiveOrgId) throw new Error("No organization context");
-      
-      const { data, error } = await supabase
-        .from("gst_payment_tracking")
-        .select("amount_paid, payment_status")
-        .eq("org_id", effectiveOrgId);
-      
-      if (error) throw error;
-      return data || [];
-    },
-    enabled: !!effectiveOrgId,
-  });
+  const allPaidInvoicesGst = gstSummary?.allPaidInvoicesGst;
+  const gstPaymentTracking = gstSummary?.gstPaymentTracking;
 
   // Fetch current goal - MOVED BEFORE EARLY RETURN
   // Fetch pipeline stages to get contacts by stage for MonthlyGoalTracker
@@ -455,26 +317,29 @@ export default function Dashboard() {
       return data || [];
     },
     enabled: !!effectiveOrgId,
+    staleTime: 120000,
   });
 
   // Fetch monthly actuals from backend API
   const currentYear = new Date().getFullYear();
-  const { data: backendActuals } = useQuery({
+  const { data: backendActuals, isLoading: actualsLoading } = useQuery({
     queryKey: ["monthly-actuals-backend-v2", effectiveOrgId, currentYear],
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
-      
+
       const { data, error } = await supabase.functions.invoke("get-monthly-actuals", {
         body: { org_id: effectiveOrgId, year: currentYear }
       });
-      
+
       if (error) throw error;
       return data;
     },
     enabled: !!effectiveOrgId,
+    staleTime: 120000,
   });
 
-  // Fetch yearly invoices with client details for dialog and fallback monthly computation
+  // Fetch yearly invoices with client details for dialog (fallback for drill-down)
+  // Need to include invoices where either invoice_date OR payment_received_date is in the year
   const { data: yearlyInvoicesWithClients = [] } = useQuery({
     queryKey: ["yearly-invoices-with-clients", effectiveOrgId, currentYear],
     queryFn: async () => {
@@ -482,75 +347,21 @@ export default function Dashboard() {
       const startOfYear = `${currentYear}-01-01`;
       const endOfYear = `${currentYear}-12-31`;
 
+      // Fetch invoices where invoice_date is in year OR payment_received_date is in year
       const { data, error } = await supabase
         .from("client_invoices")
         .select(`
-          id, invoice_number, amount, tax_amount, status, invoice_date, payment_received_date, document_type,
-          net_received_amount, actual_payment_received,
+          id, invoice_number, amount, status, invoice_date, payment_received_date, document_type,
           clients(id, first_name, last_name, company)
         `)
         .eq("org_id", effectiveOrgId)
-        .gte("invoice_date", startOfYear)
-        .lte("invoice_date", endOfYear);
+        .or(`invoice_date.gte.${startOfYear},payment_received_date.gte.${startOfYear}`)
+        .or(`invoice_date.lte.${endOfYear},payment_received_date.lte.${endOfYear}`);
       if (error) throw error;
-
-      // Also fetch invoices paid in this year (payment_received_date in year) but invoiced earlier
-      const { data: paidData, error: paidError } = await supabase
-        .from("client_invoices")
-        .select(`
-          id, invoice_number, amount, tax_amount, status, invoice_date, payment_received_date, document_type,
-          net_received_amount, actual_payment_received,
-          clients(id, first_name, last_name, company)
-        `)
-        .eq("org_id", effectiveOrgId)
-        .eq("status", "paid")
-        .gte("payment_received_date", startOfYear)
-        .lte("payment_received_date", endOfYear)
-        .lt("invoice_date", startOfYear);
-      if (paidError) throw paidError;
-
-      // Merge both sets, avoiding duplicates
-      const allInvoices = [...(data || [])];
-      const existingIds = new Set(allInvoices.map((inv: any) => inv.id));
-      (paidData || []).forEach((inv: any) => {
-        if (!existingIds.has(inv.id)) {
-          allInvoices.push(inv);
-        }
-      });
-
-      // Also fetch billing_documents for this year (exclude draft/cancelled)
-      const { data: billingDocs, error: billingError } = await supabase
-        .from("billing_documents")
-        .select("id, doc_number, doc_type, client_name, subtotal, total_tax, total_amount, amount_paid, balance_due, status, doc_date")
-        .eq("org_id", effectiveOrgId)
-        .in("doc_type", ["invoice", "proforma"])
-        .neq("status", "draft")
-        .neq("status", "cancelled")
-        .gte("doc_date", startOfYear)
-        .lte("doc_date", endOfYear);
-      if (billingError) throw billingError;
-
-      // Normalize billing_documents to client_invoices shape and merge
-      (billingDocs || []).forEach((doc: any) => {
-        allInvoices.push({
-          id: doc.id,
-          invoice_number: doc.doc_number,
-          amount: Number(doc.subtotal || 0),
-          tax_amount: Number(doc.total_tax || 0),
-          status: doc.status === "sent" ? "pending" : doc.status,
-          invoice_date: doc.doc_date,
-          payment_received_date: doc.status === "paid" ? doc.doc_date : null,
-          document_type: doc.doc_type,
-          net_received_amount: doc.amount_paid ? Number(doc.amount_paid) : null,
-          actual_payment_received: doc.amount_paid ? Number(doc.amount_paid) : null,
-          clients: { id: null, first_name: doc.client_name, last_name: "", company: doc.client_name },
-          _source: "billing",
-        });
-      });
-
-      return allInvoices;
+      return data || [];
     },
     enabled: !!effectiveOrgId,
+    staleTime: 120000,
   });
 
   const activityLoading = emailLoading || whatsappLoading || callsLoading || smsLoading;
@@ -611,65 +422,63 @@ export default function Dashboard() {
 
   // Calculate Due to Dept (all-time GST collected - all-time GST paid to dept)
   const dueToDept = useMemo(() => {
-    const legacyGst = allPaidInvoicesGst?.reduce((sum, inv) =>
+    const totalCollectedAllTime = allPaidInvoicesGst?.reduce((sum, inv) => 
       sum + (inv.tax_amount || 0), 0) || 0;
-    const billingGst = allBillingPaidGst?.reduce((sum, inv) =>
-      sum + Number(inv.total_tax || 0), 0) || 0;
-    const totalCollectedAllTime = legacyGst + billingGst;
-
+    
     const totalPaidToDept = gstPaymentTracking?.reduce((sum, p) => {
       if (p.payment_status === "paid" || p.payment_status === "partial") {
         return sum + (p.amount_paid || 0);
       }
       return sum;
     }, 0) || 0;
-
+    
     return totalCollectedAllTime - totalPaidToDept;
-  }, [allPaidInvoicesGst, allBillingPaidGst, gstPaymentTracking]);
+  }, [allPaidInvoicesGst, gstPaymentTracking]);
 
-  // Process revenue stats from unified merged data
+  // Process revenue stats - invoiced/pending from invoice_date, payments from payment_received_date
   const revenueStats: RevenueStats = useMemo(() => {
+    
+    // Calculate Total Invoiced and Pending from invoices by invoice_date (including quotations)
+    const invoicesOnly = invoicedData || [];
+    
     let totalInvoiced = 0;
     let totalPending = 0;
 
-    // Total Invoiced & Pending from merged revenueData (legacy + billing_documents)
-    (revenueData || []).forEach((inv: any) => {
-      const amount = inv.amount || 0;
-      const taxAmount = inv.tax_amount || 0;
+    invoicesOnly.forEach((invoice: any) => {
+      const amount = invoice.amount || 0;
+      const taxAmount = invoice.tax_amount || 0;
       const totalAmount = amount + taxAmount;
       totalInvoiced += totalAmount;
-      if (inv.status !== "paid") {
+      
+      if (invoice.status !== "paid") {
         totalPending += totalAmount;
       }
     });
 
-    // Received, GST, TDS from merged payments (legacy + billing_payments)
+    // Calculate Payments Received, GST, and TDS from payments by payment_received_date (including quotations)
+    const paidInvoices = paymentsData || [];
+    
     let totalReceived = 0;
     let totalGST = 0;
     let totalTDS = 0;
 
-    (mergedPaymentsData || []).forEach((inv: any) => {
-      const taxAmount = inv.tax_amount || 0;
-      const tdsAmount = inv.tds_amount || 0;
+    paidInvoices.forEach((invoice: any) => {
+      const taxAmount = invoice.tax_amount || 0;
+      const tdsAmount = invoice.tds_amount || 0;
+      
       totalGST += taxAmount;
       totalTDS += tdsAmount;
-      const amount = inv.amount || 0;
-      const actualReceived = inv.actual_payment_received ||
-                            inv.net_received_amount ||
+
+      // Use actual payment received if set, otherwise calculate
+      const amount = invoice.amount || 0;
+      const actualReceived = invoice.actual_payment_received || 
+                            invoice.net_received_amount || 
                             (amount + taxAmount - tdsAmount);
       totalReceived += actualReceived;
     });
 
     return { totalInvoiced, totalReceived, totalPending, totalGST, totalTDS, dueToDept };
-  }, [revenueData, mergedPaymentsData, dueToDept]);
-
-  // Resolve entity name from client join (left join, may be null)
-  const getEntityName = (inv: any): string => {
-    if (inv.clients?.company || inv.clients?.first_name) {
-      return inv.clients.company || `${inv.clients.first_name || ''} ${inv.clients.last_name || ''}`.trim() || 'Unknown';
-    }
-    return 'Unknown';
-  };
+  }, [invoicedData, paymentsData, dueToDept]);
 
   // Process monthly revenue data by client for trend chart
   const { clientRevenueData, uniqueClients } = useMemo(() => {
@@ -681,7 +490,9 @@ export default function Dashboard() {
     // Calculate total revenue per client to filter out zero-revenue clients
     const clientTotals: Record<string, number> = {};
     invoicesOnly.forEach((invoice: any) => {
-      const clientName = getEntityName(invoice);
+      const clientName = invoice.clients?.company || 
+        `${invoice.clients?.first_name || ''} ${invoice.clients?.last_name || ''}`.trim() || 
+        'Unknown';
       clientTotals[clientName] = (clientTotals[clientName] || 0) + (invoice.amount || 0);
     });
     
@@ -698,8 +509,10 @@ export default function Dashboard() {
     invoicesOnly.forEach((invoice: any) => {
       const date = new Date(invoice.invoice_date);
       const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      const clientName = getEntityName(invoice);
-
+      const clientName = invoice.clients?.company || 
+        `${invoice.clients?.first_name || ''} ${invoice.clients?.last_name || ''}`.trim() || 
+        'Unknown';
+      
       if (!monthlyData[monthKey]) {
         monthlyData[monthKey] = {};
       }
@@ -783,8 +596,10 @@ export default function Dashboard() {
         dateMap[dateKey].received += amount;
       }
       // Add client/company name
-      const clientName = getEntityName(inv);
-      if (clientName && clientName !== 'Unknown') {
+      const clientName = inv.clients?.company || 
+        `${inv.clients?.first_name || ''} ${inv.clients?.last_name || ''}`.trim() || 
+        '';
+      if (clientName) {
         dateMap[dateKey].clients.add(clientName);
       }
     });
@@ -808,20 +623,22 @@ export default function Dashboard() {
     const clientMap: Record<string, { totalInvoiced: number; totalPaid: number; invoiceCount: number; company?: string }> = {};
     
     invoicesOnly.forEach((inv: any) => {
-      const entityName = getEntityName(inv);
-      if (!clientMap[entityName]) {
-        clientMap[entityName] = {
-          totalInvoiced: 0,
-          totalPaid: 0,
+      const clientId = inv.clients?.company || 
+        `${inv.clients?.first_name || ''} ${inv.clients?.last_name || ''}`.trim() || 
+        'Unknown';
+      if (!clientMap[clientId]) {
+        clientMap[clientId] = { 
+          totalInvoiced: 0, 
+          totalPaid: 0, 
           invoiceCount: 0,
           company: inv.clients?.company
         };
       }
       const amount = inv.amount || 0;
-      clientMap[entityName].totalInvoiced += amount;
-      clientMap[entityName].invoiceCount += 1;
+      clientMap[clientId].totalInvoiced += amount;
+      clientMap[clientId].invoiceCount += 1;
       if (inv.status === 'paid') {
-        clientMap[entityName].totalPaid += amount;
+        clientMap[clientId].totalPaid += amount;
       }
     });
 
@@ -882,11 +699,11 @@ export default function Dashboard() {
     return () => window.removeEventListener("orgContextChange", handleOrgChange);
   }, [queryClient]);
 
-  // Process monthly actuals from backend API, with client-side fallback for revenue
+  // Process monthly actuals from backend API
   const monthlyActuals = useMemo(() => {
     const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
     const result: Record<string, { qualified: number; proposals: number; deals: number; invoiced: number; received: number }> = {};
-
+    
     // Initialize all months
     monthNames.forEach(m => {
       result[m] = { qualified: 0, proposals: 0, deals: 0, invoiced: 0, received: 0 };
@@ -894,55 +711,22 @@ export default function Dashboard() {
 
     // If we have backend actuals, use them
     if (backendActuals?.monthly_actuals) {
-      const hasNonZeroData = backendActuals.monthly_actuals.some((md: any) =>
-        (md.invoiced || 0) > 0 || (md.received || 0) > 0 || (md.qualified || 0) > 0
-      );
-
-      if (hasNonZeroData) {
-        backendActuals.monthly_actuals.forEach((monthData: any) => {
-          const monthKey = monthNames[monthData.month - 1];
-          if (monthKey) {
-            result[monthKey] = {
-              qualified: monthData.qualified || 0,
-              proposals: monthData.proposals || 0,
-              deals: monthData.deals || 0,
-              invoiced: monthData.invoiced || 0,
-              received: monthData.received || 0,
-            };
-          }
-        });
-        return result;
-      }
-    }
-
-    // Fallback: compute monthly revenue from yearlyInvoicesWithClients
-    if (yearlyInvoicesWithClients && yearlyInvoicesWithClients.length > 0) {
-      yearlyInvoicesWithClients.forEach((inv: any) => {
-        // Invoiced: group by invoice_date month
-        if (inv.invoice_date) {
-          const invoiceMonth = new Date(inv.invoice_date).getMonth();
-          const monthKey = monthNames[invoiceMonth];
-          if (monthKey) {
-            const amount = (inv.amount || 0) + (inv.tax_amount || 0);
-            result[monthKey].invoiced += amount;
-          }
-        }
-
-        // Received: group by payment_received_date month
-        if (inv.status === 'paid' && inv.payment_received_date) {
-          const paymentMonth = new Date(inv.payment_received_date).getMonth();
-          const monthKey = monthNames[paymentMonth];
-          if (monthKey) {
-            const received = inv.actual_payment_received || inv.net_received_amount ||
-              ((inv.amount || 0) + (inv.tax_amount || 0));
-            result[monthKey].received += received;
-          }
+      backendActuals.monthly_actuals.forEach((monthData: any) => {
+        const monthKey = monthNames[monthData.month - 1];
+        if (monthKey) {
+          result[monthKey] = {
+            qualified: monthData.qualified || 0,
+            proposals: monthData.proposals || 0,
+            deals: monthData.deals || 0,
+            invoiced: monthData.invoiced || 0,
+            received: monthData.received || 0,
+          };
         }
       });
     }
 
     return result;
-  }, [backendActuals, yearlyInvoicesWithClients]);
+  }, [backendActuals]);
 
   // Store backend actuals for dialog data lookup
   const backendMonthlyData = useMemo(() => {
@@ -958,51 +742,42 @@ export default function Dashboard() {
     return result;
   }, [backendActuals]);
 
-  // Get filtered contacts/invoices for dialog using backend IDs or client-side fallback
+  // Get filtered contacts/invoices for dialog using backend IDs
   const getDialogData = useMemo(() => {
-    const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-
     return async (month: string, metricType: MetricType) => {
       const monthData = backendMonthlyData[month];
-      const monthIndex = monthNames.indexOf(month);
+      
+      if (!monthData) {
+        return { contacts: [], invoices: [] };
+      }
 
       if (metricType === "invoiced" || metricType === "received") {
-        const invoiceIds = metricType === "invoiced"
-          ? monthData?.invoiced_invoice_ids
-          : monthData?.received_invoice_ids;
-
-        // If backend has IDs, use them; otherwise filter yearlyInvoicesWithClients by month
-        let matchedInvoices: any[];
-        if (invoiceIds && invoiceIds.length > 0) {
-          matchedInvoices = yearlyInvoicesWithClients.filter((inv: any) => invoiceIds.includes(inv.id));
-        } else if (monthIndex >= 0) {
-          // Client-side fallback: filter by month from invoice_date or payment_received_date
-          matchedInvoices = yearlyInvoicesWithClients.filter((inv: any) => {
-            if (metricType === "invoiced") {
-              return inv.invoice_date && new Date(inv.invoice_date).getMonth() === monthIndex;
-            } else {
-              return inv.status === "paid" && inv.payment_received_date &&
-                new Date(inv.payment_received_date).getMonth() === monthIndex;
-            }
-          });
-        } else {
-          matchedInvoices = [];
+        const invoiceIds = metricType === "invoiced" 
+          ? monthData.invoiced_invoice_ids 
+          : monthData.received_invoice_ids;
+        
+        if (!invoiceIds || invoiceIds.length === 0) {
+          return { contacts: [], invoices: [] };
         }
 
-        const invoices = matchedInvoices.map((inv: any) => ({
-          id: inv.id,
-          invoice_number: inv.invoice_number,
-          amount: inv.amount || 0,
-          status: inv.status,
-          invoice_date: metricType === "received" ? (inv.payment_received_date || inv.invoice_date) : inv.invoice_date,
-          clientName: getEntityName(inv),
-        }));
+        // Fetch invoice details from yearlyInvoicesWithClients
+        // For "received" type, use payment_received_date as the display date
+        const invoices = yearlyInvoicesWithClients
+          .filter((inv: any) => invoiceIds.includes(inv.id))
+          .map((inv: any) => ({
+            id: inv.id,
+            invoice_number: inv.invoice_number,
+            amount: inv.amount || 0,
+            status: inv.status,
+            invoice_date: metricType === "received" ? (inv.payment_received_date || inv.invoice_date) : inv.invoice_date,
+            clientName: inv.clients?.company || `${inv.clients?.first_name || ''} ${inv.clients?.last_name || ''}`.trim() || 'Unknown',
+          }));
         return { invoices, contacts: [] };
       } else {
         let contactIds: string[] = [];
-        if (metricType === "qualified") contactIds = monthData?.qualified_contact_ids || [];
-        else if (metricType === "proposals") contactIds = monthData?.proposal_contact_ids || [];
-        else if (metricType === "deals") contactIds = monthData?.deal_contact_ids || [];
+        if (metricType === "qualified") contactIds = monthData.qualified_contact_ids || [];
+        else if (metricType === "proposals") contactIds = monthData.proposal_contact_ids || [];
+        else if (metricType === "deals") contactIds = monthData.deal_contact_ids || [];
         
         if (contactIds.length === 0) {
           return { contacts: [], invoices: [] };
@@ -1095,7 +870,7 @@ export default function Dashboard() {
   const pendingTasksCount = allTasks.filter(t => t.status === "pending").length;
   const overdueTasksCount = allTasks.filter(t => t.isOverdue && t.status !== "completed").length;
 
-  const loading = orgLoading || statsLoading || pipelineLoading || revenueLoading;
+  const loading = orgLoading || statsLoading || pipelineLoading || revenueLoading || actualsLoading;
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleRefresh = async () => {
@@ -1124,8 +899,8 @@ export default function Dashboard() {
 
   // Get invoices for revenue card dialog based on card type
   const getRevenueCardInvoices = useMemo(() => {
-    if (!revenueData && !mergedPaymentsData) return [];
-
+    if (!invoicedData && !paymentsData) return [];
+    
     const mapInvoice = (inv: any) => ({
       id: inv.id,
       invoice_number: inv.invoice_number,
@@ -1135,24 +910,24 @@ export default function Dashboard() {
       payment_received_date: inv.payment_received_date,
       tax_amount: inv.tax_amount || 0,
       tds_amount: inv.tds_amount || 0,
-      clientName: getEntityName(inv),
+      clientName: inv.clients?.company || `${inv.clients?.first_name || ''} ${inv.clients?.last_name || ''}`.trim() || 'Unknown',
     });
 
     switch (selectedCardType) {
       case "invoiced":
-        return (revenueData || []).map(mapInvoice);
+        return (invoicedData || []).map(mapInvoice);
       case "received":
-        return (mergedPaymentsData || []).map(mapInvoice);
+        return (paymentsData || []).map(mapInvoice);
       case "pending":
-        return (revenueData || []).filter((inv: any) => inv.status !== "paid").map(mapInvoice);
+        return (invoicedData || []).filter((inv: any) => inv.status !== "paid").map(mapInvoice);
       case "gst":
-        return (mergedPaymentsData || []).filter((inv: any) => (inv.tax_amount || 0) > 0).map(mapInvoice);
+        return (paymentsData || []).filter((inv: any) => (inv.tax_amount || 0) > 0).map(mapInvoice);
       case "tds":
-        return (mergedPaymentsData || []).filter((inv: any) => (inv.tds_amount || 0) > 0).map(mapInvoice);
+        return (paymentsData || []).filter((inv: any) => (inv.tds_amount || 0) > 0).map(mapInvoice);
       default:
         return [];
     }
-  }, [selectedCardType, revenueData, mergedPaymentsData]);
+  }, [selectedCardType, invoicedData, paymentsData]);
 
   // Format currency in Indian format
   const formatCurrency = (amount: number) => {

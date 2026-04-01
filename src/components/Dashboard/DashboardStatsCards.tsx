@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Card } from "@/components/ui/card";
 import { Users, Target, CheckSquare, ArrowUpRight, ArrowDownRight } from "lucide-react";
 
@@ -12,7 +13,7 @@ interface DashboardStatsCardsProps {
   overdueTasksCount: number;
 }
 
-export function DashboardStatsCards({ stats, pendingTasksCount, overdueTasksCount }: DashboardStatsCardsProps) {
+export const DashboardStatsCards = memo(function DashboardStatsCards({ stats, pendingTasksCount, overdueTasksCount }: DashboardStatsCardsProps) {
   return (
     <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
       <Card className="p-3">
@@ -65,4 +66,4 @@ export function DashboardStatsCards({ stats, pendingTasksCount, overdueTasksCoun
       </Card>
     </div>
   );
-}
+});

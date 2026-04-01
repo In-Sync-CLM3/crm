@@ -70,13 +70,13 @@ export default function CallLogs() {
         query = query.eq('call_type', callTypeFilter);
       }
 
-      const { data, error } = await query;
+      const { data, error } = await query.limit(500);
 
       if (error) throw error;
       return (data || []) as CallLog[];
     },
     enabled: !!effectiveOrgId,
-    refetchInterval: 15000, // Auto-refresh every 15 seconds
+    refetchInterval: 60000, // Auto-refresh every 60 seconds
   });
 
   const formatDuration = (seconds: number) => {

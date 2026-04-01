@@ -121,7 +121,7 @@ export function MarketingOverview({ days }: MarketingOverviewProps) {
     },
     {
       label: "Conversion Rate",
-      value: `${stats.conversion_rate.toFixed(1)}%`,
+      value: `${(stats.conversion_rate ?? 0).toFixed(1)}%`,
       icon: Target,
       color: "text-rose-500",
     },

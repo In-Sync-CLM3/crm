@@ -143,8 +143,7 @@ export function DueToDeptDialog({ open, onClose }: DueToDeptDialogProps) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["gst-payment-tracking"] });
-      queryClient.invalidateQueries({ queryKey: ["gst-payment-tracking-dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["all-paid-invoices-gst"] });
+      queryClient.invalidateQueries({ queryKey: ["gst-summary-dashboard"] });
       toast.success("GST payment status updated");
       setPaymentDialogOpen(false);
       resetPaymentForm();

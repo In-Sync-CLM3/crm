@@ -31,7 +31,7 @@ interface Campaign {
 }
 
 function formatRupees(paise: number): string {
-  const r = Math.round(paise / 100);
+  const r = Math.round((paise ?? 0) / 100);
   if (Math.abs(r) >= 100000) return `\u20B9${(r / 100000).toFixed(2)}L`;
   return `\u20B9${r.toLocaleString("en-IN")}`;
 }
@@ -124,13 +124,13 @@ export function CampaignPerformance({ days }: CampaignPerformanceProps) {
                   {statusBadge(campaign.status)}
                 </TableCell>
                 <TableCell className="text-xs text-right">
-                  {campaign.leads.toLocaleString()}
+                  {(campaign.leads ?? 0).toLocaleString()}
                 </TableCell>
                 <TableCell className="text-xs text-right">
-                  {campaign.enrollments.toLocaleString()}
+                  {(campaign.enrollments ?? 0).toLocaleString()}
                 </TableCell>
                 <TableCell className="text-xs text-right">
-                  {campaign.actions.toLocaleString()}
+                  {(campaign.actions ?? 0).toLocaleString()}
                 </TableCell>
                 <TableCell className="text-xs text-right">
                   {formatRupees(campaign.budget)}
