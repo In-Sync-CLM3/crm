@@ -1,0 +1,1163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>In-Sync Revenue Engine — Financial Intelligence</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --primary: #3b82f6;
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --bg: #f9fafb;
+    --card-bg: #ffffff;
+    --text-body: #374151;
+    --text-heading: #111827;
+    --text-muted: #6b7280;
+    --border: #e5e7eb;
+    --radius: 10px;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text-body);
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  /* ---- Breakpoint Banner ---- */
+  #breakpoint-banner { display: none; }
+  #breakpoint-banner.active { display: block; }
+  .breakpoint-alert {
+    background: var(--danger);
+    color: #fff;
+    padding: 10px 20px;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid rgba(0,0,0,.1);
+  }
+  .breakpoint-alert strong { font-weight: 700; }
+  .breakpoint-alert .bp-icon { font-size: 18px; flex-shrink: 0; }
+  .breakpoint-alert .bp-meta { color: rgba(255,255,255,.85); margin-left: auto; font-size: 12px; white-space: nowrap; }
+
+  /* ---- Header ---- */
+  .header {
+    background: var(--card-bg);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px 24px;
+  }
+  .header h1 {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-heading);
+    white-space: nowrap;
+  }
+  .header-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+    flex-wrap: wrap;
+  }
+  .header-controls select, .header-controls button {
+    font-size: 13px;
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--card-bg);
+    color: var(--text-body);
+    cursor: pointer;
+    outline: none;
+  }
+  .header-controls select:focus, .header-controls button:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(59,130,246,.15);
+  }
+  .btn-refresh {
+    background: var(--primary) !important;
+    color: #fff !important;
+    border-color: var(--primary) !important;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .btn-refresh:hover { opacity: .9; }
+  .last-refresh {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  /* ---- Layout ---- */
+  .container { max-width: 1360px; margin: 0 auto; padding: 20px 16px; }
+
+  .metric-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+
+  .panel-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+
+  .trend-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+
+  .full-width { grid-column: 1 / -1; }
+
+  @media (max-width: 767px) {
+    .metric-grid { grid-template-columns: repeat(2, 1fr); }
+    .panel-grid { grid-template-columns: 1fr; }
+    .trend-grid { grid-template-columns: 1fr; }
+    .header { padding: 12px 16px; }
+    .header h1 { font-size: 15px; }
+    .header-controls { margin-left: 0; width: 100%; }
+  }
+
+  /* ---- Card ---- */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    position: relative;
+  }
+  .card-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+  }
+  .card-value {
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--text-heading);
+    line-height: 1.1;
+  }
+
+  /* ---- Health Pill ---- */
+  .pill {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 10px;
+    border-radius: 100px;
+    text-transform: uppercase;
+    letter-spacing: .3px;
+    margin-top: 6px;
+  }
+  .pill-green { background: #dcfce7; color: #166534; }
+  .pill-amber { background: #fef3c7; color: #92400e; }
+  .pill-red   { background: #fee2e2; color: #991b1b; }
+
+  /* ---- Panel Headers ---- */
+  .panel-header {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-heading);
+    margin-bottom: 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ---- Table ---- */
+  .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .data-table th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .4px;
+    color: var(--text-muted);
+    padding: 8px 10px;
+    border-bottom: 2px solid var(--border);
+  }
+  .data-table td {
+    padding: 10px 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-body);
+    white-space: nowrap;
+  }
+  .data-table tbody tr:last-child td { border-bottom: none; }
+
+  /* ---- Chart Containers ---- */
+  .chart-wrap { position: relative; width: 100%; min-height: 240px; }
+  .chart-wrap canvas { width: 100% !important; }
+
+  /* ---- Empty State ---- */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    color: var(--text-muted);
+    font-size: 14px;
+    gap: 8px;
+  }
+  .empty-state .empty-icon { font-size: 32px; opacity: .4; }
+
+  /* ---- Spinner ---- */
+  .loading-overlay {
+    position: fixed; inset: 0;
+    background: rgba(249,250,251,.85);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 9999;
+    transition: opacity .3s;
+  }
+  .loading-overlay.hidden { opacity: 0; pointer-events: none; }
+  .spinner {
+    width: 36px; height: 36px;
+    border: 3px solid var(--border);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- Scrollbar ---- */
+  .table-scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<div class="loading-overlay" id="loading"><div class="spinner"></div></div>
+
+<!-- Breakpoint Banner -->
+<div id="breakpoint-banner"></div>
+
+<!-- Header -->
+<header class="header">
+  <h1>In-Sync Revenue Engine &mdash; Financial Intelligence</h1>
+  <div class="header-controls">
+    <select id="period-select" title="Period">
+      <option value="3">3 Months</option>
+      <option value="6">6 Months</option>
+      <option value="9">9 Months</option>
+      <option value="12" selected>12 Months</option>
+      <option value="24">24 Months</option>
+    </select>
+    <select id="segment-select" title="Segment">
+      <option value="all">All Segments</option>
+      <option value="india">India</option>
+      <option value="international">International</option>
+    </select>
+    <button class="btn-refresh" id="btn-refresh" title="Refresh data">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      Refresh
+    </button>
+    <span class="last-refresh" id="last-refresh">—</span>
+  </div>
+</header>
+
+<!-- Main Container -->
+<div class="container">
+
+  <!-- Panel 1: Headline Metric Cards -->
+  <div class="metric-grid" id="metric-grid">
+    <div class="card" id="card-mrr">
+      <div class="card-title">Monthly Recurring Revenue</div>
+      <div class="card-value" id="val-mrr">—</div>
+      <div id="pill-mrr"></div>
+    </div>
+    <div class="card" id="card-gm">
+      <div class="card-title">Gross Margin</div>
+      <div class="card-value" id="val-gm">—</div>
+      <div id="pill-gm"></div>
+    </div>
+    <div class="card" id="card-cac">
+      <div class="card-title">Blended CAC</div>
+      <div class="card-value" id="val-cac">—</div>
+      <div id="pill-cac"></div>
+    </div>
+    <div class="card" id="card-ltvcac">
+      <div class="card-title">LTV : CAC Ratio</div>
+      <div class="card-value" id="val-ltvcac">—</div>
+      <div id="pill-ltvcac"></div>
+    </div>
+  </div>
+
+  <!-- Panel 2 & 3: Charts Row -->
+  <div class="panel-grid">
+    <!-- CAC by Channel -->
+    <div class="card">
+      <div class="panel-header">CAC by Channel</div>
+      <div class="chart-wrap" id="wrap-cac-channel">
+        <canvas id="chart-cac-channel"></canvas>
+      </div>
+    </div>
+    <!-- Payback Period -->
+    <div class="card">
+      <div class="panel-header">Payback Period by Channel</div>
+      <div class="chart-wrap" id="wrap-payback">
+        <canvas id="chart-payback"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Panel 4: LTV by Segment (table) -->
+  <div class="panel-grid">
+    <div class="card full-width">
+      <div class="panel-header">LTV by Segment</div>
+      <div class="table-scroll">
+        <table class="data-table" id="table-ltv">
+          <thead>
+            <tr>
+              <th>Segment</th>
+              <th>LTV (Best-case)</th>
+              <th>LTV (Risk-adj.)</th>
+              <th>CAC</th>
+              <th>LTV:CAC</th>
+              <th>Payback</th>
+              <th>Health</th>
+            </tr>
+          </thead>
+          <tbody id="tbody-ltv"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Panel 5: MRR Cost Waterfall -->
+  <div class="panel-grid">
+    <div class="card full-width">
+      <div class="panel-header">MRR Cost Waterfall</div>
+      <div class="chart-wrap" id="wrap-waterfall">
+        <canvas id="chart-waterfall"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trend Lines Section -->
+  <div class="panel-header" style="margin-top: 8px;">12-Week Trend Lines</div>
+  <div class="trend-grid" style="margin-top: 12px;">
+    <div class="card">
+      <div class="card-title">MRR Growth Rate</div>
+      <div class="chart-wrap"><canvas id="chart-trend-mrr"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Blended CAC</div>
+      <div class="chart-wrap"><canvas id="chart-trend-cac"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title">LTV : CAC Ratio</div>
+      <div class="chart-wrap"><canvas id="chart-trend-ltvcac"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Gross Margin</div>
+      <div class="chart-wrap"><canvas id="chart-trend-gm"></canvas></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ============================================================
+// CONFIG — update on deploy
+// ============================================================
+const CONFIG = {
+  SUPABASE_URL: 'https://knuewnenaswscgaldjej.supabase.co',
+  SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtudWV3bmVuYXN3c2NnYWxkamVqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI2NjQ5MDcsImV4cCI6MjA4ODI0MDkwN30.g3i9sLO72xrmFwhZ8cnw_v7J8HVbpLF5C5MbqdPzyps',
+};
+
+// ============================================================
+// Formatting Helpers
+// ============================================================
+function formatCurrency(paise) {
+  const rupees = Math.round(paise / 100);
+  if (Math.abs(rupees) >= 100000) {
+    const lakhs = rupees / 100000;
+    return '\u20B9' + lakhs.toFixed(2) + 'L';
+  }
+  return '\u20B9' + rupees.toLocaleString('en-IN');
+}
+
+function formatCurrencyRupees(rupees) {
+  rupees = Math.round(rupees);
+  if (Math.abs(rupees) >= 100000) {
+    const lakhs = rupees / 100000;
+    return '\u20B9' + lakhs.toFixed(2) + 'L';
+  }
+  return '\u20B9' + rupees.toLocaleString('en-IN');
+}
+
+function formatPercent(decimal) {
+  return (decimal * 100).toFixed(1) + '%';
+}
+
+function formatRatio(num) {
+  return num.toFixed(1) + ':1';
+}
+
+function pillHTML(level, label) {
+  const cls = level === 'green' ? 'pill-green' : level === 'amber' ? 'pill-amber' : 'pill-red';
+  return '<span class="pill ' + cls + '">' + (label || level) + '</span>';
+}
+
+function healthLevel(value, greenMin, amberMin) {
+  // greenMin = threshold above which green, amberMin = threshold above which amber
+  if (value >= greenMin) return 'green';
+  if (value >= amberMin) return 'amber';
+  return 'red';
+}
+
+function emptyStateHTML(msg) {
+  return '<div class="empty-state"><div class="empty-icon">&#x1F4CA;</div><div>' + (msg || 'No data available yet') + '</div></div>';
+}
+
+// ============================================================
+// Supabase Fetch
+// ============================================================
+async function sbFetch(path) {
+  const url = CONFIG.SUPABASE_URL + '/rest/v1/' + path;
+  const res = await fetch(url, {
+    headers: {
+      'apikey': CONFIG.SUPABASE_ANON_KEY,
+      'Authorization': 'Bearer ' + CONFIG.SUPABASE_ANON_KEY,
+      'Accept': 'application/json',
+    },
+  });
+  if (!res.ok) throw new Error('Fetch failed: ' + res.status);
+  return res.json();
+}
+
+// ============================================================
+// State
+// ============================================================
+let metricsData = [];
+let breakpointsData = [];
+let chartInstances = {};
+
+// ============================================================
+// Data Loading
+// ============================================================
+async function loadData() {
+  const period = document.getElementById('period-select').value;
+  const segment = document.getElementById('segment-select').value;
+
+  let metricsQuery = 'mkt_engine_metrics?period_type=eq.weekly&order=period_end.desc&limit=' + (parseInt(period) * 4);
+  if (segment !== 'all') {
+    metricsQuery += '&segment=eq.' + segment;
+  }
+
+  const breakpointsQuery = 'mkt_engine_logs?log_type=eq.breakpoint&resolved_at=is.null&order=created_at.desc';
+
+  try {
+    const [metrics, breakpoints] = await Promise.all([
+      sbFetch(metricsQuery),
+      sbFetch(breakpointsQuery),
+    ]);
+    metricsData = metrics || [];
+    breakpointsData = breakpoints || [];
+  } catch (e) {
+    console.warn('Data fetch error:', e);
+    metricsData = [];
+    breakpointsData = [];
+  }
+}
+
+// ============================================================
+// Render: Breakpoints
+// ============================================================
+function renderBreakpoints() {
+  const el = document.getElementById('breakpoint-banner');
+  if (!breakpointsData.length) {
+    el.className = '';
+    el.innerHTML = '';
+    return;
+  }
+  el.className = 'active';
+  el.innerHTML = breakpointsData.map(function(bp) {
+    const name = bp.event_name || bp.log_message || 'Breakpoint';
+    const trigger = bp.trigger_condition || bp.metadata?.trigger_condition || '';
+    const paused = bp.paused_actions || bp.metadata?.paused_actions || '';
+    const meta = trigger ? ('Trigger: ' + trigger) : '';
+    const pausedStr = paused ? (' | Paused: ' + paused) : '';
+    return '<div class="breakpoint-alert">' +
+      '<span class="bp-icon">&#x26A0;</span>' +
+      '<span><strong>' + name + '</strong>' + (meta ? ' &mdash; ' + meta + pausedStr : '') + '</span>' +
+      '<span class="bp-meta">' + new Date(bp.created_at).toLocaleDateString() + '</span>' +
+      '</div>';
+  }).join('');
+}
+
+// ============================================================
+// Render: Headline Metrics
+// ============================================================
+function renderHeadlineMetrics() {
+  const latest = metricsData.length ? metricsData[0] : null;
+
+  if (!latest) {
+    document.getElementById('val-mrr').textContent = '—';
+    document.getElementById('val-gm').textContent = '—';
+    document.getElementById('val-cac').textContent = '—';
+    document.getElementById('val-ltvcac').textContent = '—';
+    ['pill-mrr','pill-gm','pill-cac','pill-ltvcac'].forEach(function(id) {
+      document.getElementById(id).innerHTML = '';
+    });
+    return;
+  }
+
+  // MRR
+  const mrr = latest.mrr || 0;
+  const mrrTarget = latest.mrr_target || mrr;
+  const mrrRatio = mrrTarget > 0 ? mrr / mrrTarget : 1;
+  document.getElementById('val-mrr').textContent = formatCurrencyRupees(mrr);
+  let mrrHealth = 'green';
+  if (mrrRatio < 0.7) mrrHealth = 'red';
+  else if (mrrRatio < 0.9) mrrHealth = 'amber';
+  document.getElementById('pill-mrr').innerHTML = pillHTML(mrrHealth, mrrHealth === 'green' ? 'On Target' : mrrHealth === 'amber' ? 'Below Target' : 'Critical');
+
+  // Gross Margin
+  const gm = latest.gross_margin || 0;
+  document.getElementById('val-gm').textContent = formatPercent(gm);
+  let gmHealth = 'green';
+  if (gm < 0.5) gmHealth = 'red';
+  else if (gm < 0.65) gmHealth = 'amber';
+  document.getElementById('pill-gm').innerHTML = pillHTML(gmHealth, gmHealth === 'green' ? 'Healthy' : gmHealth === 'amber' ? 'Watch' : 'Critical');
+
+  // Blended CAC
+  const cac = latest.blended_cac || 0;
+  document.getElementById('val-cac').textContent = formatCurrencyRupees(cac);
+  let cacHealth = 'green';
+  if (cac > 8000) cacHealth = 'red';
+  else if (cac > 5000) cacHealth = 'amber';
+  document.getElementById('pill-cac').innerHTML = pillHTML(cacHealth, cacHealth === 'green' ? 'Efficient' : cacHealth === 'amber' ? 'High' : 'Critical');
+
+  // LTV:CAC
+  const ltvCac = latest.ltv_cac_ratio || 0;
+  document.getElementById('val-ltvcac').textContent = formatRatio(ltvCac);
+  let lcHealth = 'green';
+  if (ltvCac < 8) lcHealth = 'red';
+  else if (ltvCac < 12) lcHealth = 'amber';
+  document.getElementById('pill-ltvcac').innerHTML = pillHTML(lcHealth, lcHealth === 'green' ? 'Strong' : lcHealth === 'amber' ? 'Moderate' : 'Weak');
+}
+
+// ============================================================
+// Render: CAC by Channel (Panel 2)
+// ============================================================
+function renderCACByChannel() {
+  const latest = metricsData.length ? metricsData[0] : null;
+  const wrap = document.getElementById('wrap-cac-channel');
+
+  if (!latest || !latest.cac_by_channel) {
+    wrap.innerHTML = emptyStateHTML('No channel CAC data available yet');
+    return;
+  }
+
+  // Ensure canvas exists
+  if (!wrap.querySelector('canvas')) {
+    wrap.innerHTML = '<canvas id="chart-cac-channel"></canvas>';
+  }
+
+  const channels = latest.cac_by_channel;
+  const labels = Object.keys(channels);
+  const values = labels.map(function(k) { return channels[k]?.cac || 0; });
+  const leads = labels.map(function(k) { return channels[k]?.leads || 0; });
+  const spend = labels.map(function(k) { return channels[k]?.spend || 0; });
+
+  const colors = values.map(function(v) {
+    if (v > 12000) return '#ef4444';
+    if (v > 8000) return '#f59e0b';
+    return '#22c55e';
+  });
+
+  if (chartInstances.cacChannel) chartInstances.cacChannel.destroy();
+
+  chartInstances.cacChannel = new Chart(document.getElementById('chart-cac-channel'), {
+    type: 'bar',
+    data: {
+      labels: labels.map(function(l) { return l.charAt(0).toUpperCase() + l.slice(1); }),
+      datasets: [{
+        data: values,
+        backgroundColor: colors,
+        borderRadius: 6,
+        maxBarThickness: 60,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: function(ctx) {
+              const i = ctx.dataIndex;
+              return [
+                'CAC: ' + formatCurrencyRupees(values[i]),
+                'Leads: ' + leads[i],
+                'Spend: ' + formatCurrencyRupees(spend[i]),
+              ];
+            }
+          }
+        },
+        annotation: undefined,
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: {
+            callback: function(v) { return '\u20B9' + (v/1000).toFixed(0) + 'K'; },
+            color: '#6b7280',
+            font: { size: 11 },
+          },
+          grid: { color: '#f3f4f6' },
+        },
+        x: {
+          ticks: { color: '#6b7280', font: { size: 12 } },
+          grid: { display: false },
+        }
+      }
+    },
+    plugins: [{
+      id: 'refLines',
+      afterDraw: function(chart) {
+        const ctx = chart.ctx;
+        const yScale = chart.scales.y;
+        const xStart = chart.chartArea.left;
+        const xEnd = chart.chartArea.right;
+
+        // ₹8,000 line (maximum)
+        const y8k = yScale.getPixelForValue(8000);
+        ctx.save();
+        ctx.setLineDash([6, 4]);
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(xStart, y8k);
+        ctx.lineTo(xEnd, y8k);
+        ctx.stroke();
+        ctx.fillStyle = '#f59e0b';
+        ctx.font = '10px sans-serif';
+        ctx.fillText('Max \u20B98K', xEnd - 56, y8k - 4);
+
+        // ₹12,000 line (breakpoint)
+        const y12k = yScale.getPixelForValue(12000);
+        ctx.strokeStyle = '#ef4444';
+        ctx.beginPath();
+        ctx.moveTo(xStart, y12k);
+        ctx.lineTo(xEnd, y12k);
+        ctx.stroke();
+        ctx.fillStyle = '#ef4444';
+        ctx.fillText('Break \u20B912K', xEnd - 65, y12k - 4);
+        ctx.restore();
+      }
+    }]
+  });
+}
+
+// ============================================================
+// Render: Payback Period (Panel 3)
+// ============================================================
+function renderPayback() {
+  const latest = metricsData.length ? metricsData[0] : null;
+  const wrap = document.getElementById('wrap-payback');
+
+  if (!latest || !latest.payback_by_channel) {
+    wrap.innerHTML = emptyStateHTML('No payback data available yet');
+    return;
+  }
+
+  if (!wrap.querySelector('canvas')) {
+    wrap.innerHTML = '<canvas id="chart-payback"></canvas>';
+  }
+
+  const pb = latest.payback_by_channel;
+  const channels = Object.keys(pb);
+  const bestCase = channels.map(function(k) { return pb[k]?.best_case || 0; });
+  const riskAdj = channels.map(function(k) { return pb[k]?.risk_adjusted || pb[k]?.best_case || 0; });
+
+  const bestColors = bestCase.map(function(v) { return v > 12 ? '#ef4444' : v > 9 ? '#f59e0b' : '#22c55e'; });
+  const riskColors = riskAdj.map(function(v) { return v > 12 ? '#ef4444' : v > 9 ? '#f59e0b' : '#3b82f6'; });
+
+  if (chartInstances.payback) chartInstances.payback.destroy();
+
+  chartInstances.payback = new Chart(document.getElementById('chart-payback'), {
+    type: 'bar',
+    data: {
+      labels: channels.map(function(l) { return l.charAt(0).toUpperCase() + l.slice(1); }),
+      datasets: [
+        {
+          label: 'Best-case',
+          data: bestCase,
+          backgroundColor: bestColors,
+          borderRadius: 6,
+          maxBarThickness: 40,
+        },
+        {
+          label: 'Risk-adjusted',
+          data: riskAdj,
+          backgroundColor: riskColors.map(function(c) { return c + '99'; }),
+          borderRadius: 6,
+          maxBarThickness: 40,
+        }
+      ]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { font: { size: 11 }, color: '#6b7280', usePointStyle: true, pointStyleWidth: 12 }
+        },
+        tooltip: {
+          callbacks: {
+            label: function(ctx) {
+              return ctx.dataset.label + ': ' + ctx.raw.toFixed(1) + ' months';
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          beginAtZero: true,
+          ticks: {
+            callback: function(v) { return v + 'mo'; },
+            color: '#6b7280',
+            font: { size: 11 },
+          },
+          grid: { color: '#f3f4f6' },
+        },
+        y: {
+          ticks: { color: '#6b7280', font: { size: 12 } },
+          grid: { display: false },
+        }
+      }
+    },
+    plugins: [{
+      id: 'paybackRef',
+      afterDraw: function(chart) {
+        const ctx = chart.ctx;
+        const xScale = chart.scales.x;
+        const yStart = chart.chartArea.top;
+        const yEnd = chart.chartArea.bottom;
+
+        ctx.save();
+        ctx.setLineDash([6, 4]);
+        ctx.lineWidth = 1.5;
+
+        // 5 months (organic target)
+        const x5 = xScale.getPixelForValue(5);
+        ctx.strokeStyle = '#22c55e';
+        ctx.beginPath();
+        ctx.moveTo(x5, yStart);
+        ctx.lineTo(x5, yEnd);
+        ctx.stroke();
+        ctx.fillStyle = '#22c55e';
+        ctx.font = '10px sans-serif';
+        ctx.fillText('5mo', x5 + 3, yStart + 10);
+
+        // 9 months (paid target)
+        const x9 = xScale.getPixelForValue(9);
+        ctx.strokeStyle = '#f59e0b';
+        ctx.beginPath();
+        ctx.moveTo(x9, yStart);
+        ctx.lineTo(x9, yEnd);
+        ctx.stroke();
+        ctx.fillStyle = '#f59e0b';
+        ctx.fillText('9mo', x9 + 3, yStart + 10);
+
+        // 12 months (red line)
+        const x12 = xScale.getPixelForValue(12);
+        ctx.strokeStyle = '#ef4444';
+        ctx.beginPath();
+        ctx.moveTo(x12, yStart);
+        ctx.lineTo(x12, yEnd);
+        ctx.stroke();
+        ctx.fillStyle = '#ef4444';
+        ctx.fillText('12mo', x12 + 3, yStart + 10);
+
+        ctx.restore();
+      }
+    }]
+  });
+}
+
+// ============================================================
+// Render: LTV by Segment (Panel 4)
+// ============================================================
+function renderLTVTable() {
+  const latest = metricsData.length ? metricsData[0] : null;
+  const tbody = document.getElementById('tbody-ltv');
+
+  if (!latest || !latest.ltv_by_segment) {
+    tbody.innerHTML = '<tr><td colspan="7">' + emptyStateHTML('No LTV segment data available yet') + '</td></tr>';
+    return;
+  }
+
+  const segments = latest.ltv_by_segment;
+  const expectedKeys = [
+    { key: 'india_single', label: 'India — Single Product' },
+    { key: 'india_cross', label: 'India — Cross-sold' },
+    { key: 'intl_single', label: 'International — Single Product' },
+    { key: 'intl_cross', label: 'International — Cross-sold' },
+  ];
+
+  let html = '';
+  expectedKeys.forEach(function(item) {
+    const s = segments[item.key];
+    if (!s) return;
+    const ltvBest = s.ltv_best || s.ltv || 0;
+    const ltvRisk = s.ltv_risk_adjusted || s.ltv || 0;
+    const cac = s.cac || 0;
+    const ratio = cac > 0 ? ltvRisk / cac : 0;
+    const payback = s.payback_months || 0;
+    let health = 'green';
+    if (ratio < 8) health = 'red';
+    else if (ratio < 12) health = 'amber';
+
+    html += '<tr>' +
+      '<td style="font-weight:600">' + item.label + '</td>' +
+      '<td>' + formatCurrencyRupees(ltvBest) + '</td>' +
+      '<td>' + formatCurrencyRupees(ltvRisk) + '</td>' +
+      '<td>' + formatCurrencyRupees(cac) + '</td>' +
+      '<td>' + formatRatio(ratio) + '</td>' +
+      '<td>' + payback.toFixed(1) + ' mo</td>' +
+      '<td>' + pillHTML(health, health === 'green' ? 'Healthy' : health === 'amber' ? 'Watch' : 'Critical') + '</td>' +
+      '</tr>';
+  });
+
+  if (!html) {
+    // Try rendering whatever keys exist
+    Object.keys(segments).forEach(function(key) {
+      const s = segments[key];
+      const ltvBest = s.ltv_best || s.ltv || 0;
+      const ltvRisk = s.ltv_risk_adjusted || s.ltv || 0;
+      const cac = s.cac || 0;
+      const ratio = cac > 0 ? ltvRisk / cac : 0;
+      const payback = s.payback_months || 0;
+      let health = 'green';
+      if (ratio < 8) health = 'red';
+      else if (ratio < 12) health = 'amber';
+
+      html += '<tr>' +
+        '<td style="font-weight:600">' + key.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); }) + '</td>' +
+        '<td>' + formatCurrencyRupees(ltvBest) + '</td>' +
+        '<td>' + formatCurrencyRupees(ltvRisk) + '</td>' +
+        '<td>' + formatCurrencyRupees(cac) + '</td>' +
+        '<td>' + formatRatio(ratio) + '</td>' +
+        '<td>' + payback.toFixed(1) + ' mo</td>' +
+        '<td>' + pillHTML(health, health === 'green' ? 'Healthy' : health === 'amber' ? 'Watch' : 'Critical') + '</td>' +
+        '</tr>';
+    });
+  }
+
+  tbody.innerHTML = html || '<tr><td colspan="7">' + emptyStateHTML('No LTV segment data available yet') + '</td></tr>';
+}
+
+// ============================================================
+// Render: MRR Cost Waterfall (Panel 5)
+// ============================================================
+function renderWaterfall() {
+  const latest = metricsData.length ? metricsData[0] : null;
+  const wrap = document.getElementById('wrap-waterfall');
+
+  if (!latest || !latest.cost_breakdown) {
+    wrap.innerHTML = emptyStateHTML('No cost breakdown data available yet');
+    return;
+  }
+
+  if (!wrap.querySelector('canvas')) {
+    wrap.innerHTML = '<canvas id="chart-waterfall"></canvas>';
+  }
+
+  const cb = latest.cost_breakdown;
+  const mrr = latest.mrr || 1;
+  const infra = cb.infrastructure || 0;
+  const variable = cb.variable_costs || 0;
+  const gads = cb.google_ads || 0;
+  const netMargin = mrr - infra - variable - gads;
+
+  const labels = ['Infrastructure', 'Variable Costs', 'Google Ads', 'Net Margin'];
+  const values = [infra, variable, gads, netMargin];
+  const pcts = values.map(function(v) { return ((v / mrr) * 100).toFixed(1) + '%'; });
+  const bgColors = [
+    '#3b82f6',
+    '#6366f1',
+    '#f59e0b',
+    netMargin >= 0 ? '#22c55e' : '#ef4444',
+  ];
+
+  if (chartInstances.waterfall) chartInstances.waterfall.destroy();
+
+  chartInstances.waterfall = new Chart(document.getElementById('chart-waterfall'), {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: values,
+        backgroundColor: bgColors,
+        borderRadius: 6,
+        maxBarThickness: 50,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: function(ctx) {
+              return formatCurrencyRupees(ctx.raw) + ' (' + pcts[ctx.dataIndex] + ' of MRR)';
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: {
+            callback: function(v) {
+              if (Math.abs(v) >= 100000) return '\u20B9' + (v/100000).toFixed(1) + 'L';
+              return '\u20B9' + (v/1000).toFixed(0) + 'K';
+            },
+            color: '#6b7280',
+            font: { size: 11 },
+          },
+          grid: { color: '#f3f4f6' },
+        },
+        y: {
+          ticks: { color: '#6b7280', font: { size: 12 } },
+          grid: { display: false },
+        }
+      }
+    },
+    plugins: [{
+      id: 'waterfallLabels',
+      afterDraw: function(chart) {
+        const ctx = chart.ctx;
+        chart.data.datasets[0].data.forEach(function(val, i) {
+          const meta = chart.getDatasetMeta(0).data[i];
+          if (!meta) return;
+          ctx.save();
+          ctx.fillStyle = '#374151';
+          ctx.font = '11px sans-serif';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          const x = meta.x + 6;
+          const y = meta.y;
+          ctx.fillText(formatCurrencyRupees(val) + ' (' + pcts[i] + ')', x, y);
+          ctx.restore();
+        });
+      }
+    }]
+  });
+}
+
+// ============================================================
+// Render: Trend Lines
+// ============================================================
+function renderTrendLines() {
+  // We need at least 2 data points for a line
+  const sorted = metricsData.slice().sort(function(a, b) {
+    return new Date(a.period_end) - new Date(b.period_end);
+  }).slice(-12); // Last 12 weeks
+
+  if (sorted.length < 2) {
+    ['chart-trend-mrr', 'chart-trend-cac', 'chart-trend-ltvcac', 'chart-trend-gm'].forEach(function(id) {
+      const canvas = document.getElementById(id);
+      if (canvas) canvas.parentElement.innerHTML = emptyStateHTML('Not enough trend data yet');
+    });
+    return;
+  }
+
+  const labels = sorted.map(function(d) {
+    const dt = new Date(d.period_end);
+    return dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  });
+
+  function trendColor(values, targetMin, breakpointMin) {
+    return values.map(function(v) {
+      if (v >= targetMin) return '#22c55e';
+      const midpoint = (targetMin + breakpointMin) / 2;
+      if (v >= midpoint) return '#f59e0b';
+      return '#ef4444';
+    });
+  }
+
+  function createTrendChart(canvasId, data, targetVal, breakpointVal, labelFn, invertThresholds) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+
+    // Determine segment colors for the line
+    const lastVal = data[data.length - 1];
+    let lineColor;
+    if (invertThresholds) {
+      // Lower is better (e.g., CAC)
+      lineColor = lastVal <= targetVal ? '#22c55e' : lastVal <= breakpointVal ? '#f59e0b' : '#ef4444';
+    } else {
+      // Higher is better
+      lineColor = lastVal >= targetVal ? '#22c55e' : lastVal >= breakpointVal ? '#f59e0b' : '#ef4444';
+    }
+
+    if (chartInstances[canvasId]) chartInstances[canvasId].destroy();
+
+    chartInstances[canvasId] = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: data,
+          borderColor: lineColor,
+          backgroundColor: lineColor + '18',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          borderWidth: 2.5,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: function(ctx) { return labelFn(ctx.raw); }
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: { color: '#6b7280', font: { size: 10 }, maxRotation: 45 },
+            grid: { display: false },
+          },
+          y: {
+            ticks: {
+              callback: function(v) { return labelFn(v); },
+              color: '#6b7280',
+              font: { size: 10 },
+            },
+            grid: { color: '#f3f4f6' },
+          }
+        }
+      },
+      plugins: [{
+        id: 'trendRef_' + canvasId,
+        afterDraw: function(chart) {
+          const ctx = chart.ctx;
+          const yScale = chart.scales.y;
+          const xStart = chart.chartArea.left;
+          const xEnd = chart.chartArea.right;
+
+          ctx.save();
+          ctx.setLineDash([5, 5]);
+          ctx.lineWidth = 1.5;
+
+          // Target line
+          const yTarget = yScale.getPixelForValue(targetVal);
+          if (yTarget >= chart.chartArea.top && yTarget <= chart.chartArea.bottom) {
+            ctx.strokeStyle = '#22c55eaa';
+            ctx.beginPath();
+            ctx.moveTo(xStart, yTarget);
+            ctx.lineTo(xEnd, yTarget);
+            ctx.stroke();
+          }
+
+          // Breakpoint line
+          if (breakpointVal !== null && breakpointVal !== undefined) {
+            const yBreak = yScale.getPixelForValue(breakpointVal);
+            if (yBreak >= chart.chartArea.top && yBreak <= chart.chartArea.bottom) {
+              ctx.strokeStyle = '#ef4444aa';
+              ctx.beginPath();
+              ctx.moveTo(xStart, yBreak);
+              ctx.lineTo(xEnd, yBreak);
+              ctx.stroke();
+            }
+          }
+
+          ctx.restore();
+        }
+      }]
+    });
+  }
+
+  // MRR Growth Rate
+  const mrrGrowth = sorted.map(function(d) { return d.mrr_growth_rate || 0; });
+  createTrendChart('chart-trend-mrr', mrrGrowth, 0.05, 0, function(v) { return formatPercent(v); }, false);
+
+  // Blended CAC
+  const cacTrend = sorted.map(function(d) { return d.blended_cac || 0; });
+  createTrendChart('chart-trend-cac', cacTrend, 5000, 12000, function(v) { return formatCurrencyRupees(v); }, true);
+
+  // LTV:CAC
+  const ltvCacTrend = sorted.map(function(d) { return d.ltv_cac_ratio || 0; });
+  createTrendChart('chart-trend-ltvcac', ltvCacTrend, 12, 8, function(v) { return formatRatio(v); }, false);
+
+  // Gross Margin
+  const gmTrend = sorted.map(function(d) { return d.gross_margin || 0; });
+  createTrendChart('chart-trend-gm', gmTrend, 0.65, 0.5, function(v) { return formatPercent(v); }, false);
+}
+
+// ============================================================
+// Master Render
+// ============================================================
+function renderAll() {
+  renderBreakpoints();
+  renderHeadlineMetrics();
+  renderCACByChannel();
+  renderPayback();
+  renderLTVTable();
+  renderWaterfall();
+  renderTrendLines();
+
+  document.getElementById('last-refresh').textContent =
+    'Updated ' + new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+}
+
+// ============================================================
+// Init & Refresh
+// ============================================================
+async function refresh() {
+  const loading = document.getElementById('loading');
+  loading.classList.remove('hidden');
+  await loadData();
+  renderAll();
+  loading.classList.add('hidden');
+}
+
+// Initial load
+refresh();
+
+// Auto-refresh every 60 seconds
+setInterval(refresh, 60000);
+
+// Manual refresh
+document.getElementById('btn-refresh').addEventListener('click', function() {
+  refresh();
+});
+
+// Re-fetch on filter change
+document.getElementById('period-select').addEventListener('change', function() { refresh(); });
+document.getElementById('segment-select').addEventListener('change', function() { refresh(); });
+</script>
+</body>
+</html>

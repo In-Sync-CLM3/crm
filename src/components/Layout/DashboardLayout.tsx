@@ -249,6 +249,15 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
                 <span>Calendar</span>
               </Link>
 
+              <Link
+                to="/marketing"
+                className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
+                onClick={() => setSidebarOpen(false)}
+              >
+                <TrendingUp size={16} className="shrink-0 text-sidebar-muted" />
+                <span>Marketing</span>
+              </Link>
+
               {/* Operations Section */}
               {showOperationsSection && (
                 <div className="pt-3 pb-1 px-2">
