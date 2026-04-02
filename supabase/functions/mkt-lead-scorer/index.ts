@@ -1,5 +1,5 @@
 import { getSupabaseClient } from '../_shared/supabaseClient.ts';
-import { createEngineLogger, withTiming } from '../_shared/engineLogger.ts';
+import { createEngineLogger, logEngine, withTiming } from '../_shared/engineLogger.ts';
 import { callLLMJson } from '../_shared/llmClient.ts';
 
 const corsHeaders = {
@@ -162,7 +162,7 @@ Deno.serve(async (req) => {
 });
 
 /**
- * Score a single lead using Claude Haiku.
+ * Score a single lead using Claude Haiku, with heuristic fallback if LLM is unavailable.
  */
 async function scoreLead(
   supabase: ReturnType<typeof getSupabaseClient>,
@@ -172,11 +172,15 @@ async function scoreLead(
 ): Promise<{ tokens: number }> {
   const campaign = lead.campaign_id ? campaignMap.get(lead.campaign_id as string) : null;
   const icp = campaign?.icp_criteria || {};
-
-  // Build engagement summary
   const engagementSummary = buildEngagementSummary(actions);
 
-  const prompt = `You are a B2B lead scoring engine. Score this lead against the ICP criteria.
+  let scoreData: ScoreResult;
+  let tokensUsed = 0;
+  let scoringModel = 'v1-haiku';
+
+  // --- Attempt LLM scoring, fall back to heuristic on failure ---
+  try {
+    const prompt = `You are a B2B lead scoring engine. Score this lead against the ICP criteria.
 
 LEAD PROFILE:
 - Name: ${lead.first_name || ''} ${lead.last_name || ''}
@@ -201,17 +205,8 @@ SCORING RULES:
 3. engagement_score (0-30): How engaged has this lead been? Consider: email opens/clicks, replies, call outcomes. New leads with no engagement get 5-10 points baseline.
 4. total_score = fit_score + intent_score + engagement_score (0-100)
 
-Return JSON:
-{
-  "fit_score": <number>,
-  "intent_score": <number>,
-  "engagement_score": <number>,
-  "total_score": <number>,
-  "fit_reasons": ["reason1", "reason2"],
-  "intent_signals": ["signal1", "signal2"],
-  "engagement_events": ["event1"],
-  "recommendation": "enroll|nurture|disqualify|monitor"
-}
+You MUST return ONLY a JSON object with this exact structure, no other text:
+{"fit_score": <number>, "intent_score": <number>, "engagement_score": <number>, "total_score": <number>, "fit_reasons": ["reason1"], "intent_signals": ["signal1"], "engagement_events": ["event1"], "recommendation": "enroll|nurture|disqualify|monitor"}
 
 recommendation guide:
 - "enroll": total >= 70, ready for outreach sequence
@@ -219,17 +214,50 @@ recommendation guide:
 - "monitor": total 20-39, not ready yet
 - "disqualify": total < 20 or clear ICP mismatch`;
 
-  const { data: scoreData, tokens } = await callLLMJson<ScoreResult>(prompt, {
-    model: 'haiku',
-    max_tokens: 512,
-    temperature: 0.1,
-  });
+    const result = await callLLMJson<ScoreResult>(prompt, {
+      model: 'haiku',
+      max_tokens: 512,
+      temperature: 0.1,
+    });
+
+    // Validate the parsed response has actual score fields
+    const parsed = result.data;
+    if (
+      typeof parsed !== 'object' || parsed === null ||
+      (typeof parsed.fit_score !== 'number' && typeof parsed.intent_score !== 'number')
+    ) {
+      throw new Error(`LLM returned unexpected shape: ${JSON.stringify(parsed).substring(0, 200)}`);
+    }
+
+    scoreData = parsed;
+    tokensUsed = result.tokens.input + result.tokens.output;
+  } catch (llmError) {
+    // Log the LLM failure with full details
+    console.error('[mkt-lead-scorer] LLM call failed, using heuristic fallback:', llmError);
+    await logEngine({
+      function_name: 'mkt-lead-scorer',
+      action: 'llm-fallback-triggered',
+      level: 'warn',
+      details: {
+        lead_id: lead.id,
+        error: llmError instanceof Error ? llmError.message : String(llmError),
+      },
+    });
+
+    // Heuristic fallback scoring
+    scoreData = heuristicScore(lead, icp, actions);
+    scoringModel = 'v1-heuristic';
+  }
 
   // Clamp scores to valid ranges
-  const fit = Math.min(40, Math.max(0, scoreData.fit_score || 0));
-  const intent = Math.min(30, Math.max(0, scoreData.intent_score || 0));
-  const engagement = Math.min(30, Math.max(0, scoreData.engagement_score || 0));
+  const fit = Math.min(40, Math.max(0, Number(scoreData.fit_score) || 0));
+  const intent = Math.min(30, Math.max(0, Number(scoreData.intent_score) || 0));
+  const engagement = Math.min(30, Math.max(0, Number(scoreData.engagement_score) || 0));
   const total = fit + intent + engagement;
+
+  // Determine recommendation from total if missing
+  const recommendation = scoreData.recommendation ||
+    (total >= 70 ? 'enroll' : total >= 40 ? 'nurture' : total >= 20 ? 'monitor' : 'disqualify');
 
   // Get previous scores for delta tracking
   const { data: previousScore } = await supabase
@@ -247,12 +275,12 @@ recommendation guide:
       intent_score: intent,
       engagement_score: engagement,
       total_score: total,
-      scoring_model: 'v1-haiku',
+      scoring_model: scoringModel,
       scoring_details: {
         fit_reasons: scoreData.fit_reasons || [],
         intent_signals: scoreData.intent_signals || [],
         engagement_events: scoreData.engagement_events || [],
-        recommendation: scoreData.recommendation,
+        recommendation,
       },
       scored_at: new Date().toISOString(),
     },
@@ -269,7 +297,7 @@ recommendation guide:
       fit_delta: fit - (previousScore.fit_score || 0),
       intent_delta: intent - (previousScore.intent_score || 0),
       engagement_delta: engagement - (previousScore.engagement_score || 0),
-      reason: `Rescored: ${scoreData.recommendation}`,
+      reason: `Rescored (${scoringModel}): ${recommendation}`,
       triggered_by: 'scorer',
     });
   }
@@ -288,10 +316,8 @@ recommendation guide:
     })
     .eq('id', lead.id as string);
 
-  // Auto-enroll if score exceeds threshold
-  const recommendation = scoreData.recommendation;
-  if (recommendation === 'enroll' && lead.status !== 'enrolled' && lead.status !== 'converted') {
-    // Find active campaign matching lead's org
+  // Auto-enroll if score exceeds threshold (>= 70)
+  if (total >= 70 && lead.status !== 'enrolled' && lead.status !== 'converted') {
     const { data: activeCampaigns } = await supabase
       .from('mkt_campaigns')
       .select('id')
@@ -323,7 +349,114 @@ recommendation guide:
     }
   }
 
-  return { tokens: tokens.input + tokens.output };
+  return { tokens: tokensUsed };
+}
+
+/**
+ * Rule-based heuristic scorer — used when LLM is unavailable.
+ * Produces non-zero scores based on available lead data fields.
+ */
+function heuristicScore(
+  lead: Record<string, unknown>,
+  icp: Record<string, unknown>,
+  actions: Array<Record<string, unknown>>
+): ScoreResult {
+  let fit = 10; // Base fit score for any lead in the system
+  const fitReasons: string[] = [];
+
+  // Job title scoring
+  const title = String(lead.job_title || '').toLowerCase();
+  const seniorTitles = ['ceo', 'cto', 'cfo', 'coo', 'vp', 'director', 'head', 'founder', 'owner', 'managing', 'president', 'partner'];
+  const midTitles = ['manager', 'lead', 'senior', 'principal', 'chief'];
+  if (seniorTitles.some(t => title.includes(t))) {
+    fit += 15;
+    fitReasons.push('Senior decision-maker title');
+  } else if (midTitles.some(t => title.includes(t))) {
+    fit += 8;
+    fitReasons.push('Mid-level title with potential influence');
+  }
+
+  // Company present
+  if (lead.company) {
+    fit += 5;
+    fitReasons.push('Company identified');
+  }
+
+  // Email domain (non-free)
+  const email = String(lead.email || '');
+  const freeDomains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com'];
+  if (email && !freeDomains.some(d => email.endsWith(d))) {
+    fit += 5;
+    fitReasons.push('Business email domain');
+  }
+
+  // LinkedIn present
+  if (lead.linkedin_url) {
+    fit += 3;
+    fitReasons.push('LinkedIn profile available');
+  }
+
+  // ICP match bonus (if ICP has industry/geography and lead matches)
+  if (icp && Object.keys(icp).length > 0) {
+    fit += 2;
+    fitReasons.push('ICP criteria defined for campaign');
+  }
+
+  fit = Math.min(40, fit);
+
+  // Intent scoring
+  let intent = 8; // Base intent for any sourced lead
+  const intentSignals: string[] = [];
+
+  if (lead.company_size) {
+    intent += 5;
+    intentSignals.push('Company size known');
+  }
+  if (lead.industry) {
+    intent += 5;
+    intentSignals.push('Industry identified');
+  }
+  if (seniorTitles.some(t => title.includes(t))) {
+    intent += 7;
+    intentSignals.push('Decision-maker role suggests buying authority');
+  }
+  if (lead.source === 'inbound' || lead.source === 'referral' || lead.source === 'website') {
+    intent += 5;
+    intentSignals.push(`High-intent source: ${lead.source}`);
+  }
+  intent = Math.min(30, intent);
+
+  // Engagement scoring
+  let engagement = 5; // Base for new leads
+  const engagementEvents: string[] = ['New lead baseline'];
+
+  for (const action of actions || []) {
+    if (action.replied_at) {
+      engagement += 10;
+      engagementEvents.push('Reply received');
+    } else if (action.clicked_at) {
+      engagement += 5;
+      engagementEvents.push('Link clicked');
+    } else if (action.opened_at) {
+      engagement += 2;
+      engagementEvents.push('Email opened');
+    }
+  }
+  engagement = Math.min(30, engagement);
+
+  const total = fit + intent + engagement;
+  const recommendation = total >= 70 ? 'enroll' : total >= 40 ? 'nurture' : total >= 20 ? 'monitor' : 'disqualify';
+
+  return {
+    fit_score: fit,
+    intent_score: intent,
+    engagement_score: engagement,
+    total_score: total,
+    fit_reasons: fitReasons,
+    intent_signals: intentSignals,
+    engagement_events: engagementEvents,
+    recommendation,
+  };
 }
 
 /**

@@ -326,6 +326,15 @@ const BREAKPOINT_DEFS: BreakpointDef[] = [
   },
 ];
 
+// Components that affect the entire engine — pause ALL active campaigns
+const ENGINE_WIDE_COMPONENTS = new Set([
+  'all-outbound',
+  'all-variable-spend',
+  'llm-powered-features',
+  'email-outbound',
+  'variable-spend',
+]);
+
 // ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
@@ -480,7 +489,47 @@ async function processOrg(
         },
       });
 
-      // Send alert email to org admins
+      // --- Auto-pause affected campaigns ---
+      const pauseReason = `${def.name}: ${result!.data.threshold || def.pausedComponent}`;
+      const isEngineWide = ENGINE_WIDE_COMPONENTS.has(def.pausedComponent);
+
+      // For product-specific breakpoints with failing_products, pause matching campaigns
+      // For engine-wide breakpoints, pause ALL active campaigns
+      const failingProducts = (result!.data.failing_products as string[] | undefined);
+      let pauseQuery = supabase
+        .from('mkt_campaigns')
+        .update({
+          status: 'paused',
+          paused_reason: pauseReason,
+          paused_at: new Date().toISOString(),
+        })
+        .eq('org_id', orgId)
+        .eq('status', 'active');
+
+      if (!isEngineWide && failingProducts && failingProducts.length > 0) {
+        pauseQuery = pauseQuery.in('product_key', failingProducts);
+      }
+
+      const { data: pausedCampaigns } = await pauseQuery.select('id, name, product_key');
+      const pausedCount = pausedCampaigns?.length || 0;
+
+      if (pausedCount > 0) {
+        await supabase.from('mkt_engine_logs').insert({
+          org_id: orgId,
+          function_name: 'mkt-breakpoint-monitor',
+          action: `auto-paused-campaigns`,
+          level: 'warn',
+          details: {
+            breakpoint: def.name,
+            paused_count: pausedCount,
+            campaign_ids: pausedCampaigns!.map(c => c.id),
+            campaign_names: pausedCampaigns!.map(c => c.name),
+            engine_wide: isEngineWide,
+          },
+        });
+      }
+
+      // Send alert email to org admins (includes auto-pause confirmation)
       await sendBreakpointAlert(
         supabase,
         supabaseUrl,
@@ -488,6 +537,7 @@ async function processOrg(
         orgId,
         def,
         result!.data,
+        pausedCount,
       );
 
       triggered++;
@@ -496,6 +546,7 @@ async function processOrg(
         breakpoint: def.name,
         category: def.category,
         paused_component: def.pausedComponent,
+        campaigns_paused: pausedCount,
         data: result!.data,
       });
     } else if (!isTriggered && isAlreadyActive) {
@@ -765,6 +816,7 @@ async function sendBreakpointAlert(
   orgId: string,
   def: BreakpointDef,
   data: Record<string, unknown>,
+  campaignsPaused: number = 0,
 ): Promise<void> {
   // Fetch org admins
   const { data: roleRows } = await supabase
@@ -784,7 +836,7 @@ async function sendBreakpointAlert(
   if (!admins || admins.length === 0) return;
 
   const subject = `[BREAKPOINT] ${def.name} — Action Required`;
-  const html = buildBreakpointEmailHtml(def, data);
+  const html = buildBreakpointEmailHtml(def, data, campaignsPaused);
 
   for (const admin of admins) {
     if (!admin.email) continue;
@@ -821,7 +873,7 @@ async function sendBreakpointAlert(
     .is('resolved_at', null);
 }
 
-function buildBreakpointEmailHtml(def: BreakpointDef, data: Record<string, unknown>): string {
+function buildBreakpointEmailHtml(def: BreakpointDef, data: Record<string, unknown>, campaignsPaused: number = 0): string {
   const categoryColors: Record<string, string> = {
     revenue: '#ef4444',
     conversion: '#f59e0b',
@@ -876,6 +928,7 @@ function buildBreakpointEmailHtml(def: BreakpointDef, data: Record<string, unkno
 
     <div class="paused">
       <strong>Paused Component:</strong> ${def.pausedComponent}
+      ${campaignsPaused > 0 ? `<br/><br/><strong>Campaigns auto-paused: ${campaignsPaused}.</strong> Reply 1 or 2 to resume after addressing the cause.` : ''}
     </div>
 
     <div class="section">
