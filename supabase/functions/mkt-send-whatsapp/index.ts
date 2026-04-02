@@ -78,12 +78,15 @@ Deno.serve(async (req) => {
         templateData = template;
         messageContent = template.body as string;
 
-        // Replace template variables
+        // Replace template variables — named and positional
         const vars: Record<string, string> = {
           '{{first_name}}': lead.first_name || 'there',
           '{{last_name}}': lead.last_name || '',
           '{{company}}': lead.company || 'your company',
           '{{job_title}}': lead.job_title || '',
+          '{{1}}': lead.first_name || 'there',
+          '{{2}}': lead.company || 'your company',
+          '{{3}}': lead.job_title || '',
         };
 
         for (const [key, value] of Object.entries(vars)) {
@@ -109,8 +112,13 @@ Deno.serve(async (req) => {
     // Build webhook URL
     const webhookUrl = `${supabaseUrl}/functions/v1/mkt-whatsapp-webhook`;
 
-    // Build Exotel WhatsApp API request
-    const exotelUrl = `https://${exotelSettings.api_key}:${exotelSettings.api_token}@${exotelSettings.subdomain}/v2/accounts/${exotelSettings.account_sid}/messages`;
+    // Build Exotel WhatsApp API request using DB credentials
+    const exApiKey = exotelSettings.api_key;
+    const exApiToken = exotelSettings.api_token;
+    const exSubdomain = exotelSettings.subdomain;
+    const exSid = exotelSettings.account_sid;
+    const exotelUrl = `https://${exSubdomain}/v2/accounts/${exSid}/messages`;
+    const basicAuth = btoa(`${exApiKey}:${exApiToken}`);
 
     const exotelPayload: Record<string, unknown> = {
       custom_data: JSON.stringify({ action_id, lead_id, enrollment_id: body.enrollment_id }),
@@ -120,41 +128,54 @@ Deno.serve(async (req) => {
           {
             from: exotelSettings.whatsapp_source_number,
             to: formattedPhone,
-            content: templateData?.template_name
-              ? {
-                  type: 'template',
-                  template: {
-                    name: templateData.template_name,
-                    language: templateData.language || 'en',
-                    components: buildTemplateComponents(templateData, lead),
-                  },
-                }
-              : {
-                  recipient_type: 'individual',
-                  type: 'text',
-                  text: { preview_url: false, body: messageContent },
-                },
+            content: {
+              recipient_type: 'individual',
+              type: 'text',
+              text: { preview_url: false, body: messageContent },
+            },
           },
         ],
       },
     };
 
+    console.log('[mkt-send-whatsapp] Sending to:', formattedPhone, 'via', exSubdomain);
+    console.log('[mkt-send-whatsapp] Payload:', JSON.stringify(exotelPayload, null, 2));
+
     const exotelResponse = await fetch(exotelUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${basicAuth}`,
+      },
       body: JSON.stringify(exotelPayload),
     });
 
-    const exotelResult = await exotelResponse.json();
-    const messageResponse = exotelResult?.response?.whatsapp?.messages?.[0];
-    const isSuccess = exotelResponse.ok && messageResponse?.code === 200;
+    console.log('[mkt-send-whatsapp] Response status:', exotelResponse.status);
+    console.log('[mkt-send-whatsapp] Response headers:', JSON.stringify(Object.fromEntries(exotelResponse.headers.entries())));
+
+    const exotelText = await exotelResponse.text();
+    console.log('[mkt-send-whatsapp] Response body:', exotelText.substring(0, 500));
+
+    if (!exotelText) {
+      throw new Error(`Exotel returned empty response (status ${exotelResponse.status})`);
+    }
+
+    let exotelResult: Record<string, unknown>;
+    try {
+      exotelResult = JSON.parse(exotelText);
+    } catch {
+      throw new Error(`Exotel returned non-JSON: ${exotelText.substring(0, 200)}`);
+    }
+    const messageResponse = (exotelResult?.response as Record<string, unknown>)?.whatsapp as Record<string, unknown>;
+    const firstMessage = (messageResponse?.messages as Array<Record<string, unknown>>)?.[0];
+    const isSuccess = exotelResponse.ok && (firstMessage?.code === 200 || firstMessage?.code === 202);
 
     if (!isSuccess) {
-      const errorMsg = messageResponse?.error_data?.message || exotelResult?.message || 'Failed to send';
+      const errorMsg = (firstMessage?.error_data as Record<string, unknown>)?.message || exotelResult?.message || JSON.stringify(exotelResult);
       throw new Error(`Exotel WhatsApp error: ${errorMsg}`);
     }
 
-    const messageSid = messageResponse?.data?.sid;
+    const messageSid = (firstMessage?.data as Record<string, unknown>)?.sid as string;
 
     // Update action record
     await supabase
@@ -179,17 +200,19 @@ Deno.serve(async (req) => {
     });
 
     // Deduct wallet cost
-    await supabase.rpc('deduct_from_wallet', {
-      _org_id: orgId,
-      _amount: 1.00,
-      _service_type: 'whatsapp',
-      _reference_id: action_id,
-      _quantity: 1,
-      _unit_cost: 1.00,
-      _user_id: null,
-    }).catch((err: Error) => {
-      console.warn('[mkt-send-whatsapp] Wallet deduction failed:', err.message);
-    });
+    try {
+      await supabase.rpc('deduct_from_wallet', {
+        _org_id: orgId,
+        _amount: 1.00,
+        _service_type: 'whatsapp',
+        _reference_id: action_id,
+        _quantity: 1,
+        _unit_cost: 1.00,
+        _user_id: null,
+      });
+    } catch (err) {
+      console.warn('[mkt-send-whatsapp] Wallet deduction failed:', err);
+    }
 
     await logger.info('whatsapp-sent', {
       lead_id,

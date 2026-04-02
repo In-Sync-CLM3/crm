@@ -518,6 +518,125 @@ async function processOrg(
     }
   }
 
+  // -----------------------------------------------------------------------
+  // A. Milestone checking — check contact-count milestones
+  // -----------------------------------------------------------------------
+  const { data: milestones } = await supabase
+    .from('mkt_milestones')
+    .select('*')
+    .eq('reached', false);
+
+  if (milestones && milestones.length > 0) {
+    // Get current contact count for threshold comparisons
+    const { count: contactCount } = await supabase
+      .from('contacts')
+      .select('id', { count: 'exact', head: true })
+      .eq('org_id', orgId);
+
+    const currentContacts = contactCount ?? 0;
+
+    // Get current lead count as well
+    const { count: leadCount } = await supabase
+      .from('mkt_leads')
+      .select('id', { count: 'exact', head: true })
+      .eq('org_id', orgId);
+
+    const currentLeads = leadCount ?? 0;
+
+    // Get current MRR from the latest weekly row
+    const currentMrr = rows.length > 0 ? (rows[0].mrr_total ?? 0) : 0;
+
+    const metricValues: Record<string, number> = {
+      contacts: currentContacts,
+      leads: currentLeads,
+      mrr: currentMrr,
+      clients: rows.length > 0 ? (rows[0].clients_active ?? 0) : 0,
+    };
+
+    for (const milestone of milestones) {
+      try {
+        // Each milestone has a metric_key and threshold_value to compare against
+        const metricKey = milestone.metric_key as string | undefined;
+        const threshold = milestone.threshold_value as number | undefined;
+
+        if (metricKey && threshold !== undefined) {
+          const currentValue = metricValues[metricKey] ?? 0;
+
+          if (currentValue >= threshold) {
+            await supabase
+              .from('mkt_milestones')
+              .update({ reached: true, reached_at: new Date().toISOString() })
+              .eq('id', milestone.id);
+
+            await logger.info('milestone-reached', {
+              milestone_key: milestone.milestone_key,
+              milestone_name: milestone.milestone_name,
+              unlocks: milestone.unlocks,
+              metric_key: metricKey,
+              threshold,
+              actual_value: currentValue,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(`Milestone check failed for ${milestone.milestone_key}:`, err);
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // B. Trend detection — week-on-week comparison for > 15% decline
+  // -----------------------------------------------------------------------
+  if (rows.length >= 2) {
+    const { data: channelMetrics } = await supabase
+      .from('mkt_channel_metrics')
+      .select('channel, impressions, clicks, leads_generated, cost, period_start, period_end')
+      .eq('org_id', orgId)
+      .order('period_end', { ascending: false })
+      .limit(20); // ~2 weeks of daily data or 2 weekly rows per channel
+
+    if (channelMetrics && channelMetrics.length > 0) {
+      // Group by channel and split into current week vs previous week
+      const now = new Date();
+      const oneWeekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+
+      const channelTotals: Record<string, { current: number; previous: number }> = {};
+
+      for (const m of channelMetrics) {
+        const periodEnd = new Date(m.period_end);
+        const channel = m.channel as string;
+        if (!channelTotals[channel]) {
+          channelTotals[channel] = { current: 0, previous: 0 };
+        }
+
+        const leadsGen = (m.leads_generated as number) ?? 0;
+
+        if (periodEnd >= oneWeekAgo) {
+          channelTotals[channel].current += leadsGen;
+        } else if (periodEnd >= twoWeeksAgo) {
+          channelTotals[channel].previous += leadsGen;
+        }
+      }
+
+      for (const [channel, totals] of Object.entries(channelTotals)) {
+        if (totals.previous > 0) {
+          const declinePct = (totals.previous - totals.current) / totals.previous;
+          if (declinePct > 0.15) {
+            await logger.warn('trend-decline-detected', {
+              org_id: orgId,
+              channel,
+              current_week_leads: totals.current,
+              previous_week_leads: totals.previous,
+              decline_pct: Number((declinePct * 100).toFixed(2)),
+              threshold: '> 15% week-on-week decline in leads generated',
+            });
+          }
+        }
+      }
+    }
+  }
+
   return { checked, triggered, resolved };
 }
 

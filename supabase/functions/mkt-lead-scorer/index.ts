@@ -288,6 +288,41 @@ recommendation guide:
     })
     .eq('id', lead.id as string);
 
+  // Auto-enroll if score exceeds threshold
+  const recommendation = scoreData.recommendation;
+  if (recommendation === 'enroll' && lead.status !== 'enrolled' && lead.status !== 'converted') {
+    // Find active campaign matching lead's org
+    const { data: activeCampaigns } = await supabase
+      .from('mkt_campaigns')
+      .select('id')
+      .eq('org_id', lead.org_id as string)
+      .eq('status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (activeCampaigns && activeCampaigns.length > 0) {
+      const { data: existingEnrollment } = await supabase
+        .from('mkt_sequence_enrollments')
+        .select('id')
+        .eq('lead_id', lead.id as string)
+        .eq('campaign_id', activeCampaigns[0].id)
+        .limit(1);
+
+      if (!existingEnrollment || existingEnrollment.length === 0) {
+        await supabase.from('mkt_sequence_enrollments').insert({
+          org_id: lead.org_id as string,
+          campaign_id: activeCampaigns[0].id,
+          lead_id: lead.id as string,
+          status: 'active',
+          current_step: 1,
+          next_action_at: new Date().toISOString(),
+        });
+
+        await supabase.from('mkt_leads').update({ status: 'enrolled' }).eq('id', lead.id as string);
+      }
+    }
+  }
+
   return { tokens: tokens.input + tokens.output };
 }
 

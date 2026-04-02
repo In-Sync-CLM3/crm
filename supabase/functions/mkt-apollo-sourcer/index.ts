@@ -166,6 +166,60 @@ async function sourceCampaign(
     return { newLeads: 0, duplicates: 0 };
   }
 
+  // Check beachhead vertical configuration
+  let beachheadMeta: Record<string, unknown> = {};
+  const { data: beachheadConfigs } = await supabase
+    .from('mkt_engine_config')
+    .select('config_key, config_value')
+    .eq('org_id', campaign.org_id)
+    .in('config_key', ['beachhead_test_verticals', 'beachhead_winning_vertical']);
+
+  const configMap: Record<string, unknown> = {};
+  for (const cfg of beachheadConfigs || []) {
+    configMap[cfg.config_key] = cfg.config_value;
+  }
+
+  const winningVertical = configMap['beachhead_winning_vertical'] as string | undefined;
+  const testVerticals = configMap['beachhead_test_verticals'] as string[] | undefined;
+
+  // Apply beachhead weighting to ICP industry/vertical
+  if (winningVertical && testVerticals && testVerticals.length > 0) {
+    // 70/20/10 split: 70% winning vertical, 20% second vertical, 10% others
+    // Implement by adjusting the keywords/industry in ICP for weighted searches
+    const otherVerticals = testVerticals.filter((v: string) => v !== winningVertical);
+    const secondVertical = otherVerticals[0] || winningVertical;
+    const remainingVerticals = otherVerticals.slice(1);
+
+    // Weight the industry search toward the winning vertical
+    // Apollo supports multiple keywords, so we build a weighted keyword string
+    icp.industry = winningVertical;
+    icp.beachhead_verticals = {
+      primary: { vertical: winningVertical, weight: 70 },
+      secondary: { vertical: secondVertical, weight: 20 },
+      tertiary: { verticals: remainingVerticals, weight: 10 },
+    };
+
+    beachheadMeta = {
+      beachhead_active: true,
+      winning_vertical: winningVertical,
+      test_verticals: testVerticals,
+      weight_split: '70/20/10',
+    };
+  } else if (testVerticals && testVerticals.length > 0 && !winningVertical) {
+    // No winner yet — rotate evenly across test verticals
+    // Pick vertical based on a simple round-robin using the current date
+    const dayIndex = new Date().getDate() % testVerticals.length;
+    icp.industry = testVerticals[dayIndex];
+
+    beachheadMeta = {
+      beachhead_active: true,
+      winning_vertical: null,
+      test_verticals: testVerticals,
+      selected_vertical: testVerticals[dayIndex],
+      selection_method: 'round-robin',
+    };
+  }
+
   // Build Apollo search params from ICP criteria
   const searchParams = buildSearchParams(icp);
   const maxToFetch = Math.min(remaining, LEADS_PER_SEARCH * MAX_PAGES);
@@ -207,7 +261,7 @@ async function sourceCampaign(
     if (apolloResult.people.length < LEADS_PER_SEARCH) break;
   }
 
-  // Log the search
+  // Log the search (include beachhead metadata if applicable)
   await supabase.from('mkt_apollo_searches').insert({
     org_id: campaign.org_id,
     campaign_id: campaign.id,
@@ -217,6 +271,7 @@ async function sourceCampaign(
     duplicates_count: duplicates,
     api_credits_used: creditsUsed,
     status: 'completed',
+    metadata: Object.keys(beachheadMeta).length > 0 ? beachheadMeta : undefined,
   });
 
   await logger.info('campaign-sourced', {
@@ -265,6 +320,13 @@ function buildSearchParams(icp: Record<string, unknown>): ApolloSearchParams {
 
   if (icp.keywords && typeof icp.keywords === 'string') {
     params.q_keywords = icp.keywords;
+  }
+
+  // Industry / vertical — append to keywords for Apollo filtering
+  if (icp.industry && typeof icp.industry === 'string') {
+    params.q_keywords = params.q_keywords
+      ? `${params.q_keywords} ${icp.industry}`
+      : icp.industry;
   }
 
   return params;

@@ -58,9 +58,13 @@ const CampaignOverview = lazy(() => import("./pages/Campaigns/CampaignOverview")
 const AIInsightsDashboard = lazy(() => import("./pages/Campaigns/AIInsightsDashboard"));
 const MarketingDashboard = lazy(() => import("./pages/MarketingDashboard"));
 const CampaignManager = lazy(() => import("./pages/CampaignManager"));
+const LeadBrowser = lazy(() => import("./pages/LeadBrowser"));
+const EnrollmentBrowser = lazy(() => import("./pages/EnrollmentBrowser"));
 const TemplateEditor = lazy(() => import("./pages/TemplateEditor"));
 const Communications = lazy(() => import("./pages/Communications"));
 const QueueStatus = lazy(() => import("./pages/QueueStatus"));
+const EngineConfig = lazy(() => import("./pages/EngineConfig"));
+const ProductManagement = lazy(() => import("./pages/ProductManagement"));
 
 // Lazy loaded pages - Admin
 const TechAdmin = lazy(() => import("./pages/TechAdmin"));
@@ -295,9 +299,29 @@ const App = () => (
               <CampaignManager />
             </ProtectedRoute>
           } />
+          <Route path="/marketing/leads" element={
+            <ProtectedRoute>
+              <LeadBrowser />
+            </ProtectedRoute>
+          } />
           <Route path="/marketing/templates" element={
             <ProtectedRoute>
               <TemplateEditor />
+            </ProtectedRoute>
+          } />
+          <Route path="/marketing/enrollments" element={
+            <ProtectedRoute>
+              <EnrollmentBrowser />
+            </ProtectedRoute>
+          } />
+          <Route path="/marketing/config" element={
+            <ProtectedRoute>
+              <EngineConfig />
+            </ProtectedRoute>
+          } />
+          <Route path="/marketing/products" element={
+            <ProtectedRoute>
+              <ProductManagement />
             </ProtectedRoute>
           } />
 

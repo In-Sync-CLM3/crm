@@ -24,6 +24,7 @@ import { FinancialIntelligence } from "@/components/Marketing/FinancialIntellige
 import { CampaignPerformance } from "@/components/Marketing/CampaignPerformance";
 import { LeadFunnel } from "@/components/Marketing/LeadFunnel";
 import { ChannelAnalytics } from "@/components/Marketing/ChannelAnalytics";
+import { MilestoneTracker } from "@/components/Marketing/MilestoneTracker";
 
 type PeriodOption = "7" | "30" | "90";
 
@@ -109,7 +110,10 @@ export default function MarketingDashboard() {
           </TabsList>
 
           <TabsContent value="overview">
-            <MarketingOverview days={days} />
+            <div className="space-y-4">
+              <MilestoneTracker />
+              <MarketingOverview days={days} />
+            </div>
           </TabsContent>
 
           <TabsContent value="financial">

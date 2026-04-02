@@ -103,6 +103,7 @@ export function useBillingData() {
         doc_number: d.doc_number,
         client_id: d.client_id || "",
         client_name: d.client_name,
+        client: (d as any).client_billing_snapshot || undefined,
         doc_date: d.doc_date,
         due_date: d.due_date || "",
         financial_year: d.financial_year || "",
@@ -253,6 +254,7 @@ export function useBillingData() {
       doc_number: docData.doc_number,
       client_id: docData.client_id || null,
       client_name: docData.client_name,
+      client_billing_snapshot: client || null,
       doc_date: docData.doc_date,
       due_date: docData.due_date || null,
       financial_year: docData.financial_year || null,
@@ -293,6 +295,8 @@ export function useBillingData() {
     for (const f of fields) {
       if (f in updateData) row[f] = updateData[f];
     }
+    // Save client billing snapshot if client details are provided
+    if (client) row.client_billing_snapshot = client;
 
     const { error } = await supabase.from("billing_documents").update(row).eq("id", id);
     if (error) { console.error("Error updating document:", error); return; }
@@ -334,6 +338,7 @@ export function useBillingData() {
         doc_number: `${prefix}-${fy}-${String(nextNum).padStart(4, "0")}`,
         client_id: docData.client_id || null,
         client_name: docData.client_name,
+        client_billing_snapshot: client || null,
         doc_date: docData.doc_date,
         due_date: docData.due_date || null,
         financial_year: docData.financial_year || null,

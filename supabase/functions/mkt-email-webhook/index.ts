@@ -197,9 +197,12 @@ async function handleResendWebhook(req: Request): Promise<Response> {
     const supabase = getSupabaseClient();
     const data = payload.data || {};
     const tags = data.tags || [];
+    const tagNames = Array.isArray(tags)
+      ? tags.map((t: Record<string, unknown>) => typeof t === 'string' ? t : t.name)
+      : [];
 
-    // Only process mkt-engine emails
-    if (!tags.includes('mkt-engine')) {
+    // Only process mkt-engine emails (support both mkt-engine and mkt_engine tag names)
+    if (!tagNames.includes('mkt-engine') && !tagNames.includes('mkt_engine')) {
       return new Response(JSON.stringify({ received: true, skipped: 'not-mkt-engine' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });

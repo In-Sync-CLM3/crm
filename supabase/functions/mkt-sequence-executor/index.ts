@@ -55,7 +55,7 @@ Deno.serve(async (req) => {
     const leadIds = [...new Set(enrollments.map((e) => e.lead_id))];
 
     const [campaignsRes, leadsRes, stepsRes] = await Promise.all([
-      supabase.from('mkt_campaigns').select('id, name, status').in('id', campaignIds),
+      supabase.from('mkt_campaigns').select('id, name, status, metadata').in('id', campaignIds),
       supabase.from('mkt_leads').select('id, org_id, email, phone, first_name, last_name, company, status').in('id', leadIds),
       supabase.from('mkt_campaign_steps').select('*').in('campaign_id', campaignIds).eq('is_active', true).order('step_number', { ascending: true }),
     ]);
@@ -143,6 +143,23 @@ async function processEnrollment(
       .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), cancel_reason: 'Campaign inactive' })
       .eq('id', enrollment.id as string);
     return 'skipped';
+  }
+
+  // Check if product is active (if campaign has a product_key)
+  const campaignMeta = (campaign as Record<string, unknown>).metadata as Record<string, unknown> | undefined;
+  const productKey = campaignMeta?.product_key as string | undefined;
+  if (productKey) {
+    const { data: product } = await supabase
+      .from('mkt_products')
+      .select('active')
+      .eq('org_id', enrollment.org_id as string)
+      .eq('product_key', productKey)
+      .single();
+
+    if (product && !product.active) {
+      // Skip this enrollment — product is paused
+      return 'skipped';
+    }
   }
 
   // Skip if lead is disqualified or already converted

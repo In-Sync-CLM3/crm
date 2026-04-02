@@ -181,9 +181,16 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
               )}
               {doc.client && (
                 <>
-                  <p className="text-xs text-muted-foreground mt-1">{doc.client.billing_address || doc.client.state}</p>
-                  <p className="text-xs text-muted-foreground">{doc.client.city}{doc.client.pin_code ? ` - ${doc.client.pin_code}` : ""}</p>
+                  {doc.client.billing_address && <p className="text-xs text-muted-foreground mt-1">{doc.client.billing_address}</p>}
+                  <p className="text-xs text-muted-foreground">
+                    {[doc.client.city, doc.client.state].filter(Boolean).join(", ")}
+                    {doc.client.pin_code ? ` - ${doc.client.pin_code}` : ""}
+                  </p>
+                  {doc.client.billing_state_code && (
+                    <p className="text-xs text-muted-foreground">State Code: {doc.client.billing_state_code}</p>
+                  )}
                   {doc.client.gstin && <p className="text-xs text-muted-foreground mt-1">GSTIN: {doc.client.gstin}</p>}
+                  {doc.client.pan && !doc.client.gstin && <p className="text-xs text-muted-foreground mt-1">PAN: {doc.client.pan}</p>}
                 </>
               )}
             </div>

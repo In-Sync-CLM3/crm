@@ -19,6 +19,16 @@ Deno.serve(async (req) => {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
+    // Determine if this is a weekly report (Monday) or daily digest
+    let body: Record<string, unknown> = {};
+    try {
+      body = await req.json();
+    } catch {
+      // No body is fine — defaults to auto-detect
+    }
+    const dayOfWeek = new Date().getDay(); // 0=Sun, 1=Mon
+    const isWeeklyMode = body.mode === 'weekly' || dayOfWeek === 1;
+
     // Get all orgs with active campaigns
     const { data: orgs } = await supabase
       .from('mkt_campaigns')
@@ -38,17 +48,18 @@ Deno.serve(async (req) => {
 
     for (const orgId of orgIds) {
       try {
-        await generateAndSendDigest(supabase, supabaseUrl, serviceRoleKey, orgId, logger);
+        await generateAndSendDigest(supabase, supabaseUrl, serviceRoleKey, orgId, logger, isWeeklyMode);
         digestsSent++;
       } catch (err) {
         await logger.error('digest-failed-for-org', err, { org_id: orgId });
       }
     }
 
-    await logger.info('digests-complete', { orgs_processed: orgIds.length, digests_sent: digestsSent });
+    const digestType = isWeeklyMode ? 'Weekly' : 'Daily';
+    await logger.info('digests-complete', { type: digestType, orgs_processed: orgIds.length, digests_sent: digestsSent });
 
     return new Response(
-      JSON.stringify({ message: 'Daily digests complete', digests_sent: digestsSent }),
+      JSON.stringify({ message: `${digestType} digests complete`, digests_sent: digestsSent }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error) {
@@ -65,7 +76,8 @@ async function generateAndSendDigest(
   supabaseUrl: string,
   serviceRoleKey: string,
   orgId: string,
-  logger: ReturnType<typeof createEngineLogger>
+  logger: ReturnType<typeof createEngineLogger>,
+  isWeeklyMode: boolean = false
 ): Promise<void> {
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
   const today = new Date().toISOString().split('T')[0];
@@ -128,15 +140,34 @@ async function generateAndSendDigest(
 
   const recommendations = (existingDigest?.recommendations as Array<Record<string, unknown>>) || [];
 
-  // Generate narrative using Sonnet
-  const narrative = await generateNarrative(metricsObj, recommendations, campaigns);
+  let narrative: string;
+  let emailSubject: string;
+  let weeklyData: Record<string, unknown> | null = null;
+
+  if (isWeeklyMode) {
+    // --- Weekly mode: collect additional metrics ---
+    weeklyData = await collectWeeklyData(supabase, orgId);
+    narrative = await generateWeeklyNarrative(metricsObj, weeklyData, recommendations, campaigns);
+    // Get org name for subject line
+    const { data: orgProfile } = await supabase
+      .from('organizations')
+      .select('name')
+      .eq('id', orgId)
+      .single();
+    const orgName = orgProfile?.name || 'Your Org';
+    emailSubject = `Monday Revenue Report — ${orgName} — Week of ${today}`;
+  } else {
+    // --- Daily mode: existing narrative ---
+    narrative = await generateNarrative(metricsObj, recommendations, campaigns);
+    emailSubject = `Revenue Engine Daily Digest — ${today}`;
+  }
 
   // Upsert digest
   await supabase.from('mkt_daily_digests').upsert(
     {
       org_id: orgId,
       digest_date: today,
-      metrics: metricsObj,
+      metrics: isWeeklyMode ? { ...metricsObj, weekly: weeklyData } : metricsObj,
       narrative,
       recommendations,
     },
@@ -156,7 +187,9 @@ async function generateAndSendDigest(
     ).data?.map((r) => r.user_id) || []);
 
   if (admins && admins.length > 0) {
-    const emailHtml = buildDigestEmail(metricsObj, narrative, recommendations, today);
+    const emailHtml = isWeeklyMode
+      ? buildWeeklyReportEmail(metricsObj, weeklyData!, narrative, recommendations, today)
+      : buildDigestEmail(metricsObj, narrative, recommendations, today);
 
     for (const admin of admins) {
       if (!admin.email) continue;
@@ -170,7 +203,7 @@ async function generateAndSendDigest(
           },
           body: JSON.stringify({
             to: admin.email,
-            subject: `Revenue Engine Daily Digest — ${today}`,
+            subject: emailSubject,
             html: emailHtml,
           }),
         });
@@ -188,6 +221,258 @@ async function generateAndSendDigest(
       .eq('org_id', orgId)
       .eq('digest_date', today);
   }
+}
+
+// --- Weekly data collection ---
+async function collectWeeklyData(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  orgId: string
+): Promise<Record<string, unknown>> {
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  // MRR from mkt_mrr table
+  const { data: mrrData } = await supabase
+    .from('mkt_mrr')
+    .select('mrr_paise')
+    .eq('org_id', orgId)
+    .eq('is_active', true);
+
+  const currentMrrPaise = (mrrData || []).reduce((sum, r) => sum + ((r.mrr_paise as number) || 0), 0);
+  const currentMrr = currentMrrPaise / 100; // Convert paise to rupees
+
+  // Milestone status from mkt_milestones
+  const { data: milestones } = await supabase
+    .from('mkt_milestones')
+    .select('name, target_value, current_value, status, target_date')
+    .eq('org_id', orgId);
+
+  const milestonesReached = (milestones || []).filter((m) => m.status === 'reached');
+  const milestonesPending = (milestones || []).filter((m) => m.status !== 'reached');
+
+  // Attention items: at-risk leads
+  const { data: atRiskLeads } = await supabase
+    .from('mkt_leads')
+    .select('id, name, company, status')
+    .eq('org_id', orgId)
+    .eq('at_risk', true);
+
+  // Missed callbacks in last 7 days
+  const { data: missedCallbacks } = await supabase
+    .from('mkt_sequence_actions')
+    .select('lead_id, scheduled_at')
+    .eq('org_id', orgId)
+    .eq('channel', 'call')
+    .eq('status', 'missed')
+    .gte('scheduled_at', sevenDaysAgo);
+
+  // Breakpoint alerts in last 7 days
+  const { data: breakpointAlerts } = await supabase
+    .from('mkt_engine_logs')
+    .select('event, metadata, created_at')
+    .eq('org_id', orgId)
+    .eq('event', 'breakpoint-alert')
+    .gte('created_at', sevenDaysAgo);
+
+  // This week vs last week metrics for trajectory
+  const { data: thisWeekMetrics } = await supabase
+    .from('mkt_channel_metrics')
+    .select('sends, opens, clicks, replies, conversions, spend_paise')
+    .eq('org_id', orgId)
+    .gte('metric_date', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
+
+  const { data: lastWeekMetrics } = await supabase
+    .from('mkt_channel_metrics')
+    .select('sends, opens, clicks, replies, conversions, spend_paise')
+    .eq('org_id', orgId)
+    .gte('metric_date', new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0])
+    .lt('metric_date', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
+
+  const sumMetrics = (rows: Array<Record<string, unknown>> | null) => ({
+    sends: (rows || []).reduce((s, m) => s + ((m.sends as number) || 0), 0),
+    opens: (rows || []).reduce((s, m) => s + ((m.opens as number) || 0), 0),
+    clicks: (rows || []).reduce((s, m) => s + ((m.clicks as number) || 0), 0),
+    replies: (rows || []).reduce((s, m) => s + ((m.replies as number) || 0), 0),
+    conversions: (rows || []).reduce((s, m) => s + ((m.conversions as number) || 0), 0),
+    spend_paise: (rows || []).reduce((s, m) => s + ((m.spend_paise as number) || 0), 0),
+  });
+
+  const thisWeekTotals = sumMetrics(thisWeekMetrics);
+  const lastWeekTotals = sumMetrics(lastWeekMetrics);
+
+  return {
+    mrr: currentMrr,
+    mrr_paise: currentMrrPaise,
+    milestones_reached: milestonesReached,
+    milestones_pending: milestonesPending,
+    at_risk_leads: atRiskLeads || [],
+    missed_callbacks: (missedCallbacks || []).length,
+    breakpoint_alerts: (breakpointAlerts || []).length,
+    this_week: thisWeekTotals,
+    last_week: lastWeekTotals,
+  };
+}
+
+// --- Weekly narrative generation ---
+async function generateWeeklyNarrative(
+  dailyMetrics: Record<string, unknown>,
+  weeklyData: Record<string, unknown>,
+  recommendations: Array<Record<string, unknown>>,
+  campaigns: Array<Record<string, unknown>>
+): Promise<string> {
+  const thisWeek = weeklyData.this_week as Record<string, number>;
+  const lastWeek = weeklyData.last_week as Record<string, number>;
+  const milestonesReached = weeklyData.milestones_reached as Array<Record<string, unknown>>;
+  const milestonesPending = weeklyData.milestones_pending as Array<Record<string, unknown>>;
+  const atRiskLeads = weeklyData.at_risk_leads as Array<Record<string, unknown>>;
+
+  const prompt = `Generate a Monday Revenue Report with these sections:
+1. MRR HEADLINE: Current MRR, week-over-week change, trajectory
+2. PERFORMANCE SUMMARY: Key metrics from last 7 days
+3. ATTENTION REQUIRED: Items that need founder review (at-risk clients, missed callbacks)
+4. MILESTONE PROGRESS: Which milestones are reached, what's next, how far away
+5. THIS WEEK'S PLAN: What the engine will focus on this week
+
+DATA:
+Current MRR: ₹${weeklyData.mrr}
+Active Campaigns: ${campaigns.filter((c) => c.status === 'active').map((c) => c.name).join(', ') || 'None'}
+
+THIS WEEK METRICS: ${JSON.stringify(thisWeek, null, 2)}
+LAST WEEK METRICS: ${JSON.stringify(lastWeek, null, 2)}
+
+AT-RISK LEADS (${atRiskLeads.length}): ${atRiskLeads.map((l) => `${l.name} (${l.company})`).join(', ') || 'None'}
+MISSED CALLBACKS: ${weeklyData.missed_callbacks}
+BREAKPOINT ALERTS: ${weeklyData.breakpoint_alerts}
+
+MILESTONES REACHED: ${milestonesReached.length > 0 ? milestonesReached.map((m) => m.name).join(', ') : 'None yet'}
+MILESTONES PENDING: ${milestonesPending.length > 0 ? milestonesPending.map((m) => `${m.name} (${m.current_value}/${m.target_value}, due ${m.target_date})`).join(', ') : 'None set'}
+
+OPTIMIZER RECOMMENDATIONS:
+${recommendations.length > 0 ? recommendations.map((r) => `- [${r.priority}] ${r.recommendation}`).join('\n') : 'No recommendations this week.'}
+
+YESTERDAY'S SNAPSHOT: ${JSON.stringify(dailyMetrics, null, 2)}
+
+Write in a professional but direct tone. Use exact numbers. Be honest about trajectory — if metrics are declining, say so clearly. End with 3-5 concrete priorities for this week.`;
+
+  try {
+    const response = await callLLM(prompt, {
+      model: 'sonnet',
+      max_tokens: 1024,
+      temperature: 0.4,
+    });
+    return response.content;
+  } catch {
+    return `Weekly Report: MRR ₹${weeklyData.mrr}. This week: ${thisWeek.sends} sends, ${thisWeek.conversions} conversions. ${atRiskLeads.length} at-risk leads. ${weeklyData.missed_callbacks} missed callbacks. Check dashboard for full details.`;
+  }
+}
+
+// --- Weekly report email template ---
+function buildWeeklyReportEmail(
+  metrics: Record<string, unknown>,
+  weeklyData: Record<string, unknown>,
+  narrative: string,
+  recommendations: Array<Record<string, unknown>>,
+  date: string
+): string {
+  const thisWeek = weeklyData.this_week as Record<string, number>;
+  const lastWeek = weeklyData.last_week as Record<string, number>;
+  const pctChange = (curr: number, prev: number) => prev > 0 ? ((curr - prev) / prev * 100).toFixed(1) : 'N/A';
+  const atRiskLeads = weeklyData.at_risk_leads as Array<Record<string, unknown>>;
+  const milestonesReached = weeklyData.milestones_reached as Array<Record<string, unknown>>;
+  const milestonesPending = weeklyData.milestones_pending as Array<Record<string, unknown>>;
+
+  return `<!DOCTYPE html>
+<html>
+<head><style>
+  body { font-family: -apple-system, sans-serif; background: #f9fafb; padding: 20px; }
+  .container { max-width: 600px; margin: 0 auto; background: white; border-radius: 12px; overflow: hidden; }
+  .header { background: linear-gradient(135deg, #7c3aed, #2563eb); color: white; padding: 24px; }
+  .header h1 { margin: 0 0 4px; font-size: 20px; }
+  .header p { margin: 0; opacity: 0.8; font-size: 14px; }
+  .mrr-banner { background: #f0fdf4; padding: 20px; text-align: center; border-bottom: 1px solid #e5e7eb; }
+  .mrr-value { font-size: 32px; font-weight: 800; color: #16a34a; }
+  .mrr-label { font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 4px; }
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 20px; }
+  .metric { text-align: center; padding: 12px; background: #f9fafb; border-radius: 8px; }
+  .metric .value { font-size: 20px; font-weight: 700; color: #111827; }
+  .metric .change { font-size: 11px; margin-top: 2px; }
+  .change-up { color: #16a34a; }
+  .change-down { color: #dc2626; }
+  .metric .label { font-size: 11px; color: #6b7280; text-transform: uppercase; margin-top: 2px; }
+  .narrative { padding: 0 20px 20px; color: #374151; line-height: 1.6; font-size: 14px; }
+  .section { padding: 0 20px 16px; }
+  .section h3 { font-size: 14px; margin: 0 0 8px; color: #111827; }
+  .alert-item { padding: 8px 12px; margin-bottom: 6px; background: #fef2f2; border-left: 3px solid #ef4444; border-radius: 4px; font-size: 13px; color: #991b1b; }
+  .milestone { padding: 8px 12px; margin-bottom: 6px; border-radius: 4px; font-size: 13px; }
+  .milestone-reached { background: #f0fdf4; border-left: 3px solid #16a34a; color: #166534; }
+  .milestone-pending { background: #eff6ff; border-left: 3px solid #3b82f6; color: #1e40af; }
+  .recs { padding: 0 20px 20px; }
+  .rec { padding: 8px 12px; margin-bottom: 8px; border-left: 3px solid; border-radius: 4px; font-size: 13px; }
+  .rec-high { border-color: #ef4444; background: #fef2f2; }
+  .rec-medium { border-color: #f59e0b; background: #fffbeb; }
+  .rec-low { border-color: #3b82f6; background: #eff6ff; }
+  .footer { padding: 16px 20px; text-align: center; font-size: 12px; color: #9ca3af; border-top: 1px solid #f3f4f6; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Monday Revenue Report</h1>
+    <p>Week of ${date}</p>
+  </div>
+  <div class="mrr-banner">
+    <div class="mrr-label">Current MRR</div>
+    <div class="mrr-value">\u20B9${Number(weeklyData.mrr).toLocaleString('en-IN')}</div>
+  </div>
+  <div class="metrics">
+    <div class="metric">
+      <div class="value">${thisWeek.sends}</div>
+      <div class="change ${thisWeek.sends >= lastWeek.sends ? 'change-up' : 'change-down'}">${pctChange(thisWeek.sends, lastWeek.sends)}% WoW</div>
+      <div class="label">Sends</div>
+    </div>
+    <div class="metric">
+      <div class="value">${thisWeek.opens}</div>
+      <div class="change ${thisWeek.opens >= lastWeek.opens ? 'change-up' : 'change-down'}">${pctChange(thisWeek.opens, lastWeek.opens)}% WoW</div>
+      <div class="label">Opens</div>
+    </div>
+    <div class="metric">
+      <div class="value">${thisWeek.conversions}</div>
+      <div class="change ${thisWeek.conversions >= lastWeek.conversions ? 'change-up' : 'change-down'}">${pctChange(thisWeek.conversions, lastWeek.conversions)}% WoW</div>
+      <div class="label">Conversions</div>
+    </div>
+    <div class="metric">
+      <div class="value">${thisWeek.replies}</div>
+      <div class="change ${thisWeek.replies >= lastWeek.replies ? 'change-up' : 'change-down'}">${pctChange(thisWeek.replies, lastWeek.replies)}% WoW</div>
+      <div class="label">Replies</div>
+    </div>
+    <div class="metric">
+      <div class="value">${(weeklyData.missed_callbacks as number) || 0}</div>
+      <div class="label">Missed Callbacks</div>
+    </div>
+    <div class="metric">
+      <div class="value">${(weeklyData.breakpoint_alerts as number) || 0}</div>
+      <div class="label">Alerts</div>
+    </div>
+  </div>
+  <div class="narrative">${narrative.split('\n').map((p) => `<p>${p}</p>`).join('')}</div>
+  ${atRiskLeads.length > 0 ? `
+  <div class="section">
+    <h3>Attention Required</h3>
+    ${atRiskLeads.map((l) => `<div class="alert-item">${l.name} (${l.company}) — ${l.status}</div>`).join('')}
+  </div>` : ''}
+  ${(milestonesReached.length > 0 || milestonesPending.length > 0) ? `
+  <div class="section">
+    <h3>Milestone Progress</h3>
+    ${milestonesReached.map((m) => `<div class="milestone milestone-reached">Reached: ${m.name}</div>`).join('')}
+    ${milestonesPending.map((m) => `<div class="milestone milestone-pending">${m.name}: ${m.current_value}/${m.target_value} (due ${m.target_date})</div>`).join('')}
+  </div>` : ''}
+  ${recommendations.length > 0 ? `
+  <div class="recs">
+    <h3 style="font-size: 14px; margin-bottom: 8px;">Recommendations</h3>
+    ${recommendations.map((r) => `<div class="rec rec-${r.priority}">${r.recommendation}</div>`).join('')}
+  </div>` : ''}
+  <div class="footer">Sent by In-Sync CRM Revenue Engine</div>
+</div>
+</body>
+</html>`;
 }
 
 async function generateNarrative(

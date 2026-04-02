@@ -44,6 +44,44 @@ Deno.serve(async (req) => {
 
     const orgId = lead.org_id;
 
+    // Check warmup cap
+    const { data: configRows } = await supabase
+      .from('mkt_engine_config')
+      .select('config_value')
+      .eq('config_key', 'warmup_state')
+      .eq('org_id', orgId)
+      .single();
+
+    const warmupState = configRows?.config_value as Record<string, unknown> | null;
+    if (warmupState?.active) {
+      const dailyCap = (warmupState.daily_cap as number) || 50;
+      const today = new Date().toISOString().split('T')[0];
+      const { count } = await supabase
+        .from('mkt_sequence_actions')
+        .select('id', { count: 'exact', head: true })
+        .eq('org_id', orgId)
+        .eq('channel', 'email')
+        .eq('status', 'sent')
+        .gte('sent_at', today);
+
+      if ((count || 0) >= dailyCap) {
+        // Reschedule for tomorrow instead of failing
+        await supabase
+          .from('mkt_sequence_actions')
+          .update({
+            status: 'pending',
+            scheduled_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+            metadata: { ...body, warmup_deferred: true },
+          })
+          .eq('id', action_id);
+
+        return new Response(
+          JSON.stringify({ success: true, action_id, deferred: 'warmup_cap_reached' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
     // Resolve template (handle A/B testing)
     let selectedTemplateId = template_id;
     let variant: string | null = null;
@@ -108,37 +146,55 @@ Deno.serve(async (req) => {
       finalHtml += trackingPixel;
     }
 
-    // Wrap links with click tracking
+    // Wrap links with click tracking and append UTM parameters
+    const campaignName = (template.name as string)?.replace(/\s+/g, '_').toLowerCase() || 'mkt_outbound';
     finalHtml = finalHtml.replace(
       /<a\s+([^>]*href=["']([^"']+)["'][^>]*)>/gi,
       (match, attrs, url) => {
         if (url.includes('unsubscribe') || url.includes('mkt-email-webhook')) return match;
-        const trackedUrl = `${supabaseUrl}/functions/v1/mkt-email-webhook?action=click&id=${trackingPixelId}&url=${encodeURIComponent(url)}`;
+        // Append UTM parameters to the original URL
+        const separator = url.includes('?') ? '&' : '?';
+        const utmParams = `utm_source=insync_engine&utm_medium=email&utm_campaign=${encodeURIComponent(campaignName)}&utm_content=${encodeURIComponent(action_id)}`;
+        const urlWithUtm = `${url}${separator}${utmParams}`;
+        const trackedUrl = `${supabaseUrl}/functions/v1/mkt-email-webhook?action=click&id=${trackingPixelId}&url=${encodeURIComponent(urlWithUtm)}`;
         return match.replace(url, trackedUrl);
       }
     );
 
-    // Send via the existing send-email function (Resend)
-    const sendResponse = await fetch(`${supabaseUrl}/functions/v1/send-email`, {
+    // Send directly via Resend API (bypasses user-facing send-email which requires JWT)
+    const resendApiKey = Deno.env.get('RESEND_API_KEY');
+    if (!resendApiKey) throw new Error('RESEND_API_KEY not configured');
+
+    const fromName = (template.from_name as string) || 'In-Sync Team';
+    const replyTo = (template.reply_to as string) || 'hello@in-sync.co.in';
+    const fromEmail = `${fromName} <hello@in-sync.co.in>`;
+
+    const sendResponse = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${serviceRoleKey}`,
+        'Authorization': `Bearer ${resendApiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        to: lead.email,
+        from: fromEmail,
+        to: [lead.email],
         subject: personalizedContent.subject,
         html: finalHtml,
-        from_name: template.from_name || undefined,
-        reply_to: template.reply_to || undefined,
-        trackingPixelId,
-        tags: ['mkt-engine', `campaign-${lead.campaign_id}`],
+        reply_to: replyTo,
+        headers: {
+          'List-Unsubscribe': `<mailto:unsubscribe@in-sync.co.in>, <${unsubscribeUrl}>`,
+          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+        },
+        tags: [
+          { name: 'mkt_engine', value: 'true' },
+          { name: 'action_id', value: (action_id || '').replace(/[^a-zA-Z0-9_-]/g, '_') },
+        ],
       }),
     });
 
     if (!sendResponse.ok) {
       const errText = await sendResponse.text();
-      throw new Error(`Send email failed: ${sendResponse.status} ${errText}`);
+      throw new Error(`Resend API failed: ${sendResponse.status} ${errText}`);
     }
 
     const sendResult = await sendResponse.json();

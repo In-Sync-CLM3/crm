@@ -18,7 +18,7 @@ Deno.serve(async (req) => {
   try {
     const supabase = getSupabaseClient();
 
-    // Authenticate user
+    // Authenticate user — supports user JWT or service role key with org_id in body/params
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -28,29 +28,36 @@ Deno.serve(async (req) => {
     }
 
     const token = authHeader.replace('Bearer ', '');
+    let orgId: string | null = null;
+
+    // Try user JWT auth first
     const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-    if (userError || !user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+    if (!userError && user) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('org_id')
+        .eq('id', user.id)
+        .single();
+      orgId = profile?.org_id || null;
     }
 
-    // Get user's org
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('org_id')
-      .eq('id', user.id)
-      .single();
+    // Fall back to org_id from request body/params (for service role / cron calls)
+    if (!orgId) {
+      try {
+        const body = await req.clone().json();
+        orgId = body.org_id || null;
+      } catch {
+        const url = new URL(req.url);
+        orgId = url.searchParams.get('org_id');
+      }
+    }
 
-    if (!profile?.org_id) {
+    if (!orgId) {
       return new Response(JSON.stringify({ error: 'No organization' }), {
         status: 403,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
-
-    const orgId = profile.org_id;
 
     // Parse query params
     const url = new URL(req.url);
