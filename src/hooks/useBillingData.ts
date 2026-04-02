@@ -10,6 +10,7 @@ import type {
   BillingDocumentStatus,
 } from "@/types/billing";
 import { getCurrentFinancialYear } from "@/utils/billingUtils";
+import { INDIAN_STATES } from "@/types/billing";
 
 // Default billing settings
 const DEFAULT_SETTINGS: BillingSettings = {
@@ -96,6 +97,42 @@ export function useBillingData() {
         });
       }
 
+      // For documents missing client_billing_snapshot, look up from clients table
+      const missingClientIds = [...new Set(
+        (docs || [])
+          .filter(d => !(d as any).client_billing_snapshot && d.client_id)
+          .map(d => d.client_id)
+      )];
+      let clientLookup: Record<string, any> = {};
+      if (missingClientIds.length > 0) {
+        const { data: clientRows } = await supabase
+          .from("clients")
+          .select("id, company, first_name, last_name, address, city, state, postal_code")
+          .in("id", missingClientIds);
+        for (const c of clientRows || []) {
+          const stateCode = INDIAN_STATES.find(s => s.name === c.state)?.code || "";
+          clientLookup[c.id] = {
+            company: c.company || `${c.first_name} ${c.last_name || ""}`.trim(),
+            first_name: c.first_name,
+            last_name: c.last_name || "",
+            billing_address: c.address || "",
+            city: c.city || "",
+            state: c.state || "",
+            billing_state_code: stateCode,
+            pin_code: c.postal_code || "",
+          };
+        }
+        // Auto-save snapshots back to DB so this lookup only happens once
+        for (const d of (docs || [])) {
+          if (!(d as any).client_billing_snapshot && d.client_id && clientLookup[d.client_id]) {
+            supabase.from("billing_documents")
+              .update({ client_billing_snapshot: clientLookup[d.client_id] })
+              .eq("id", d.id)
+              .then(() => {});
+          }
+        }
+      }
+
       const mappedDocs: BillingDocument[] = (docs || []).map(d => ({
         id: d.id,
         org_id: d.org_id,
@@ -103,7 +140,7 @@ export function useBillingData() {
         doc_number: d.doc_number,
         client_id: d.client_id || "",
         client_name: d.client_name,
-        client: (d as any).client_billing_snapshot || undefined,
+        client: (d as any).client_billing_snapshot || clientLookup[d.client_id] || undefined,
         doc_date: d.doc_date,
         due_date: d.due_date || "",
         financial_year: d.financial_year || "",
