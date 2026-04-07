@@ -87,7 +87,7 @@ export default function PipelineBoard() {
     setFilters(urlFilters);
     // Don't manipulate filteredContacts here - let the auto-apply effect handle it
   }, [urlFilters]);
-  const [activeTab, setActiveTab] = useState("board");
+  const [activeTab, setActiveTab] = useState("table");
   const [callingContactId, setCallingContactId] = useState<string | null>(null);
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [selectedContactForEmail, setSelectedContactForEmail] = useState<Contact | null>(null);
@@ -121,7 +121,7 @@ export default function PipelineBoard() {
   const { effectiveOrgId } = useOrgContext();
   const queryClient = useQueryClient();
   
-  const tablePagination = usePagination({ defaultPageSize: 25 });
+  const tablePagination = usePagination({ defaultPageSize: 50 });
 
   const { data: stagesData } = useQuery({
     queryKey: ['pipeline-stages'],
@@ -538,7 +538,7 @@ export default function PipelineBoard() {
           resultCount={hasActiveFilters ? contacts.length : undefined}
           totalCount={hasActiveFilters ? baseContacts.length : undefined}
         />
-        <Tabs defaultValue="table" className="w-full">
+        <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); if (v === "table") tablePagination.reset(); }} className="w-full">
           <TabsList>
             <TabsTrigger value="board">
               <LayoutGrid className="h-4 w-4 mr-2" />
