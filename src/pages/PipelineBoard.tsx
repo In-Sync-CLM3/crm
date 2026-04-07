@@ -201,7 +201,7 @@ export default function PipelineBoard() {
         const offset = (tablePagination.currentPage - 1) * tablePagination.pageSize;
         const { data, error, count } = await supabase
           .from("contacts")
-          .select(selectFields, { count: 'exact' })
+          .select(selectFields, { count: 'estimated' })
           .order("updated_at", { ascending: false })
           .range(offset, offset + tablePagination.pageSize - 1);
 
