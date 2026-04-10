@@ -68,6 +68,62 @@ function getProductServiceKey(productName: string): string | undefined {
   return Deno.env.get(`${initials}_SUPABASE_SERVICE_KEY`);
 }
 
+/** Extract the top N keys from a frequency map, sorted by count descending. */
+function topKeysFromFreqMap(freq: Record<string, number>, limit = 7): string[] {
+  return Object.entries(freq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([key]) => key);
+}
+
+/**
+ * Persist the onboarding-inferred ICP as version 1 in mkt_product_icp.
+ * Safe to call on re-runs — uses ON CONFLICT DO NOTHING via ignoreDuplicates.
+ */
+async function persistICPFromOnboarding(
+  supabase: SupabaseClient,
+  org_id: string,
+  productKey: string,
+  icpHints: Record<string, unknown>,
+  trialDays: number,
+  log: (msg: string) => void,
+): Promise<boolean> {
+  const industries = icpHints.industries
+    ? topKeysFromFreqMap(icpHints.industries as Record<string, number>)
+    : [];
+  const designations = icpHints.designations
+    ? topKeysFromFreqMap(icpHints.designations as Record<string, number>)
+    : [];
+  const company_sizes: string[] = icpHints.company_sizes
+    ? [...new Set((icpHints.company_sizes as unknown[]).map(String))]
+    : [];
+
+  const { error } = await supabase.from('mkt_product_icp').upsert(
+    {
+      org_id,
+      product_key: productKey,
+      industries,
+      designations,
+      company_sizes,
+      aha_moment_days: trialDays,
+      version: 1,
+      confidence_score: 0.300,
+      evolved_by: 'onboarding',
+      evolution_reason: 'Initial ICP inferred from product data during onboarding',
+      last_evolved_at: new Date().toISOString(),
+    },
+    { onConflict: 'org_id,product_key,version', ignoreDuplicates: true },
+  );
+
+  if (error) {
+    log(`WARNING: Failed to persist ICP: ${error.message}`);
+    return false;
+  }
+
+  log(`ICP v1 persisted: ${industries.length} industries, ${designations.length} designations, ${company_sizes.length} company sizes`);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // ONBOARD
 // ---------------------------------------------------------------------------
@@ -399,7 +455,107 @@ Return a JSON array of 4 script objects.`,
     else log(`Inserted ${scriptRows.length} call scripts`);
   }
 
-  // 10. Create initial campaign with steps
+  // 10. Create Vapi assistants for each call script
+  if (callScripts.length > 0) {
+    log('Creating Vapi assistants for call scripts...');
+    const vapiApiKey = Deno.env.get('VAPI_API_KEY');
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+
+    if (!vapiApiKey) {
+      log('WARNING: VAPI_API_KEY not set — skipping Vapi assistant creation');
+    } else {
+      // Fetch the inserted script rows to get their IDs
+      const { data: insertedScripts } = await supabase
+        .from('mkt_call_scripts')
+        .select('id, name, product_key, call_type, objective, opening, key_points, objection_handling, closing')
+        .eq('product_key', productKey)
+        .eq('is_active', true);
+
+      let assistantsCreated = 0;
+      const assistantFailures: string[] = [];
+
+      for (const row of insertedScripts || []) {
+        try {
+          const systemPrompt = buildOnboardSystemPrompt(row, product_name, product_url);
+
+          const vapiPayload = {
+            name: `${productKey}-${row.call_type}`,
+            model: {
+              provider: 'groq',
+              model: 'llama-3.3-70b-versatile',
+              temperature: 0.4,
+              messages: [{ role: 'system', content: systemPrompt }],
+            },
+            voice: {
+              provider: 'elevenlabs',
+              voiceId: Deno.env.get('VAPI_DEFAULT_VOICE_ID') || 'pNInz6obpgDQGcFmaJgB',
+            },
+            transcriber: {
+              provider: 'deepgram',
+              model: 'nova-2',
+              language: 'en-IN',
+            },
+            firstMessage: row.opening,
+            endCallFunctionEnabled: true,
+            recordingEnabled: true,
+            serverUrl: `${supabaseUrl}/functions/v1/mkt-vapi-webhook`,
+            serverUrlSecret: Deno.env.get('VAPI_WEBHOOK_SECRET') || undefined,
+          };
+
+          const vapiResp = await fetch('https://api.vapi.ai/assistant', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${vapiApiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(vapiPayload),
+          });
+
+          if (!vapiResp.ok) {
+            const errText = await vapiResp.text();
+            throw new Error(`Vapi ${vapiResp.status}: ${errText}`);
+          }
+
+          const vapiResult = await vapiResp.json();
+
+          // Store assistant ID on the script row
+          await supabase
+            .from('mkt_call_scripts')
+            .update({
+              vapi_assistant_id: vapiResult.id,
+              vapi_assistant_created_at: new Date().toISOString(),
+            })
+            .eq('id', row.id);
+
+          await logger.info('vapi-assistant-created', {
+            product_key: productKey,
+            call_type: row.call_type,
+            assistant_id: vapiResult.id,
+            script_id: row.id,
+          });
+
+          assistantsCreated++;
+          log(`Vapi assistant created: ${productKey}-${row.call_type} (${vapiResult.id})`);
+        } catch (err) {
+          const errMsg = `${row.call_type}: ${err instanceof Error ? err.message : String(err)}`;
+          assistantFailures.push(errMsg);
+          await logger.error('vapi-assistant-creation-failed', err, {
+            product_key: productKey,
+            call_type: row.call_type,
+            script_id: row.id,
+          });
+          log(`WARNING: Vapi assistant failed for ${row.call_type}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      log(`Vapi assistants: ${assistantsCreated} created, ${assistantFailures.length} failed`);
+      if (assistantFailures.length > 0) {
+        log(`Failed assistants: ${assistantFailures.join('; ')}`);
+      }
+    }
+  }
+
+  // 11. Create initial campaign with steps
   log('Creating initial outbound campaign...');
   const { data: campaign, error: campErr } = await supabase
     .from('mkt_campaigns')
@@ -439,7 +595,12 @@ Return a JSON array of 4 script objects.`,
     else log(`Created campaign "${campaign.id}" with ${steps.length} steps`);
   }
 
-  // 11. Finalize: set onboarding_status = complete, active = false
+  // 12. Persist ICP
+  const icpPersisted = await persistICPFromOnboarding(supabase, org_id, productKey, icpHints, trialDays, log);
+
+  // 13. Finalize: set onboarding_status = complete, active = false
+  // Note: If Vapi assistant creation failed for some scripts, onboarding still
+  // completes. Assistants can be retried via mkt-vapi-backfill-assistants.
   const onboardingLog = logLines.join('\n');
   await supabase
     .from('mkt_products')
@@ -461,6 +622,7 @@ Return a JSON array of 4 script objects.`,
     call_scripts_generated: callScripts.length,
     schema_map: schemaMap,
     trial_days: trialDays,
+    icp_persisted: icpPersisted,
   });
 
   return {
@@ -468,6 +630,7 @@ Return a JSON array of 4 script objects.`,
     product_key: productKey,
     schema_map: schemaMap,
     trial_days: trialDays,
+    icp_persisted: icpPersisted,
     content_generated: {
       emails: allEmails.length,
       whatsapp_templates: waTemplates.length,
@@ -476,6 +639,54 @@ Return a JSON array of 4 script objects.`,
     secrets_to_set: [secretUrlName, secretKeyName],
     onboarding_log: onboardingLog,
   };
+}
+
+/**
+ * Build the base system prompt for a Vapi assistant at onboarding time.
+ * Combines the base persona, product context, and call-type script.
+ * Memory briefing is injected at call-time by mkt-initiate-call, NOT here.
+ */
+function buildOnboardSystemPrompt(
+  script: Record<string, unknown>,
+  productName: string,
+  productUrl: string,
+): string {
+  const keyPoints = (script.key_points as string[]) || [];
+  const objections = (script.objection_handling as Record<string, string>) || {};
+
+  let prompt = `You are Arohan, an AI sales assistant. You are professional, warm, and concise.
+You represent ${productName} (${productUrl}).
+
+CALL TYPE: ${script.call_type}
+CALL OBJECTIVE: ${script.objective || 'Engage the prospect and move toward next steps'}`;
+
+  if (keyPoints.length > 0) {
+    prompt += `
+
+KEY TALKING POINTS:
+${keyPoints.map((p, i) => `${i + 1}. ${p}`).join('\n')}`;
+  }
+
+  if (Object.keys(objections).length > 0) {
+    prompt += `
+
+OBJECTION HANDLING:
+${Object.entries(objections).map(([objection, response]) => `- If they say "${objection}": ${response}`).join('\n')}`;
+  }
+
+  prompt += `
+
+CLOSING: ${script.closing || 'Thank you for your time.'}
+
+RULES:
+- Keep responses under 2-3 sentences. Be conversational, not scripted.
+- If they're not interested, be respectful and end the call gracefully.
+- If they ask to be removed from the call list, acknowledge and end the call.
+- Never be pushy or aggressive. Mirror their tone and pace.
+- If they ask who you are, say you are Arohan, an AI assistant calling on behalf of the ${productName} team.
+- Always end with a clear next step (demo booking, email follow-up, or callback time).`;
+
+  return prompt;
 }
 
 /** Map our category names to the DB's category values */

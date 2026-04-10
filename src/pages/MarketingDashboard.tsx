@@ -25,6 +25,8 @@ import { CampaignPerformance } from "@/components/Marketing/CampaignPerformance"
 import { LeadFunnel } from "@/components/Marketing/LeadFunnel";
 import { ChannelAnalytics } from "@/components/Marketing/ChannelAnalytics";
 import { MilestoneTracker } from "@/components/Marketing/MilestoneTracker";
+import { ICPPanel } from "@/components/Marketing/ICPPanel";
+import { useOrgData } from "@/hooks/useOrgData";
 
 type PeriodOption = "7" | "30" | "90";
 
@@ -107,6 +109,10 @@ export default function MarketingDashboard() {
               <Radio className="h-3.5 w-3.5" />
               <span>Channel Performance</span>
             </TabsTrigger>
+            <TabsTrigger value="icp" className="gap-1.5">
+              <Target className="h-3.5 w-3.5" />
+              <span>ICP Intelligence</span>
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview">
@@ -131,8 +137,57 @@ export default function MarketingDashboard() {
           <TabsContent value="channels">
             <ChannelAnalytics days={days} />
           </TabsContent>
+
+          <TabsContent value="icp">
+            <ICPIntelligenceTab />
+          </TabsContent>
         </Tabs>
       </div>
     </DashboardLayout>
+  );
+}
+
+function ICPIntelligenceTab() {
+  const { data: products = [], isLoading } = useOrgData<{
+    id: string;
+    product_key: string;
+    product_name: string;
+    active: boolean;
+    onboarding_status: string;
+  }>("mkt_products", {
+    select: "id,product_key,product_name,active,onboarding_status",
+    orderBy: { column: "created_at", ascending: false },
+  });
+
+  const onboarded = products.filter((p) => p.onboarding_status === "complete");
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground py-6">
+        <RefreshCw className="h-4 w-4 animate-spin" />
+        Loading products…
+      </div>
+    );
+  }
+
+  if (onboarded.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground text-center py-8">
+        No onboarded products yet. Complete product onboarding to see ICP intelligence.
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 pt-2">
+      {onboarded.map((p) => (
+        <ICPPanel
+          key={p.product_key}
+          productKey={p.product_key}
+          productName={p.product_name}
+          compact
+        />
+      ))}
+    </div>
   );
 }

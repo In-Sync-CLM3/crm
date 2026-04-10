@@ -61,10 +61,12 @@ const CampaignManager = lazy(() => import("./pages/CampaignManager"));
 const LeadBrowser = lazy(() => import("./pages/LeadBrowser"));
 const EnrollmentBrowser = lazy(() => import("./pages/EnrollmentBrowser"));
 const TemplateEditor = lazy(() => import("./pages/TemplateEditor"));
+const ArohanChat = lazy(() => import("./pages/ArohanChat"));
 const Communications = lazy(() => import("./pages/Communications"));
 const QueueStatus = lazy(() => import("./pages/QueueStatus"));
 const EngineConfig = lazy(() => import("./pages/EngineConfig"));
 const ProductManagement = lazy(() => import("./pages/ProductManagement"));
+const ProductICP = lazy(() => import("./pages/ProductICP"));
 
 // Lazy loaded pages - Admin
 const TechAdmin = lazy(() => import("./pages/TechAdmin"));
@@ -322,6 +324,17 @@ const App = () => (
           <Route path="/marketing/products" element={
             <ProtectedRoute>
               <ProductManagement />
+            </ProtectedRoute>
+          } />
+          <Route path="/marketing/products/:productKey/icp" element={
+            <ProtectedRoute>
+              <ProductICP />
+            </ProtectedRoute>
+          } />
+
+          <Route path="/marketing/arohan" element={
+            <ProtectedRoute>
+              <ArohanChat />
             </ProtectedRoute>
           } />
 

@@ -471,7 +471,7 @@ async function refineICP(
     // ICP refinement: analyze which lead characteristics convert best
     const { data: convertedLeads } = await supabase
       .from('mkt_leads')
-      .select('industry, company_size, designation, source, total_score')
+      .select('industry, company_size, job_title, source, total_score')
       .eq('org_id', orgId)
       .eq('status', 'converted')
       .gte('converted_at', since);
@@ -479,7 +479,7 @@ async function refineICP(
     // Compare converted vs non-converted lead profiles
     const { data: nonConvertedLeads } = await supabase
       .from('mkt_leads')
-      .select('industry, company_size, designation, source, total_score')
+      .select('industry, company_size, job_title, source, total_score')
       .eq('org_id', orgId)
       .neq('status', 'converted')
       .gte('created_at', since);
@@ -502,7 +502,7 @@ async function refineICP(
       count: (convertedLeads || []).length,
       industries: buildDistribution(convertedLeads, 'industry'),
       company_sizes: buildDistribution(convertedLeads, 'company_size'),
-      designations: buildDistribution(convertedLeads, 'designation'),
+      designations: buildDistribution(convertedLeads, 'job_title'),
       sources: buildDistribution(convertedLeads, 'source'),
       avg_score: (convertedLeads || []).length > 0
         ? Math.round((convertedLeads || []).reduce((s, l) => s + ((l.total_score as number) || 0), 0) / (convertedLeads || []).length)
@@ -513,7 +513,7 @@ async function refineICP(
       count: (nonConvertedLeads || []).length,
       industries: buildDistribution(nonConvertedLeads, 'industry'),
       company_sizes: buildDistribution(nonConvertedLeads, 'company_size'),
-      designations: buildDistribution(nonConvertedLeads, 'designation'),
+      designations: buildDistribution(nonConvertedLeads, 'job_title'),
       sources: buildDistribution(nonConvertedLeads, 'source'),
       avg_score: (nonConvertedLeads || []).length > 0
         ? Math.round((nonConvertedLeads || []).reduce((s, l) => s + ((l.total_score as number) || 0), 0) / (nonConvertedLeads || []).length)
@@ -572,6 +572,31 @@ Rules:
       non_converted_leads: nonConverted.count,
       recommendations: recs.length,
     });
+
+    // Trigger ICP evolution for this org.
+    // mkt-evolve-icp enforces its own guard conditions (7-day cadence, min 5 conversions),
+    // so calling it daily from the optimizer is safe — it skips when conditions aren't met.
+    try {
+      const supabaseUrl = Deno.env.get('SUPABASE_URL');
+      const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+      if (supabaseUrl && serviceKey) {
+        const res = await fetch(`${supabaseUrl}/functions/v1/mkt-evolve-icp`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${serviceKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ mode: 'evolve', org_id: orgId }),
+        });
+        // Consume body to release the TCP connection
+        await res.body?.cancel();
+      }
+    } catch (evolveError) {
+      await logger.warn('icp-evolution-trigger-failed', {
+        org_id: orgId,
+        error: evolveError instanceof Error ? evolveError.message : String(evolveError),
+      });
+    }
 
     return recs;
   } catch (error) {

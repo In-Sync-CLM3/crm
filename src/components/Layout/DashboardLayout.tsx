@@ -4,50 +4,26 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard,
-  Settings,
-  Users,
   LogOut,
   Menu,
   X,
   Contact,
   GitBranch,
-  BarChart3,
-  Network,
-  UserCog,
   TrendingUp,
-  Lightbulb,
-  UsersRound,
-  Layers,
-  PhoneCall,
   Package,
   CheckSquare,
-  Award,
-  FileText,
-  List,
-  Sliders,
-  ShieldCheck,
-  Building2,
-  Webhook,
   MessageSquare,
-  Mail,
-  Send,
   Database,
-  CreditCard,
-  Activity,
-  Key,
-  Star,
   MessageCircle,
-  Phone,
-  Sparkles,
   Briefcase,
   CalendarDays,
   Megaphone,
   Palette,
   IndianRupee,
   LifeBuoy,
+  Bot,
 } from "lucide-react";
 import { useNotification } from "@/hooks/useNotification";
-import { PlatformAdminBanner } from "@/components/PlatformAdminBanner";
 import { OnboardingDialog } from "@/components/Onboarding/OnboardingDialog";
 import { useFeatureAccess } from "@/hooks/useFeatureAccess";
 import SubscriptionStatusBanner from "@/components/Subscription/SubscriptionStatusBanner";
@@ -121,7 +97,6 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
   const userName = userData?.profile 
     ? `${userData.profile.first_name} ${userData.profile.last_name}` 
     : "";
-  const isPlatformAdmin = userData?.profile?.is_platform_admin || false;
   const orgLogo = userData?.org?.logo_url || "";
   const orgName = userData?.org?.name || "";
   const onboardingCompleted = userData?.profile?.onboarding_completed || false;
@@ -139,40 +114,12 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
     navigate("/login");
   };
 
-  const isAdmin = userRole === "admin" || userRole === "super_admin";
-  const isManager = userRole === "admin" || userRole === "super_admin" || userRole === "sales_manager" || userRole === "support_manager";
-
   // Check if sections should be visible
-  const showDashboardsSection = canAccessFeature("analytics") || canAccessFeature("calling") || 
+  const showDashboardsSection = canAccessFeature("analytics") || canAccessFeature("calling") ||
     canAccessFeature("campaigns_email") || canAccessFeature("campaigns_whatsapp") || canAccessFeature("ai_insights");
-  
-  const showOperationsSection = canAccessFeature("campaigns_email") || canAccessFeature("contacts") || 
+
+  const showOperationsSection = canAccessFeature("campaigns_email") || canAccessFeature("contacts") ||
     canAccessFeature("pipeline_stages") || canAccessFeature("calling") || canAccessFeature("redefine_data_repository");
-  
-  const showAdminCommunicationSection = isAdmin && (
-    canAccessFeature("campaigns_whatsapp") || 
-    canAccessFeature("email_settings") ||
-    canAccessFeature("calling") || 
-    canAccessFeature("templates")
-  );
-  
-  const showAdminMainSection = isAdmin && (
-    canAccessFeature("organization_settings") || 
-    canAccessFeature("pipeline_stages") || 
-    canAccessFeature("calling") || 
-    canAccessFeature("approval_matrix") ||
-    canAccessFeature("designations") || 
-    canAccessFeature("custom_fields") || 
-    canAccessFeature("forms")
-  );
-  
-  const showManagementSection = isManager && (
-    canAccessFeature("users") || 
-    canAccessFeature("teams") || 
-    canAccessFeature("designations") || 
-    canAccessFeature("approval_matrix") ||
-    canAccessFeature("org_chart")
-  );
 
   return (
     <div className="h-screen overflow-hidden bg-background">
@@ -258,6 +205,14 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
               >
                 <TrendingUp size={16} className="shrink-0 text-sidebar-muted" />
                 <span>Marketing</span>
+              </Link>
+              <Link
+                to="/marketing/arohan"
+                className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Bot size={16} className="shrink-0 text-sidebar-muted" />
+                <span>Arohan</span>
               </Link>
               <Link
                 to="/marketing/campaigns"
@@ -396,247 +351,7 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
                 <span>Support Tickets</span>
               </Link>
 
-              {/* GST Dashboard is now integrated into main Dashboard */}
-              {showManagementSection && (
-                <>
-                  <div className="pt-3 pb-1 px-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-sidebar-primary">
-                      Management
-                    </p>
-                  </div>
-                  {canAccessFeature("users") && (
-                    <Link
-                      to="/users"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <UserCog size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Users</span>
-                    </Link>
-                  )}
-                  {canAccessFeature("teams") && (
-                    <Link
-                      to="/teams"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <UsersRound size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Teams</span>
-                    </Link>
-                  )}
-                  {canAccessFeature("designations") && (
-                    <Link
-                      to="/admin/designations"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <Award size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Designations</span>
-                    </Link>
-                  )}
-                  {canAccessFeature("approval_matrix") && (
-                    <Link
-                      to="/admin/approval-matrix"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <CheckSquare size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Approvals</span>
-                    </Link>
-                  )}
-                  {canAccessFeature("org_chart") && (
-                    <Link
-                      to="/org-chart"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <Network size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Org Chart</span>
-                    </Link>
-                  )}
-                </>
-              )}
 
-
-              {isAdmin && (
-                <>
-                  {showAdminMainSection && (
-                    <div className="pt-3 pb-1 px-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-sidebar-primary">
-                        Admin
-                      </p>
-                    </div>
-                  )}
-                  
-                  {canAccessFeature("pipeline_stages") && (
-                    <Link
-                      to="/admin/pipeline-stages"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <Layers size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Stages</span>
-                    </Link>
-                  )}
-                  
-                  {canAccessFeature("calling") && (
-                    <Link
-                      to="/admin/call-dispositions"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <PhoneCall size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Dispositions</span>
-                    </Link>
-                  )}
-                  
-                  {canAccessFeature("custom_fields") && (
-                    <Link
-                      to="/admin/custom-fields"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <Sliders size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Fields</span>
-                    </Link>
-                  )}
-                  
-                  {canAccessFeature("forms") && (
-                    <Link
-                      to="/admin/forms"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <FileText size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Forms</span>
-                    </Link>
-                  )}
-                  
-                  {canAccessFeature("organization_settings") && (
-                    <Link
-                      to="/admin"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <Building2 size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Settings</span>
-                    </Link>
-                  )}
-                  
-                  {showAdminCommunicationSection && (
-                    <div className="pt-3 pb-1 px-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-sidebar-primary">
-                        Comms
-                      </p>
-                    </div>
-                  )}
-                  
-                  {(canAccessFeature("campaigns_whatsapp") || canAccessFeature("email_settings") || canAccessFeature("calling")) && (
-                    <Link
-                      to="/admin/communication-settings"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <Settings size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Comm Settings</span>
-                    </Link>
-                  )}
-                  
-                  {userRole === "admin" && (
-                    <Link
-                      to="/apollo-settings"
-                      className="flex items-center gap-2 px-2 py-1.5 pl-6 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <Sparkles size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Apollo</span>
-                    </Link>
-                  )}
-                  
-                  {canAccessFeature("templates") && (
-                    <Link
-                      to="/templates"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <FileText size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Templates</span>
-                    </Link>
-                  )}
-                </>
-              )}
-
-              {isPlatformAdmin && canAccessFeature("platform_admin") && (
-                <>
-                  <div className="pt-3 pb-1 px-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-sidebar-primary">
-                      Platform
-                    </p>
-                  </div>
-                  <Link
-                    to="/platform-admin"
-                    className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                    onClick={() => setSidebarOpen(false)}
-                  >
-                    <ShieldCheck size={16} className="shrink-0 text-sidebar-muted" />
-                    <span>Platform</span>
-                  </Link>
-                  <Link
-                    to="/platform-admin/subscriptions"
-                    className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                    onClick={() => setSidebarOpen(false)}
-                  >
-                    <CreditCard size={16} className="shrink-0 text-sidebar-muted" />
-                    <span>Subscriptions</span>
-                  </Link>
-                </>
-              )}
-              
-              {isAdmin && (
-                <>
-                  {(canAccessFeature("connectors") || canAccessFeature("api_keys")) && (
-                    <div className="pt-3 pb-1 px-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-sidebar-primary">
-                        Integrations
-                      </p>
-                    </div>
-                  )}
-                  
-                  {canAccessFeature("connectors") && (
-                    <Link
-                      to="/admin/connectors"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <Webhook size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Webhooks</span>
-                    </Link>
-                  )}
-                  
-                  {canAccessFeature("connectors") && (
-                    <Link
-                      to="/admin/outbound-webhooks"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <Send size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>Outbound</span>
-                    </Link>
-                  )}
-                  
-                  {canAccessFeature("api_keys") && (
-                    <Link
-                      to="/admin/api-keys"
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
-                      onClick={() => setSidebarOpen(false)}
-                    >
-                      <Key size={16} className="shrink-0 text-sidebar-muted" />
-                      <span>API Keys</span>
-                    </Link>
-                  )}
-                  
-                </>
-              )}
 
             </nav>
 
@@ -669,7 +384,6 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
           <div className="hidden lg:flex items-center justify-end gap-2 px-4 py-2 border-b border-border bg-card shrink-0">
             <NotificationBell />
           </div>
-          <PlatformAdminBanner />
           <SubscriptionStatusBanner />
           <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4 lg:p-6">
             {children}

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import DashboardLayout from "@/components/Layout/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +25,7 @@ import {
   Clock,
   XCircle,
   ExternalLink,
+  Target,
 } from "lucide-react";
 
 interface Product {
@@ -43,6 +45,7 @@ interface Product {
 
 export default function ProductManagement() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [formData, setFormData] = useState({
@@ -247,6 +250,17 @@ export default function ProductManagement() {
                     <p className="text-muted-foreground">
                       Last sync: {new Date(p.last_synced_at).toLocaleString()}
                     </p>
+                  )}
+                  {p.onboarding_status === "complete" && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full h-7 text-xs gap-1.5"
+                      onClick={() => navigate(`/marketing/products/${p.product_key}/icp`)}
+                    >
+                      <Target className="h-3 w-3" />
+                      View / Edit ICP
+                    </Button>
                   )}
                 </CardContent>
               </Card>

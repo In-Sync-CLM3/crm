@@ -1,5 +1,20 @@
 project_id = "knuewnenaswscgaldjej"
 
+[functions.mkt-arohan-chat]
+verify_jwt = true
+
+[functions.mkt-superflow-webhook]
+verify_jwt = false
+
+[functions.mkt-evolve-icp]
+verify_jwt = false
+
+[functions.mkt-submit-whatsapp-templates]
+verify_jwt = false
+
+[functions.mkt-sync-whatsapp-status]
+verify_jwt = false
+
 [functions.check-next-actions]
 verify_jwt = false
 

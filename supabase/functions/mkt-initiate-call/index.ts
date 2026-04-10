@@ -12,8 +12,17 @@ interface InitiateCallRequest {
   enrollment_id: string;
   lead_id: string;
   step_id: string;
-  template_id?: string; // References mkt_call_scripts
+  template_id?: string; // Direct mkt_call_scripts ID (legacy / fallback)
+  call_type?: string;   // Used with lead.product_key for DB lookup
   channel: string;
+}
+
+interface ConversationContext {
+  timeline: Array<{ channel: string; direction: string; summary: string; timestamp: string }>;
+  key_facts: string[];
+  objections: string[];
+  interests: string[];
+  next_steps: string[];
 }
 
 Deno.serve(async (req) => {
@@ -25,13 +34,17 @@ Deno.serve(async (req) => {
 
   try {
     const supabase = getSupabaseClient();
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
 
     const body: InitiateCallRequest = await req.json();
-    const { action_id, enrollment_id, lead_id, template_id } = body;
+    const { action_id, enrollment_id, lead_id, template_id, call_type } = body;
 
     const vapiApiKey = Deno.env.get('VAPI_API_KEY');
     if (!vapiApiKey) throw new Error('Missing VAPI_API_KEY environment variable');
+
+    const exotelDid = Deno.env.get('EXOTEL_DID');
+    if (!exotelDid) throw new Error('Missing EXOTEL_DID environment variable');
+
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
 
     // Fetch lead
     const { data: lead, error: leadError } = await supabase
@@ -45,9 +58,24 @@ Deno.serve(async (req) => {
 
     const orgId = lead.org_id;
 
-    // Fetch call script
+    // ---------------------------------------------------------------------------
+    // Fetch call script — prefer product_key + call_type lookup, fall back to
+    // template_id for backward-compatibility with existing sequence actions.
+    // ---------------------------------------------------------------------------
     let script: Record<string, unknown> | null = null;
-    if (template_id) {
+
+    if (lead.product_key && call_type) {
+      const { data } = await supabase
+        .from('mkt_call_scripts')
+        .select('*')
+        .eq('product_key', lead.product_key)
+        .eq('call_type', call_type)
+        .eq('is_active', true)
+        .single();
+      script = data;
+    }
+
+    if (!script && template_id) {
       const { data } = await supabase
         .from('mkt_call_scripts')
         .select('*')
@@ -56,30 +84,40 @@ Deno.serve(async (req) => {
       script = data;
     }
 
-    if (!script) {
-      // Use a default script if none specified
-      script = {
-        name: 'Default Outreach',
-        objective: 'Introduce the product and gauge interest',
-        opening: `Hi, is this ${lead.first_name || 'there'}? I'm calling from the team. Do you have a moment?`,
-        key_points: ['Introduce the product briefly', 'Ask about their current pain points', 'Offer a demo if interested'],
-        objection_handling: {
-          'not interested': 'I understand. May I ask what solution you currently use?',
-          'too busy': 'I completely understand. When would be a better time to call back?',
-          'send email': 'Of course! I\'ll send you a brief email. What\'s the best email address?',
-        },
-        closing: 'Thank you for your time. I\'ll follow up as discussed.',
-        voice_id: null,
-        language: 'en',
-        max_duration_seconds: 300,
-      };
+    if (!script?.vapi_assistant_id) {
+      const lookupDesc = lead.product_key && call_type
+        ? `${lead.product_key} / ${call_type}`
+        : `template_id ${template_id || '(none)'}`;
+      await logger.warn('no-vapi-assistant', {
+        lead_id,
+        product_key: lead.product_key,
+        call_type: call_type || null,
+        template_id: template_id || null,
+        message: `No Vapi assistant found for ${lookupDesc} — call aborted`,
+      });
+      return new Response(
+        JSON.stringify({
+          error: `No Vapi assistant found for ${lookupDesc}. Ensure product onboarding created assistants.`,
+        }),
+        { status: 422, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
     }
 
-    // Get conversation context
-    const context = await getMemory(lead_id);
-    const contextString = buildContextString(context);
+    // Get conversation memory
+    const memory = await getMemory(lead_id);
 
-    // Format phone number
+    // Fetch product for additional context
+    let product: Record<string, unknown> | null = null;
+    if (lead.product_key) {
+      const { data } = await supabase
+        .from('mkt_products')
+        .select('product_name, product_key, product_url, payment_url')
+        .eq('product_key', lead.product_key)
+        .single();
+      product = data;
+    }
+
+    // Format phone number to E.164
     let formattedPhone = lead.phone.replace(/[^\d+]/g, '');
     if (!formattedPhone.startsWith('+')) {
       if (!formattedPhone.startsWith('91') && formattedPhone.length === 10) {
@@ -89,80 +127,100 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Build the Vapi call configuration
-    const systemPrompt = buildVapiSystemPrompt(script, lead, contextString);
+    // Build dynamic system prompt with memory injected at call-time
+    const systemPrompt = buildSystemPrompt(script, memory, product, lead);
+    const firstMessage = buildFirstMessage(script, memory, lead);
 
-    const vapiPayload: Record<string, unknown> = {
-      assistantId: undefined, // We'll use assistantOverrides with inline config
-      phoneNumberId: Deno.env.get('VAPI_PHONE_NUMBER_ID') || undefined,
-      customer: {
-        number: formattedPhone,
-        name: `${lead.first_name || ''} ${lead.last_name || ''}`.trim() || 'Lead',
-      },
-      assistant: {
-        model: {
-          provider: 'groq',
-          model: 'llama-3.3-70b-versatile',
-          messages: [{ role: 'system', content: systemPrompt }],
-          temperature: 0.4,
-          maxTokens: 256,
-        },
-        voice: {
-          provider: 'elevenlabs',
-          voiceId: (script.voice_id as string) || Deno.env.get('VAPI_DEFAULT_VOICE_ID') || 'pNInz6obpgDQGcFmaJgB',
-        },
-        firstMessage: script.opening as string,
-        endCallMessage: script.closing as string || 'Thank you for your time. Goodbye!',
-        maxDurationSeconds: (script.max_duration_seconds as number) || 300,
-        silenceTimeoutSeconds: 10,
-        responseDelaySeconds: 0.5,
-        llmRequestDelaySeconds: 0.1,
-        serverUrl: `${supabaseUrl}/functions/v1/mkt-vapi-webhook`,
-        serverUrlSecret: Deno.env.get('VAPI_WEBHOOK_SECRET') || undefined,
-      },
-      metadata: {
-        action_id,
-        enrollment_id,
-        lead_id,
-        org_id: orgId,
-      },
-    };
-
-    // If no phone number ID, we need to use web call or skip
-    if (!vapiPayload.phoneNumberId && !Deno.env.get('VAPI_PHONE_NUMBER_ID')) {
-      // Try outbound call without phone number ID (Vapi may use default)
-      delete vapiPayload.phoneNumberId;
-    }
-
-    // Create Vapi call
-    const vapiResponse = await fetch('https://api.vapi.ai/call/phone', {
+    // -------------------------------------------------------------------------
+    // Step 1: Create Vapi web call
+    // This creates a pending call session on Vapi's side with our dynamic
+    // system prompt baked in via assistantOverrides. Vapi returns a WebSocket
+    // URL that SuperFlow will bridge PSTN audio into.
+    // -------------------------------------------------------------------------
+    const vapiWebCallRes = await fetch('https://api.vapi.ai/call/web', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${vapiApiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(vapiPayload),
+      body: JSON.stringify({
+        assistantId: script.vapi_assistant_id,
+        assistantOverrides: {
+          model: {
+            messages: [{ role: 'system', content: systemPrompt }],
+          },
+          firstMessage,
+        },
+        metadata: {
+          action_id,
+          enrollment_id,
+          lead_id,
+          org_id: orgId,
+        },
+      }),
     });
 
-    if (!vapiResponse.ok) {
-      const errText = await vapiResponse.text();
-      throw new Error(`Vapi API error ${vapiResponse.status}: ${errText}`);
+    if (!vapiWebCallRes.ok) {
+      const errText = await vapiWebCallRes.text();
+      throw new Error(`Vapi web call error ${vapiWebCallRes.status}: ${errText}`);
     }
 
-    const vapiResult = await vapiResponse.json();
-    const callId = vapiResult.id;
+    const vapiResult = await vapiWebCallRes.json();
+    const callId = vapiResult.id as string;
+    const webCallUrl = vapiResult.webCallUrl as string;
+
+    if (!webCallUrl) {
+      throw new Error('Vapi did not return a webCallUrl — check Vapi plan supports web calls');
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 2: Authenticate with SuperFlow
+    // -------------------------------------------------------------------------
+    const sfToken = await getSuperflowToken();
+
+    // -------------------------------------------------------------------------
+    // Step 3: Initiate SIP call via SuperFlow
+    // SuperFlow dials the customer via the Exotel DID and bridges the PSTN
+    // audio bidirectionally into the Vapi WebSocket.
+    // -------------------------------------------------------------------------
+    const sipRes = await fetch('https://api.superflow.run/b2b/vocallabs/createSIPCall', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${sfToken}`,
+      },
+      body: JSON.stringify({
+        phone_number: formattedPhone,
+        did: exotelDid,
+        websocket_url: webCallUrl,
+        webhook_url: `${supabaseUrl}/functions/v1/mkt-superflow-webhook`,
+        sample_rate: '16000',
+      }),
+    });
+
+    if (!sipRes.ok) {
+      const errText = await sipRes.text();
+      throw new Error(`SuperFlow SIP call error ${sipRes.status}: ${errText}`);
+    }
+
+    const sipResult = await sipRes.json();
+    // SuperFlow may use different field names — try common patterns
+    const superflowCallId: string | null =
+      sipResult.call_id || sipResult.id || sipResult.callId || null;
 
     // Update action record
     await supabase
       .from('mkt_sequence_actions')
       .update({
-        status: 'sent', // "sent" means call initiated
+        status: 'sent',
         sent_at: new Date().toISOString(),
         external_id: callId,
         metadata: {
           phone: formattedPhone,
           script_name: script.name,
           vapi_call_id: callId,
+          superflow_call_id: superflowCallId,
+          assistant_id: script.vapi_assistant_id,
           max_duration: script.max_duration_seconds,
         },
       })
@@ -184,13 +242,16 @@ Deno.serve(async (req) => {
     await logger.info('call-initiated', {
       lead_id,
       action_id,
-      call_id: callId,
+      vapi_call_id: callId,
+      superflow_call_id: superflowCallId,
+      assistant_id: script.vapi_assistant_id,
       phone: formattedPhone,
+      exotel_did: exotelDid,
     });
 
     return new Response(
-      JSON.stringify({ success: true, action_id, call_id: callId }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ success: true, action_id, call_id: callId, superflow_call_id: superflowCallId }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   } catch (error) {
     await logger.error('initiate-call-failed', error);
@@ -213,25 +274,65 @@ Deno.serve(async (req) => {
 
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   }
 });
 
+// ---------------------------------------------------------------------------
+// SuperFlow Auth
+// ---------------------------------------------------------------------------
+
 /**
- * Build the Vapi system prompt from call script + lead context.
+ * Obtain a SuperFlow Bearer token using clientId + clientSecret.
+ * Called once per call — stateless edge functions don't cache between requests.
  */
-function buildVapiSystemPrompt(
+async function getSuperflowToken(): Promise<string> {
+  const clientId = Deno.env.get('SUPERFLOW_CLIENT_ID');
+  const clientSecret = Deno.env.get('SUPERFLOW_CLIENT_SECRET');
+
+  if (!clientId || !clientSecret) {
+    throw new Error('Missing SUPERFLOW_CLIENT_ID or SUPERFLOW_CLIENT_SECRET');
+  }
+
+  const res = await fetch('https://api.superflow.run/b2b/createAuthToken/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clientId, clientSecret }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`SuperFlow auth failed ${res.status}: ${errText}`);
+  }
+
+  const json = await res.json();
+  // Handle common token field name variations
+  const token = json.token || json.access_token || json.authToken || json.auth_token;
+  if (!token) throw new Error(`SuperFlow auth response missing token field. Keys: ${Object.keys(json).join(', ')}`);
+
+  return token as string;
+}
+
+// ---------------------------------------------------------------------------
+// Prompt builders (unchanged)
+// ---------------------------------------------------------------------------
+
+function buildSystemPrompt(
   script: Record<string, unknown>,
+  memory: ConversationContext,
+  product: Record<string, unknown> | null,
   lead: Record<string, unknown>,
-  contextString: string
 ): string {
   const keyPoints = (script.key_points as string[]) || [];
   const objections = (script.objection_handling as Record<string, string>) || {};
+  const productName = product?.product_name || 'our product';
 
-  let prompt = `You are an AI sales assistant making an outbound call. Be professional, friendly, and concise.
+  let prompt = `You are Arohan, an AI sales assistant. You are professional, warm, and concise.
+You represent ${productName}.
 
-CALL OBJECTIVE: ${script.objective || 'Introduce the product and gauge interest'}
+CALL TYPE: ${script.call_type || 'outreach'}
+CALL OBJECTIVE: ${script.objective || 'Engage the prospect and move toward next steps'}
 
 LEAD INFO:
 - Name: ${lead.first_name || 'there'} ${lead.last_name || ''}
@@ -239,11 +340,31 @@ LEAD INFO:
 - Title: ${lead.job_title || 'N/A'}
 - Industry: ${lead.industry || 'N/A'}`;
 
+  const contextString = buildContextString(memory);
   if (contextString && contextString !== 'No prior conversation history.') {
     prompt += `
 
-PRIOR CONVERSATION CONTEXT:
+CONVERSATION MEMORY BRIEFING:
 ${contextString}`;
+  }
+
+  if (memory.objections.length > 0) {
+    const currentObjection = memory.objections[memory.objections.length - 1];
+    prompt += `
+
+CURRENT OBJECTION TO ADDRESS: ${currentObjection}`;
+  }
+
+  if (memory.interests.length > 0) {
+    prompt += `
+
+LEAD IS RESPONSIVE TO: ${memory.interests.join('; ')}`;
+  }
+
+  if (product?.payment_url) {
+    prompt += `
+
+PAYMENT URL (share if they're ready to purchase): ${product.payment_url}`;
   }
 
   if (keyPoints.length > 0) {
@@ -257,18 +378,47 @@ ${keyPoints.map((p, i) => `${i + 1}. ${p}`).join('\n')}`;
     prompt += `
 
 OBJECTION HANDLING:
-${Object.entries(objections).map(([objection, response]) => `- If they say "${objection}": ${response}`).join('\n')}`;
+${Object.entries(objections).map(([obj, resp]) => `- If they say "${obj}": ${resp}`).join('\n')}`;
   }
 
   prompt += `
+
+CLOSING: ${script.closing || 'Thank you for your time.'}
 
 RULES:
 - Keep responses under 2-3 sentences. Be conversational, not scripted.
 - If they're not interested, be respectful and end the call gracefully.
 - If they ask to be removed from the call list, acknowledge and end the call.
 - Never be pushy or aggressive. Mirror their tone and pace.
-- If they ask who you are, say you're an AI assistant calling on behalf of the team.
+- If they ask who you are, say you are Arohan, an AI assistant calling on behalf of the ${productName} team.
 - Always end with a clear next step (demo booking, email follow-up, or callback time).`;
 
   return prompt;
+}
+
+function buildFirstMessage(
+  script: Record<string, unknown>,
+  memory: ConversationContext,
+  lead: Record<string, unknown>,
+): string {
+  const firstName = (lead.first_name as string) || 'there';
+  const baseOpening = (script.opening as string) || `Hi, is this ${firstName}?`;
+
+  let message = baseOpening
+    .replace(/\{\{first_name\}\}/g, firstName)
+    .replace(/\{\{name\}\}/g, firstName);
+
+  const recentTimeline = memory.timeline.slice(-3);
+  if (recentTimeline.length > 0) {
+    const lastInteraction = recentTimeline[recentTimeline.length - 1];
+    if (lastInteraction.channel === 'email') {
+      message += ` I'm following up on the email we sent you recently.`;
+    } else if (lastInteraction.channel === 'whatsapp') {
+      message += ` I'm following up on our WhatsApp conversation.`;
+    } else if (lastInteraction.channel === 'call' || lastInteraction.channel === 'phone') {
+      message += ` We spoke recently and I wanted to continue our conversation.`;
+    }
+  }
+
+  return message;
 }
