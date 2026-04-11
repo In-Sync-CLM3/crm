@@ -123,7 +123,12 @@ function callProductManager(token: string, body: Record<string, unknown>) {
 }
 
 async function getToken() {
-  const { data: { session } } = await supabase.auth.getSession();
+  let { data: { session } } = await supabase.auth.getSession();
+  // Refresh proactively if token expires within 60 seconds
+  if (!session || (session.expires_at && session.expires_at * 1000 - Date.now() < 60_000)) {
+    const { data: refreshed } = await supabase.auth.refreshSession();
+    if (refreshed.session) session = refreshed.session;
+  }
   if (!session?.access_token) throw new Error("Not authenticated");
   return session.access_token;
 }
