@@ -1012,6 +1012,17 @@ async function runSteps(
     .eq('product_key', product_key)
     .order('step_order', { ascending: true });
 
+  // Update product onboarding_status based on step outcomes
+  const allDone = (finalSteps ?? []).every((s) => s.status === 'complete' || s.status === 'skipped');
+  const anyFailed = (finalSteps ?? []).some((s) => s.status === 'failed');
+  if (allDone || anyFailed) {
+    await supabase
+      .from('mkt_products')
+      .update({ onboarding_status: allDone ? 'complete' : 'failed' })
+      .eq('org_id', org_id)
+      .eq('product_key', product_key);
+  }
+
   return (finalSteps ?? []).map((s: {
     step_name: string; status: string; completed_at: string | null; error: string | null;
   }) => ({
@@ -1037,14 +1048,42 @@ async function handleOnboard(
   // Initialize all step rows (idempotent)
   await initializeSteps(supabase, org_id, product_key);
 
-  // Run the step runner
-  const steps = await runSteps(
-    supabase, logger,
-    org_id, product_key, product_url,
-    supabase_url, supabase_service_role_key,
-  );
+  // Run the register step synchronously so the product row exists before we return.
+  // The frontend can then show the product card immediately.
+  const ctx: StepContext = { supabase, logger, org_id, product_key, product_url, supabase_url, supabase_service_role_key };
+  const { data: registerRow } = await supabase
+    .from('mkt_onboarding_steps')
+    .select('id, attempts')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .eq('step_name', 'register')
+    .single();
 
-  return { product_key, steps };
+  if (registerRow) {
+    await markStepInProgress(supabase, registerRow.id, registerRow.attempts);
+    try {
+      const result = await stepRegister(ctx);
+      await markStepComplete(supabase, registerRow.id, result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await markStepFailed(supabase, registerRow.id, msg);
+      await logger.error('step-register-failed', err, { product_key });
+      throw err; // Surface to user — nothing to show if register fails
+    }
+  }
+
+  // Fire remaining steps in the background. EdgeRuntime.waitUntil keeps the
+  // function alive after the response is sent so the steps can complete.
+  const bgRun = runSteps(supabase, logger, org_id, product_key, product_url, supabase_url, supabase_service_role_key)
+    .catch((e) => logger.error('bg-steps-failed', e, { product_key }));
+
+  // deno-lint-ignore no-explicit-any
+  if (typeof (globalThis as any).EdgeRuntime !== 'undefined') {
+    // deno-lint-ignore no-explicit-any
+    (globalThis as any).EdgeRuntime.waitUntil(bgRun);
+  }
+
+  return { product_key };
 }
 
 async function handleResume(

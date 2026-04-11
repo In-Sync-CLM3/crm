@@ -131,7 +131,13 @@ function StepProgress({ productKey }: { productKey: string }) {
       if (error) throw error;
       return (data || []) as OnboardingStep[];
     },
-    staleTime: 30_000,
+    staleTime: 5_000,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return 3000;
+      const active = data.some((s) => s.status === "pending" || s.status === "in_progress");
+      return active ? 3000 : false;
+    },
   });
 
   if (isLoading) {
@@ -279,7 +285,13 @@ function ProductCard({
       if (error) throw error;
       return (data || []) as OnboardingStep[];
     },
-    staleTime: 30_000,
+    staleTime: 5_000,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return 3000;
+      const active = data.some((s) => s.status === "pending" || s.status === "in_progress");
+      return active ? 3000 : false;
+    },
   });
 
   const statusIcon = (status: string) => {
@@ -391,6 +403,11 @@ export default function ProductManagement() {
         .order("created_at", { ascending: false });
       if (error) throw error;
       return (data || []) as Product[];
+    },
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return false;
+      return data.some((p) => p.onboarding_status === "in_progress") ? 4000 : false;
     },
   });
 
