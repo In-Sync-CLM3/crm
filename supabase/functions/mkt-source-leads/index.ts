@@ -158,26 +158,20 @@ async function sourceFromNative(
   limit: number,
   logger: ReturnType<typeof createEngineLogger>,
 ): Promise<number> {
-  // Build the base query against mkt_native_contacts filtered by ICP
-  let query = supabase
-    .from('mkt_native_contacts')
-    .select('*');
-
-  if (icp.industries && icp.industries.length > 0) {
-    query = query.in('industry_type', icp.industries);
-  }
-  if (icp.designations && icp.designations.length > 0) {
-    query = query.in('designation', icp.designations);
-  }
-  if (icp.company_sizes && icp.company_sizes.length > 0) {
-    query = query.in('emp_size', icp.company_sizes);
-  }
-
-  // Fetch a reasonable pool — limit to 2x target to keep dedup queries manageable
+  // Use RPC that does TRIM()-based matching so dirty whitespace in the dataset
+  // doesn't break ICP filter lookups. Empty arrays mean "no filter".
   const poolSize = Math.min(limit * 2, 2000);
-  const { data: candidates, error: fetchError } = await query.limit(poolSize);
+  const { data: candidates, error: fetchError } = await supabase.rpc(
+    'get_icp_native_contacts',
+    {
+      p_industries:   icp.industries ?? [],
+      p_designations: icp.designations ?? [],
+      p_company_sizes: icp.company_sizes ?? [],
+      p_limit: poolSize,
+    },
+  );
 
-  if (fetchError) throw new Error(`Failed to query mkt_native_contacts: ${fetchError.message}`);
+  if (fetchError) throw new Error(`Failed to query mkt_native_contacts via RPC: ${fetchError.message}`);
   if (!candidates || candidates.length === 0) {
     await logger.info('native-no-candidates', { org_id: orgId, product_key: productKey });
     return 0;
