@@ -21,6 +21,12 @@ interface OnboardBody {
   supabase_service_role_key: string;
 }
 
+interface ResumeBody {
+  mode: 'resume';
+  org_id: string;
+  product_key: string;
+}
+
 interface ToggleBody {
   mode: 'toggle';
   product_id: string;
@@ -32,7 +38,37 @@ interface SyncBody {
   org_id: string;
 }
 
-type RequestBody = OnboardBody | ToggleBody | SyncBody;
+type RequestBody = OnboardBody | ResumeBody | ToggleBody | SyncBody;
+
+interface OnboardingStep {
+  id: string;
+  product_key: string;
+  step_name: string;
+  step_order: number;
+  status: 'pending' | 'in_progress' | 'complete' | 'skipped' | 'failed';
+  attempts: number;
+  scheduled_for: string | null;
+  completed_at: string | null;
+  details: Record<string, unknown> | null;
+  error_message: string | null;
+}
+
+interface StepResult {
+  step_name: string;
+  status: string;
+  completed_at: string | null;
+  error: string | null;
+}
+
+interface StepContext {
+  supabase: SupabaseClient;
+  logger: ReturnType<typeof createEngineLogger>;
+  org_id: string;
+  product_key: string;
+  product_url: string;
+  supabase_url: string;
+  supabase_service_role_key: string;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -124,523 +160,6 @@ async function persistICPFromOnboarding(
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// ONBOARD
-// ---------------------------------------------------------------------------
-
-async function handleOnboard(
-  supabase: SupabaseClient,
-  body: OnboardBody,
-  logger: ReturnType<typeof createEngineLogger>,
-): Promise<Record<string, unknown>> {
-  const { org_id, product_name, product_url, supabase_url, supabase_service_role_key } = body;
-  const productKey = deriveProductKey(product_name);
-  const initials = deriveInitials(product_name);
-  const secretUrlName = `${initials}_SUPABASE_URL`;
-  const secretKeyName = `${initials}_SUPABASE_SERVICE_KEY`;
-  const logLines: string[] = [];
-
-  const log = (msg: string) => {
-    logLines.push(`[${new Date().toISOString()}] ${msg}`);
-  };
-
-  log(`Starting onboard for "${product_name}" (key: ${productKey})`);
-
-  // 1. Insert product row (onboarding_status = in_progress)
-  const { data: product, error: insertErr } = await supabase
-    .from('mkt_products')
-    .upsert(
-      {
-        org_id,
-        product_key: productKey,
-        product_name,
-        supabase_url,
-        supabase_secret_name: secretKeyName,
-        onboarding_status: 'in_progress',
-        active: false,
-      },
-      { onConflict: 'org_id,product_key' },
-    )
-    .select('id')
-    .single();
-
-  if (insertErr) throw new Error(`Failed to upsert mkt_products: ${insertErr.message}`);
-  const productId = product.id;
-  log(`Product row created/updated: ${productId}`);
-
-  // 2. Log secret names — user must set these as Supabase secrets
-  log(`ACTION REQUIRED: Set the following Supabase secrets:`);
-  log(`  supabase secrets set ${secretUrlName}=${supabase_url}`);
-  log(`  supabase secrets set ${secretKeyName}=<your-service-role-key>`);
-  await logger.info('onboard-secrets-needed', {
-    product_key: productKey,
-    secret_url_name: secretUrlName,
-    secret_key_name: secretKeyName,
-  });
-
-  // 3. Connect to product's Supabase and inspect schema
-  const productClient = createProductClient(supabase_url, supabase_service_role_key);
-  const schemaMap: Record<string, string> = {};
-
-  // Look for registrations/users table
-  for (const tableName of ['users', 'profiles', 'registrations', 'accounts', 'customers']) {
-    const { error } = await productClient.from(tableName).select('*').limit(1);
-    if (!error) {
-      schemaMap.registrations_table = tableName;
-      log(`Found registrations table: ${tableName}`);
-      break;
-    }
-  }
-
-  // Look for payments/subscriptions table
-  for (const tableName of ['payments', 'subscriptions', 'orders', 'invoices', 'billing']) {
-    const { error } = await productClient.from(tableName).select('*').limit(1);
-    if (!error) {
-      schemaMap.payments_table = tableName;
-      log(`Found payments table: ${tableName}`);
-      break;
-    }
-  }
-
-  // Look for plans/pricing table
-  for (const tableName of ['plans', 'pricing', 'products', 'tiers', 'packages']) {
-    const { error } = await productClient.from(tableName).select('*').limit(1);
-    if (!error) {
-      schemaMap.pricing_table = tableName;
-      log(`Found pricing table: ${tableName}`);
-      break;
-    }
-  }
-
-  // Look for activity/events table
-  for (const tableName of ['events', 'activities', 'activity_log', 'audit_log', 'usage']) {
-    const { error } = await productClient.from(tableName).select('*').limit(1);
-    if (!error) {
-      schemaMap.events_table = tableName;
-      log(`Found events table: ${tableName}`);
-      break;
-    }
-  }
-
-  if (Object.keys(schemaMap).length === 0) {
-    log('WARNING: No recognisable tables found. Schema map is empty.');
-  }
-
-  // 4. Read existing data to infer ICP
-  let icpHints: Record<string, unknown> = {};
-  if (schemaMap.registrations_table) {
-    const { data: sampleUsers } = await productClient
-      .from(schemaMap.registrations_table)
-      .select('*')
-      .limit(50);
-
-    if (sampleUsers && sampleUsers.length > 0) {
-      // Try to detect common fields for ICP inference
-      const fields = Object.keys(sampleUsers[0]);
-      const industryField = fields.find((f) => /industry|sector|vertical/i.test(f));
-      const sizeField = fields.find((f) => /size|employees|company_size/i.test(f));
-      const designationField = fields.find((f) => /designation|role|title|position/i.test(f));
-
-      if (industryField) {
-        const industries = sampleUsers
-          .map((u: Record<string, unknown>) => u[industryField])
-          .filter(Boolean);
-        const freq: Record<string, number> = {};
-        industries.forEach((i: unknown) => {
-          const key = String(i);
-          freq[key] = (freq[key] || 0) + 1;
-        });
-        icpHints.industries = freq;
-      }
-      if (sizeField) {
-        const sizes = sampleUsers
-          .map((u: Record<string, unknown>) => u[sizeField])
-          .filter(Boolean);
-        icpHints.company_sizes = sizes;
-      }
-      if (designationField) {
-        const titles = sampleUsers
-          .map((u: Record<string, unknown>) => u[designationField])
-          .filter(Boolean);
-        const freq: Record<string, number> = {};
-        titles.forEach((t: unknown) => {
-          const key = String(t);
-          freq[key] = (freq[key] || 0) + 1;
-        });
-        icpHints.designations = freq;
-      }
-
-      icpHints.sample_size = sampleUsers.length;
-      log(`ICP data sampled from ${sampleUsers.length} records`);
-    }
-  }
-
-  // 5. Calculate trial_days
-  // Default: 14 for single-action products, 21 for workflow products
-  // If we had aha data: MAX(14, MIN(30, median_aha_days * 2.5))
-  let trialDays = 14;
-  if (schemaMap.events_table) {
-    // Assume it's a workflow product if it has an events table
-    trialDays = 21;
-  }
-  log(`Trial days set to ${trialDays}`);
-
-  // Update product with schema_map and trial_days
-  await supabase
-    .from('mkt_products')
-    .update({
-      schema_map: schemaMap,
-      trial_days: trialDays,
-    })
-    .eq('id', productId);
-
-  // 6. Generate content via Claude Sonnet (5 emails at a time)
-  log('Generating email templates...');
-  const emailCategories = [
-    { category: 'nurture', description: 'nurture sequence emails for leads who showed interest but haven\'t converted' },
-    { category: 'closing', description: 'closing emails to push trial users toward purchase' },
-    { category: 'onboarding', description: 'onboarding emails for new trial signups to help them get value' },
-    { category: 'cold', description: 'cold outbound emails to new prospects who haven\'t heard of the product' },
-    { category: 'reactivation', description: 'reactivation emails for churned or dormant users' },
-  ];
-
-  const allEmails: Array<{
-    name: string;
-    subject: string;
-    body_html: string;
-    body_text: string;
-    category: string;
-  }> = [];
-
-  for (const cat of emailCategories) {
-    try {
-      const { data: emails } = await callLLMJson<
-        Array<{ name: string; subject: string; body_html: string; body_text: string }>
-      >(
-        `Generate 5 ${cat.description} for a B2B SaaS product called "${product_name}" (${product_url}).
-${Object.keys(icpHints).length > 0 ? `ICP hints: ${JSON.stringify(icpHints)}` : 'No ICP data available yet.'}
-
-Each email should have:
-- name: a short identifier like "${productKey}-${cat.category}-1"
-- subject: compelling subject line
-- body_html: full HTML email body (keep it professional, under 300 words)
-- body_text: plain text version
-
-Return a JSON array of 5 email objects.`,
-        { model: 'sonnet', max_tokens: 4096, temperature: 0.5 },
-      );
-
-      if (Array.isArray(emails)) {
-        emails.forEach((e) => allEmails.push({ ...e, category: cat.category }));
-      }
-    } catch (err) {
-      log(`WARNING: Failed to generate ${cat.category} emails: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  log(`Generated ${allEmails.length} email templates`);
-
-  // 7. Generate WhatsApp templates
-  log('Generating WhatsApp templates...');
-  let waTemplates: Array<{
-    name: string;
-    template_name: string;
-    body: string;
-    category: string;
-  }> = [];
-  try {
-    const { data } = await callLLMJson<
-      Array<{ name: string; template_name: string; body: string; category: string }>
-    >(
-      `Generate 4 WhatsApp message templates for a B2B SaaS product called "${product_name}" (${product_url}).
-Types needed: 1 welcome/intro, 1 trial reminder, 1 feature highlight, 1 reactivation.
-
-Each template should have:
-- name: human-readable name like "${productKey}-wa-welcome"
-- template_name: Exotel-compatible template name (lowercase, underscores, e.g. "${productKey.replace(/-/g, '_')}_welcome")
-- body: WhatsApp message body (max 1024 chars, can use {{1}}, {{2}} for variables)
-- category: "marketing" or "utility"
-
-Return a JSON array of 4 template objects.`,
-      { model: 'sonnet', max_tokens: 2048, temperature: 0.5 },
-    );
-    if (Array.isArray(data)) waTemplates = data;
-  } catch (err) {
-    log(`WARNING: Failed to generate WhatsApp templates: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  log(`Generated ${waTemplates.length} WhatsApp templates`);
-
-  // 8. Generate call scripts
-  log('Generating call scripts...');
-  let callScripts: Array<{
-    name: string;
-    call_type: string;
-    objective: string;
-    opening: string;
-    key_points: string[];
-    objection_handling: Record<string, string>;
-    closing: string;
-  }> = [];
-  try {
-    const { data } = await callLLMJson<typeof callScripts>(
-      `Generate 4 phone call scripts for a B2B SaaS product called "${product_name}" (${product_url}).
-Types needed: 1 intro/discovery, 1 follow-up, 1 demo, 1 closing.
-
-Each script should have:
-- name: e.g. "${productKey}-call-intro"
-- call_type: "intro" | "follow_up" | "demo" | "closing"
-- objective: what the call aims to achieve (1 sentence)
-- opening: how to start the call (2-3 sentences)
-- key_points: array of 3-5 talking points
-- objection_handling: object with 3 common objections as keys and responses as values
-- closing: how to end the call (2-3 sentences)
-
-Return a JSON array of 4 script objects.`,
-      { model: 'sonnet', max_tokens: 4096, temperature: 0.5 },
-    );
-    if (Array.isArray(data)) callScripts = data;
-  } catch (err) {
-    log(`WARNING: Failed to generate call scripts: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  log(`Generated ${callScripts.length} call scripts`);
-
-  // 9. Seed all content tables
-  // Email templates
-  if (allEmails.length > 0) {
-    const emailRows = allEmails.map((e) => ({
-      org_id,
-      name: e.name,
-      subject: e.subject,
-      body_html: e.body_html,
-      body_text: e.body_text || '',
-      category: mapEmailCategory(e.category),
-      is_active: true,
-    }));
-    const { error: emailErr } = await supabase.from('mkt_email_templates').insert(emailRows);
-    if (emailErr) log(`WARNING: Email insert error: ${emailErr.message}`);
-    else log(`Inserted ${emailRows.length} email templates`);
-  }
-
-  // WhatsApp templates
-  if (waTemplates.length > 0) {
-    const waRows = waTemplates.map((w) => ({
-      org_id,
-      name: w.name,
-      template_name: w.template_name,
-      body: w.body,
-      category: w.category || 'marketing',
-      approval_status: 'pending',
-      is_active: true,
-    }));
-    const { error: waErr } = await supabase.from('mkt_whatsapp_templates').insert(waRows);
-    if (waErr) log(`WARNING: WhatsApp insert error: ${waErr.message}`);
-    else log(`Inserted ${waRows.length} WhatsApp templates`);
-  }
-
-  // Call scripts
-  if (callScripts.length > 0) {
-    const scriptRows = callScripts.map((s) => ({
-      org_id,
-      name: s.name,
-      product_key: productKey,
-      call_type: s.call_type,
-      objective: s.objective,
-      opening: s.opening,
-      key_points: s.key_points,
-      objection_handling: s.objection_handling,
-      closing: s.closing,
-      is_active: true,
-    }));
-    const { error: scriptErr } = await supabase.from('mkt_call_scripts').insert(scriptRows);
-    if (scriptErr) log(`WARNING: Call scripts insert error: ${scriptErr.message}`);
-    else log(`Inserted ${scriptRows.length} call scripts`);
-  }
-
-  // 10. Create Vapi assistants for each call script
-  if (callScripts.length > 0) {
-    log('Creating Vapi assistants for call scripts...');
-    const vapiApiKey = Deno.env.get('VAPI_API_KEY');
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-
-    if (!vapiApiKey) {
-      log('WARNING: VAPI_API_KEY not set — skipping Vapi assistant creation');
-    } else {
-      // Fetch the inserted script rows to get their IDs
-      const { data: insertedScripts } = await supabase
-        .from('mkt_call_scripts')
-        .select('id, name, product_key, call_type, objective, opening, key_points, objection_handling, closing')
-        .eq('product_key', productKey)
-        .eq('is_active', true);
-
-      let assistantsCreated = 0;
-      const assistantFailures: string[] = [];
-
-      for (const row of insertedScripts || []) {
-        try {
-          const systemPrompt = buildOnboardSystemPrompt(row, product_name, product_url);
-
-          const vapiPayload = {
-            name: `${productKey}-${row.call_type}`,
-            model: {
-              provider: 'groq',
-              model: 'llama-3.3-70b-versatile',
-              temperature: 0.4,
-              messages: [{ role: 'system', content: systemPrompt }],
-            },
-            voice: {
-              provider: 'elevenlabs',
-              voiceId: Deno.env.get('VAPI_DEFAULT_VOICE_ID') || 'pNInz6obpgDQGcFmaJgB',
-            },
-            transcriber: {
-              provider: 'deepgram',
-              model: 'nova-2',
-              language: 'en-IN',
-            },
-            firstMessage: row.opening,
-            endCallFunctionEnabled: true,
-            recordingEnabled: true,
-            serverUrl: `${supabaseUrl}/functions/v1/mkt-vapi-webhook`,
-            serverUrlSecret: Deno.env.get('VAPI_WEBHOOK_SECRET') || undefined,
-          };
-
-          const vapiResp = await fetch('https://api.vapi.ai/assistant', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${vapiApiKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(vapiPayload),
-          });
-
-          if (!vapiResp.ok) {
-            const errText = await vapiResp.text();
-            throw new Error(`Vapi ${vapiResp.status}: ${errText}`);
-          }
-
-          const vapiResult = await vapiResp.json();
-
-          // Store assistant ID on the script row
-          await supabase
-            .from('mkt_call_scripts')
-            .update({
-              vapi_assistant_id: vapiResult.id,
-              vapi_assistant_created_at: new Date().toISOString(),
-            })
-            .eq('id', row.id);
-
-          await logger.info('vapi-assistant-created', {
-            product_key: productKey,
-            call_type: row.call_type,
-            assistant_id: vapiResult.id,
-            script_id: row.id,
-          });
-
-          assistantsCreated++;
-          log(`Vapi assistant created: ${productKey}-${row.call_type} (${vapiResult.id})`);
-        } catch (err) {
-          const errMsg = `${row.call_type}: ${err instanceof Error ? err.message : String(err)}`;
-          assistantFailures.push(errMsg);
-          await logger.error('vapi-assistant-creation-failed', err, {
-            product_key: productKey,
-            call_type: row.call_type,
-            script_id: row.id,
-          });
-          log(`WARNING: Vapi assistant failed for ${row.call_type}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-
-      log(`Vapi assistants: ${assistantsCreated} created, ${assistantFailures.length} failed`);
-      if (assistantFailures.length > 0) {
-        log(`Failed assistants: ${assistantFailures.join('; ')}`);
-      }
-    }
-  }
-
-  // 11. Create initial campaign with steps
-  log('Creating initial outbound campaign...');
-  const { data: campaign, error: campErr } = await supabase
-    .from('mkt_campaigns')
-    .insert({
-      org_id,
-      name: `${product_name} - Initial Outbound`,
-      campaign_type: 'outbound',
-      status: 'draft',
-      metadata: { product_key: productKey },
-    })
-    .select('id')
-    .single();
-
-  if (campErr) {
-    log(`WARNING: Campaign creation error: ${campErr.message}`);
-  } else if (campaign) {
-    // Add basic 5-step sequence: email -> wait -> email -> wait -> email
-    const steps = [
-      { step_order: 1, channel: 'email', delay_hours: 0, action_type: 'send_email', subject_line: 'Introduction' },
-      { step_order: 2, channel: 'email', delay_hours: 72, action_type: 'send_email', subject_line: 'Follow-up' },
-      { step_order: 3, channel: 'whatsapp', delay_hours: 48, action_type: 'send_whatsapp', subject_line: 'Quick check-in' },
-      { step_order: 4, channel: 'email', delay_hours: 96, action_type: 'send_email', subject_line: 'Value proposition' },
-      { step_order: 5, channel: 'email', delay_hours: 120, action_type: 'send_email', subject_line: 'Last follow-up' },
-    ];
-
-    const stepRows = steps.map((s) => ({
-      campaign_id: campaign.id,
-      step_order: s.step_order,
-      channel: s.channel,
-      delay_hours: s.delay_hours,
-      action_type: s.action_type,
-      subject_line: s.subject_line,
-    }));
-
-    const { error: stepErr } = await supabase.from('mkt_campaign_steps').insert(stepRows);
-    if (stepErr) log(`WARNING: Campaign steps error: ${stepErr.message}`);
-    else log(`Created campaign "${campaign.id}" with ${steps.length} steps`);
-  }
-
-  // 12. Persist ICP
-  const icpPersisted = await persistICPFromOnboarding(supabase, org_id, productKey, icpHints, trialDays, log);
-
-  // 13. Finalize: set onboarding_status = complete, active = false
-  // Note: If Vapi assistant creation failed for some scripts, onboarding still
-  // completes. Assistants can be retried via mkt-vapi-backfill-assistants.
-  const onboardingLog = logLines.join('\n');
-  await supabase
-    .from('mkt_products')
-    .update({
-      onboarding_status: 'complete',
-      active: false,
-      onboarding_log: onboardingLog,
-      onboarded_at: new Date().toISOString(),
-    })
-    .eq('id', productId);
-
-  log('Onboarding complete. Product is inactive — toggle manually when ready.');
-
-  await logger.info('onboard-complete', {
-    product_key: productKey,
-    product_id: productId,
-    emails_generated: allEmails.length,
-    wa_templates_generated: waTemplates.length,
-    call_scripts_generated: callScripts.length,
-    schema_map: schemaMap,
-    trial_days: trialDays,
-    icp_persisted: icpPersisted,
-  });
-
-  return {
-    product_id: productId,
-    product_key: productKey,
-    schema_map: schemaMap,
-    trial_days: trialDays,
-    icp_persisted: icpPersisted,
-    content_generated: {
-      emails: allEmails.length,
-      whatsapp_templates: waTemplates.length,
-      call_scripts: callScripts.length,
-    },
-    secrets_to_set: [secretUrlName, secretKeyName],
-    onboarding_log: onboardingLog,
-  };
-}
-
 /**
  * Build the base system prompt for a Vapi assistant at onboarding time.
  * Combines the base persona, product context, and call-type script.
@@ -702,6 +221,868 @@ function mapEmailCategory(cat: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Step runner — mark helpers
+// ---------------------------------------------------------------------------
+
+async function markStepInProgress(
+  supabase: SupabaseClient,
+  stepId: string,
+  attempts: number,
+): Promise<void> {
+  await supabase
+    .from('mkt_onboarding_steps')
+    .update({
+      status: 'in_progress',
+      attempts: attempts + 1,
+      started_at: new Date().toISOString(),
+    })
+    .eq('id', stepId);
+}
+
+async function markStepComplete(
+  supabase: SupabaseClient,
+  stepId: string,
+  details: Record<string, unknown>,
+): Promise<void> {
+  await supabase
+    .from('mkt_onboarding_steps')
+    .update({
+      status: 'complete',
+      completed_at: new Date().toISOString(),
+      details,
+      error_message: null,
+    })
+    .eq('id', stepId);
+}
+
+async function markStepSkipped(
+  supabase: SupabaseClient,
+  stepId: string,
+  reason: string,
+): Promise<void> {
+  await supabase
+    .from('mkt_onboarding_steps')
+    .update({
+      status: 'skipped',
+      completed_at: new Date().toISOString(),
+      details: { reason },
+      error_message: null,
+    })
+    .eq('id', stepId);
+}
+
+async function markStepFailed(
+  supabase: SupabaseClient,
+  stepId: string,
+  errorMessage: string,
+): Promise<void> {
+  await supabase
+    .from('mkt_onboarding_steps')
+    .update({
+      status: 'failed',
+      error_message: errorMessage,
+    })
+    .eq('id', stepId);
+}
+
+// ---------------------------------------------------------------------------
+// Step handlers
+// ---------------------------------------------------------------------------
+
+async function stepRegister(ctx: StepContext): Promise<Record<string, unknown>> {
+  const { supabase, org_id, product_key, product_url, supabase_url } = ctx;
+  const initials = deriveInitials(product_key.replace(/-/g, ' '));
+  const secretUrlName = `${initials}_SUPABASE_URL`;
+  const secretKeyName = `${initials}_SUPABASE_SERVICE_KEY`;
+
+  // Derive product_name from key (reverse slug)
+  const product_name = product_key
+    .split('-')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+
+  const { data: product, error } = await supabase
+    .from('mkt_products')
+    .upsert(
+      {
+        org_id,
+        product_key,
+        product_name,
+        product_url,
+        supabase_url,
+        supabase_secret_name: secretKeyName,
+        onboarding_status: 'in_progress',
+        active: false,
+      },
+      { onConflict: 'org_id,product_key' },
+    )
+    .select('id, product_name')
+    .single();
+
+  if (error) throw new Error(`Failed to upsert mkt_products: ${error.message}`);
+
+  return {
+    product_id: product.id,
+    product_name: product.product_name,
+    secret_url_name: secretUrlName,
+    secret_key_name: secretKeyName,
+  };
+}
+
+async function stepSchemaSniff(ctx: StepContext): Promise<Record<string, unknown>> {
+  const { supabase, org_id, product_key, supabase_url, supabase_service_role_key } = ctx;
+  const productClient = createProductClient(supabase_url, supabase_service_role_key);
+  const schemaMap: Record<string, string> = {};
+
+  for (const tableName of ['users', 'profiles', 'registrations', 'accounts', 'customers']) {
+    const { error } = await productClient.from(tableName).select('*').limit(1);
+    if (!error) { schemaMap.registrations_table = tableName; break; }
+  }
+  for (const tableName of ['payments', 'subscriptions', 'orders', 'invoices', 'billing']) {
+    const { error } = await productClient.from(tableName).select('*').limit(1);
+    if (!error) { schemaMap.payments_table = tableName; break; }
+  }
+  for (const tableName of ['plans', 'pricing', 'products', 'tiers', 'packages']) {
+    const { error } = await productClient.from(tableName).select('*').limit(1);
+    if (!error) { schemaMap.pricing_table = tableName; break; }
+  }
+  for (const tableName of ['events', 'activities', 'activity_log', 'audit_log', 'usage']) {
+    const { error } = await productClient.from(tableName).select('*').limit(1);
+    if (!error) { schemaMap.events_table = tableName; break; }
+  }
+
+  // Persist schema_map and trial_days to product row
+  const trialDays = schemaMap.events_table ? 21 : 14;
+  await supabase
+    .from('mkt_products')
+    .update({ schema_map: schemaMap, trial_days: trialDays })
+    .eq('org_id', org_id)
+    .eq('product_key', product_key);
+
+  return { schema_map: schemaMap, trial_days: trialDays, tables_found: Object.keys(schemaMap).length };
+}
+
+async function stepIcpInfer(ctx: StepContext): Promise<Record<string, unknown>> {
+  const { supabase, org_id, product_key, supabase_url, supabase_service_role_key } = ctx;
+
+  // Load schema_map from product row
+  const { data: product } = await supabase
+    .from('mkt_products')
+    .select('schema_map, trial_days')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .single();
+
+  const schemaMap = (product?.schema_map || {}) as Record<string, string>;
+  const trialDays = (product?.trial_days as number) ?? 14;
+
+  let icpHints: Record<string, unknown> = {};
+
+  if (schemaMap.registrations_table) {
+    const productClient = createProductClient(supabase_url, supabase_service_role_key);
+    const { data: sampleUsers } = await productClient
+      .from(schemaMap.registrations_table)
+      .select('*')
+      .limit(50);
+
+    if (sampleUsers && sampleUsers.length > 0) {
+      const fields = Object.keys(sampleUsers[0]);
+      const industryField = fields.find((f) => /industry|sector|vertical/i.test(f));
+      const sizeField = fields.find((f) => /size|employees|company_size/i.test(f));
+      const designationField = fields.find((f) => /designation|role|title|position/i.test(f));
+
+      if (industryField) {
+        const freq: Record<string, number> = {};
+        sampleUsers
+          .map((u: Record<string, unknown>) => u[industryField])
+          .filter(Boolean)
+          .forEach((i: unknown) => { const k = String(i); freq[k] = (freq[k] || 0) + 1; });
+        icpHints.industries = freq;
+      }
+      if (sizeField) {
+        icpHints.company_sizes = sampleUsers
+          .map((u: Record<string, unknown>) => u[sizeField])
+          .filter(Boolean);
+      }
+      if (designationField) {
+        const freq: Record<string, number> = {};
+        sampleUsers
+          .map((u: Record<string, unknown>) => u[designationField])
+          .filter(Boolean)
+          .forEach((t: unknown) => { const k = String(t); freq[k] = (freq[k] || 0) + 1; });
+        icpHints.designations = freq;
+      }
+      icpHints.sample_size = sampleUsers.length;
+    }
+  }
+
+  // Store icp_hints on product for use by later steps
+  await supabase
+    .from('mkt_products')
+    .update({ icp_hints: icpHints })
+    .eq('org_id', org_id)
+    .eq('product_key', product_key);
+
+  const persisted = await persistICPFromOnboarding(
+    supabase, org_id, product_key, icpHints, trialDays,
+    (msg) => console.log(`[icp_infer] ${msg}`),
+  );
+
+  return { icp_persisted: persisted, sample_size: icpHints.sample_size ?? 0 };
+}
+
+async function stepEmailTemplates(ctx: StepContext): Promise<Record<string, unknown>> {
+  const { supabase, org_id, product_key } = ctx;
+
+  // Skip check: are there already templates for this product?
+  const { count: existing } = await supabase
+    .from('mkt_email_templates')
+    .select('*', { count: 'exact', head: true })
+    .eq('org_id', org_id)
+    .ilike('name', `${product_key}-%`);
+
+  if ((existing ?? 0) > 0) {
+    return { skipped: true, reason: `${existing} email templates already exist`, count: existing };
+  }
+
+  // Load product info
+  const { data: product } = await supabase
+    .from('mkt_products')
+    .select('product_name, product_url, icp_hints')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .single();
+
+  const product_name = product?.product_name ?? product_key;
+  const product_url = product?.product_url ?? ctx.product_url;
+  const icpHints = (product?.icp_hints || {}) as Record<string, unknown>;
+
+  const emailCategories = [
+    { category: 'nurture',      description: "nurture sequence emails for leads who showed interest but haven't converted" },
+    { category: 'closing',      description: 'closing emails to push trial users toward purchase' },
+    { category: 'onboarding',   description: 'onboarding emails for new trial signups to help them get value' },
+    { category: 'cold',         description: "cold outbound emails to new prospects who haven't heard of the product" },
+    { category: 'reactivation', description: 'reactivation emails for churned or dormant users' },
+  ];
+
+  const allEmails: Array<{
+    name: string; subject: string; body_html: string; body_text: string; category: string;
+  }> = [];
+
+  for (const cat of emailCategories) {
+    try {
+      const { data: emails } = await callLLMJson<
+        Array<{ name: string; subject: string; body_html: string; body_text: string }>
+      >(
+        `Generate 5 ${cat.description} for a B2B SaaS product called "${product_name}" (${product_url}).
+${Object.keys(icpHints).length > 0 ? `ICP hints: ${JSON.stringify(icpHints)}` : 'No ICP data available yet.'}
+
+Each email should have:
+- name: a short identifier like "${product_key}-${cat.category}-1"
+- subject: compelling subject line
+- body_html: full HTML email body (keep it professional, under 300 words)
+- body_text: plain text version
+
+Return a JSON array of 5 email objects.`,
+        { model: 'sonnet', max_tokens: 4096, temperature: 0.5 },
+      );
+      if (Array.isArray(emails)) {
+        emails.forEach((e) => allEmails.push({ ...e, category: cat.category }));
+      }
+    } catch (err) {
+      console.warn(`[email_templates] Failed to generate ${cat.category}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  if (allEmails.length > 0) {
+    const emailRows = allEmails.map((e) => ({
+      org_id,
+      name: e.name,
+      subject: e.subject,
+      body_html: e.body_html,
+      body_text: e.body_text || '',
+      category: mapEmailCategory(e.category),
+      is_active: true,
+    }));
+    const { error: emailErr } = await supabase.from('mkt_email_templates').insert(emailRows);
+    if (emailErr) throw new Error(`Email insert error: ${emailErr.message}`);
+  }
+
+  return { emails_generated: allEmails.length };
+}
+
+async function stepWhatsappTemplates(ctx: StepContext): Promise<Record<string, unknown>> {
+  const { supabase, org_id, product_key } = ctx;
+
+  // Skip check
+  const { count: existing } = await supabase
+    .from('mkt_whatsapp_templates')
+    .select('*', { count: 'exact', head: true })
+    .eq('org_id', org_id)
+    .ilike('name', `${product_key}-%`);
+
+  if ((existing ?? 0) > 0) {
+    return { skipped: true, reason: `${existing} WhatsApp templates already exist`, count: existing };
+  }
+
+  const { data: product } = await supabase
+    .from('mkt_products')
+    .select('product_name, product_url')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .single();
+
+  const product_name = product?.product_name ?? product_key;
+  const product_url = product?.product_url ?? ctx.product_url;
+  const templateBase = product_key.replace(/-/g, '_');
+
+  let waTemplates: Array<{
+    name: string; template_name: string; body: string; category: string;
+  }> = [];
+
+  const { data } = await callLLMJson<typeof waTemplates>(
+    `Generate 4 WhatsApp message templates for a B2B SaaS product called "${product_name}" (${product_url}).
+Types needed: 1 welcome/intro, 1 trial reminder, 1 feature highlight, 1 reactivation.
+
+Each template should have:
+- name: human-readable name like "${product_key}-wa-welcome"
+- template_name: Exotel-compatible template name (lowercase, underscores, e.g. "${templateBase}_welcome")
+- body: WhatsApp message body (max 1024 chars, can use {{1}}, {{2}} for variables)
+- category: "marketing" or "utility"
+
+Return a JSON array of 4 template objects.`,
+    { model: 'sonnet', max_tokens: 2048, temperature: 0.5 },
+  );
+  if (Array.isArray(data)) waTemplates = data;
+
+  if (waTemplates.length > 0) {
+    const waRows = waTemplates.map((w) => ({
+      org_id,
+      name: w.name,
+      template_name: w.template_name,
+      body: w.body,
+      category: w.category || 'marketing',
+      approval_status: 'pending',
+      is_active: true,
+    }));
+    const { error: waErr } = await supabase.from('mkt_whatsapp_templates').insert(waRows);
+    if (waErr) throw new Error(`WhatsApp insert error: ${waErr.message}`);
+  }
+
+  return { wa_templates_generated: waTemplates.length };
+}
+
+async function stepCallScripts(ctx: StepContext): Promise<Record<string, unknown>> {
+  const { supabase, org_id, product_key } = ctx;
+
+  // Skip check
+  const { count: existing } = await supabase
+    .from('mkt_call_scripts')
+    .select('*', { count: 'exact', head: true })
+    .eq('org_id', org_id)
+    .eq('product_key', product_key);
+
+  if ((existing ?? 0) > 0) {
+    return { skipped: true, reason: `${existing} call scripts already exist`, count: existing };
+  }
+
+  const { data: product } = await supabase
+    .from('mkt_products')
+    .select('product_name, product_url')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .single();
+
+  const product_name = product?.product_name ?? product_key;
+  const product_url = product?.product_url ?? ctx.product_url;
+
+  type CallScript = {
+    name: string; call_type: string; objective: string; opening: string;
+    key_points: string[]; objection_handling: Record<string, string>; closing: string;
+  };
+
+  let callScripts: CallScript[] = [];
+
+  const { data } = await callLLMJson<CallScript[]>(
+    `Generate 4 phone call scripts for a B2B SaaS product called "${product_name}" (${product_url}).
+Types needed: 1 intro/discovery, 1 follow-up, 1 demo, 1 closing.
+
+Each script should have:
+- name: e.g. "${product_key}-call-intro"
+- call_type: "intro" | "follow_up" | "demo" | "closing"
+- objective: what the call aims to achieve (1 sentence)
+- opening: how to start the call (2-3 sentences)
+- key_points: array of 3-5 talking points
+- objection_handling: object with 3 common objections as keys and responses as values
+- closing: how to end the call (2-3 sentences)
+
+Return a JSON array of 4 script objects.`,
+    { model: 'sonnet', max_tokens: 4096, temperature: 0.5 },
+  );
+  if (Array.isArray(data)) callScripts = data;
+
+  if (callScripts.length > 0) {
+    const scriptRows = callScripts.map((s) => ({
+      org_id,
+      name: s.name,
+      product_key,
+      call_type: s.call_type,
+      objective: s.objective,
+      opening: s.opening,
+      key_points: s.key_points,
+      objection_handling: s.objection_handling,
+      closing: s.closing,
+      is_active: true,
+    }));
+    const { error: scriptErr } = await supabase.from('mkt_call_scripts').insert(scriptRows);
+    if (scriptErr) throw new Error(`Call scripts insert error: ${scriptErr.message}`);
+  }
+
+  return { call_scripts_generated: callScripts.length };
+}
+
+async function stepCampaignCreate(ctx: StepContext): Promise<Record<string, unknown>> {
+  const { supabase, org_id, product_key } = ctx;
+
+  // Skip check: campaign already exists for this product
+  const { data: existingCampaign } = await supabase
+    .from('mkt_campaigns')
+    .select('id')
+    .eq('org_id', org_id)
+    .contains('metadata', { product_key })
+    .limit(1)
+    .single();
+
+  if (existingCampaign) {
+    return { skipped: true, reason: 'Campaign already exists', campaign_id: existingCampaign.id };
+  }
+
+  const { data: product } = await supabase
+    .from('mkt_products')
+    .select('product_name')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .single();
+
+  const product_name = product?.product_name ?? product_key;
+
+  const { data: campaign, error: campErr } = await supabase
+    .from('mkt_campaigns')
+    .insert({
+      org_id,
+      name: `${product_name} - Initial Outbound`,
+      campaign_type: 'outbound',
+      status: 'draft',
+      metadata: { product_key },
+    })
+    .select('id')
+    .single();
+
+  if (campErr) throw new Error(`Campaign creation error: ${campErr.message}`);
+
+  const steps = [
+    { step_order: 1, channel: 'email',     delay_hours: 0,   action_type: 'send_email',     subject_line: 'Introduction' },
+    { step_order: 2, channel: 'email',     delay_hours: 72,  action_type: 'send_email',     subject_line: 'Follow-up' },
+    { step_order: 3, channel: 'whatsapp',  delay_hours: 48,  action_type: 'send_whatsapp',  subject_line: 'Quick check-in' },
+    { step_order: 4, channel: 'email',     delay_hours: 96,  action_type: 'send_email',     subject_line: 'Value proposition' },
+    { step_order: 5, channel: 'email',     delay_hours: 120, action_type: 'send_email',     subject_line: 'Last follow-up' },
+  ];
+
+  const stepRows = steps.map((s) => ({
+    campaign_id: campaign.id,
+    step_order: s.step_order,
+    channel: s.channel,
+    delay_hours: s.delay_hours,
+    action_type: s.action_type,
+    subject_line: s.subject_line,
+  }));
+
+  const { error: stepErr } = await supabase.from('mkt_campaign_steps').insert(stepRows);
+  if (stepErr) throw new Error(`Campaign steps error: ${stepErr.message}`);
+
+  return { campaign_id: campaign.id, steps_created: steps.length };
+}
+
+async function stepSourceLeads(ctx: StepContext): Promise<Record<string, unknown>> {
+  const { supabase, org_id, product_key } = ctx;
+
+  // Skip check: contacts >= 3000 this month for this product
+  const startOfMonth = new Date();
+  startOfMonth.setDate(1);
+  startOfMonth.setHours(0, 0, 0, 0);
+
+  const { count: contactsThisMonth } = await supabase
+    .from('mkt_contacts')
+    .select('*', { count: 'exact', head: true })
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .gte('created_at', startOfMonth.toISOString());
+
+  if ((contactsThisMonth ?? 0) >= 3000) {
+    return {
+      skipped: true,
+      reason: `Contact pool already has ${contactsThisMonth} contacts this month (limit: 3000)`,
+      contacts_count: contactsThisMonth,
+    };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY for mkt-source-leads invocation');
+  }
+
+  const resp = await fetch(`${supabaseUrl}/functions/v1/mkt-source-leads`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ org_id, product_key }),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`mkt-source-leads returned ${resp.status}: ${errText}`);
+  }
+
+  const result = await resp.json();
+  return { sourced: result };
+}
+
+async function stepVapiAssistants(ctx: StepContext): Promise<Record<string, unknown>> {
+  const { supabase, logger, org_id, product_key } = ctx;
+
+  // Skip check: all scripts for this product already have vapi_assistant_id
+  const { data: scripts } = await supabase
+    .from('mkt_call_scripts')
+    .select('id, name, product_key, call_type, objective, opening, key_points, objection_handling, closing, vapi_assistant_id')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .eq('is_active', true);
+
+  if (!scripts || scripts.length === 0) {
+    return { skipped: true, reason: 'No call scripts found for this product' };
+  }
+
+  const needsAssistant = scripts.filter((s: Record<string, unknown>) => !s.vapi_assistant_id);
+  if (needsAssistant.length === 0) {
+    return { skipped: true, reason: 'All call scripts already have Vapi assistants', count: scripts.length };
+  }
+
+  const vapiApiKey = Deno.env.get('VAPI_API_KEY');
+  if (!vapiApiKey) throw new Error('VAPI_API_KEY not set');
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+
+  // Load product info for system prompt
+  const { data: product } = await supabase
+    .from('mkt_products')
+    .select('product_name, product_url')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .single();
+
+  const product_name = product?.product_name ?? product_key;
+  const product_url = product?.product_url ?? ctx.product_url;
+
+  let assistantsCreated = 0;
+  const assistantFailures: string[] = [];
+
+  for (const row of needsAssistant) {
+    try {
+      const systemPrompt = buildOnboardSystemPrompt(row as Record<string, unknown>, product_name, product_url);
+
+      const vapiPayload = {
+        name: `${product_key}-${row.call_type}`,
+        model: {
+          provider: 'groq',
+          model: 'llama-3.3-70b-versatile',
+          temperature: 0.4,
+          messages: [{ role: 'system', content: systemPrompt }],
+        },
+        voice: {
+          provider: 'elevenlabs',
+          voiceId: Deno.env.get('VAPI_DEFAULT_VOICE_ID') || 'pNInz6obpgDQGcFmaJgB',
+        },
+        transcriber: {
+          provider: 'deepgram',
+          model: 'nova-2',
+          language: 'en-IN',
+        },
+        firstMessage: row.opening,
+        endCallFunctionEnabled: true,
+        recordingEnabled: true,
+        serverUrl: `${supabaseUrl}/functions/v1/mkt-vapi-webhook`,
+        serverUrlSecret: Deno.env.get('VAPI_WEBHOOK_SECRET') || undefined,
+      };
+
+      const vapiResp = await fetch('https://api.vapi.ai/assistant', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${vapiApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(vapiPayload),
+      });
+
+      if (!vapiResp.ok) {
+        const errText = await vapiResp.text();
+        throw new Error(`Vapi ${vapiResp.status}: ${errText}`);
+      }
+
+      const vapiResult = await vapiResp.json();
+
+      await supabase
+        .from('mkt_call_scripts')
+        .update({
+          vapi_assistant_id: vapiResult.id,
+          vapi_assistant_created_at: new Date().toISOString(),
+        })
+        .eq('id', row.id);
+
+      await logger.info('vapi-assistant-created', {
+        product_key,
+        call_type: row.call_type,
+        assistant_id: vapiResult.id,
+        script_id: row.id,
+      });
+
+      assistantsCreated++;
+    } catch (err) {
+      const errMsg = `${row.call_type}: ${err instanceof Error ? err.message : String(err)}`;
+      assistantFailures.push(errMsg);
+      await logger.error('vapi-assistant-creation-failed', err, {
+        product_key,
+        call_type: row.call_type,
+        script_id: row.id,
+      });
+    }
+  }
+
+  if (assistantFailures.length > 0 && assistantsCreated === 0) {
+    throw new Error(`All Vapi assistants failed: ${assistantFailures.join('; ')}`);
+  }
+
+  return {
+    assistants_created: assistantsCreated,
+    failures: assistantFailures.length,
+    failure_details: assistantFailures,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Step dispatch table
+// ---------------------------------------------------------------------------
+
+type StepHandler = (ctx: StepContext) => Promise<Record<string, unknown>>;
+
+const STEP_HANDLERS: Record<string, StepHandler> = {
+  register:           stepRegister,
+  schema_sniff:       stepSchemaSniff,
+  icp_infer:          stepIcpInfer,
+  email_templates:    stepEmailTemplates,
+  whatsapp_templates: stepWhatsappTemplates,
+  call_scripts:       stepCallScripts,
+  campaign_create:    stepCampaignCreate,
+  source_leads:       stepSourceLeads,
+  vapi_assistants:    stepVapiAssistants,
+};
+
+// ---------------------------------------------------------------------------
+// Step initialization
+// ---------------------------------------------------------------------------
+
+async function initializeSteps(
+  supabase: SupabaseClient,
+  org_id: string,
+  product_key: string,
+): Promise<void> {
+  const now = new Date();
+  const sevenDaysLater = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  const stepDefs = [
+    { step_name: 'register',           step_order: 1, scheduled_for: null },
+    { step_name: 'schema_sniff',       step_order: 2, scheduled_for: null },
+    { step_name: 'icp_infer',          step_order: 3, scheduled_for: null },
+    { step_name: 'email_templates',    step_order: 4, scheduled_for: null },
+    { step_name: 'whatsapp_templates', step_order: 5, scheduled_for: null },
+    { step_name: 'call_scripts',       step_order: 6, scheduled_for: null },
+    { step_name: 'campaign_create',    step_order: 7, scheduled_for: null },
+    { step_name: 'source_leads',       step_order: 8, scheduled_for: null },
+    { step_name: 'vapi_assistants',    step_order: 9, scheduled_for: sevenDaysLater.toISOString() },
+  ];
+
+  const rows = stepDefs.map((s) => ({
+    org_id,
+    product_key,
+    step_name: s.step_name,
+    step_order: s.step_order,
+    status: 'pending',
+    attempts: 0,
+    scheduled_for: s.scheduled_for,
+  }));
+
+  // ON CONFLICT DO NOTHING — reruns don't reset completed steps
+  await supabase
+    .from('mkt_onboarding_steps')
+    .upsert(rows, { onConflict: 'org_id,product_key,step_name', ignoreDuplicates: true });
+}
+
+// ---------------------------------------------------------------------------
+// Step runner loop
+// ---------------------------------------------------------------------------
+
+async function runSteps(
+  supabase: SupabaseClient,
+  logger: ReturnType<typeof createEngineLogger>,
+  org_id: string,
+  product_key: string,
+  product_url: string,
+  supabase_url: string,
+  supabase_service_role_key: string,
+): Promise<StepResult[]> {
+  const { data: steps, error: loadErr } = await supabase
+    .from('mkt_onboarding_steps')
+    .select('*')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .order('step_order', { ascending: true });
+
+  if (loadErr) throw new Error(`Failed to load onboarding steps: ${loadErr.message}`);
+  if (!steps || steps.length === 0) throw new Error(`No onboarding steps found for product_key="${product_key}"`);
+
+  const ctx: StepContext = {
+    supabase,
+    logger,
+    org_id,
+    product_key,
+    product_url,
+    supabase_url,
+    supabase_service_role_key,
+  };
+
+  const now = new Date();
+
+  for (const step of steps as OnboardingStep[]) {
+    // Already terminal
+    if (step.status === 'complete' || step.status === 'skipped') continue;
+
+    // Give up after 3 failed attempts
+    if (step.status === 'failed' && step.attempts >= 3) continue;
+
+    // Deferred (scheduled_for is in the future)
+    if (step.scheduled_for && new Date(step.scheduled_for) > now) continue;
+
+    const handler = STEP_HANDLERS[step.step_name];
+    if (!handler) {
+      await markStepFailed(supabase, step.id, `No handler registered for step "${step.step_name}"`);
+      break;
+    }
+
+    // Mark in progress and bump attempts
+    await markStepInProgress(supabase, step.id, step.attempts);
+
+    try {
+      const result = await handler(ctx);
+
+      // Check if handler signalled a skip
+      if (result.skipped) {
+        await markStepSkipped(supabase, step.id, String(result.reason ?? 'skipped by handler'));
+      } else {
+        await markStepComplete(supabase, step.id, result);
+      }
+
+      await logger.info(`step-${step.step_name}`, { product_key, ...result });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await markStepFailed(supabase, step.id, errMsg);
+      await logger.error(`step-${step.step_name}-failed`, err, { product_key, step_order: step.step_order });
+      // Stop on failure — don't run subsequent steps
+      break;
+    }
+  }
+
+  // Reload all steps to return final state
+  const { data: finalSteps } = await supabase
+    .from('mkt_onboarding_steps')
+    .select('step_name, status, completed_at, error_message')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .order('step_order', { ascending: true });
+
+  return (finalSteps ?? []).map((s: {
+    step_name: string; status: string; completed_at: string | null; error_message: string | null;
+  }) => ({
+    step_name: s.step_name,
+    status: s.status,
+    completed_at: s.completed_at,
+    error: s.error_message,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Mode handlers
+// ---------------------------------------------------------------------------
+
+async function handleOnboard(
+  supabase: SupabaseClient,
+  body: OnboardBody,
+  logger: ReturnType<typeof createEngineLogger>,
+): Promise<Record<string, unknown>> {
+  const { org_id, product_name, product_url, supabase_url, supabase_service_role_key } = body;
+  const product_key = deriveProductKey(product_name);
+
+  // Initialize all step rows (idempotent)
+  await initializeSteps(supabase, org_id, product_key);
+
+  // Run the step runner
+  const steps = await runSteps(
+    supabase, logger,
+    org_id, product_key, product_url,
+    supabase_url, supabase_service_role_key,
+  );
+
+  return { product_key, steps };
+}
+
+async function handleResume(
+  supabase: SupabaseClient,
+  body: ResumeBody,
+  logger: ReturnType<typeof createEngineLogger>,
+): Promise<Record<string, unknown>> {
+  const { org_id, product_key } = body;
+
+  // Load the product to retrieve connection details stored during onboarding
+  const { data: product, error: prodErr } = await supabase
+    .from('mkt_products')
+    .select('product_url, supabase_url, supabase_secret_name')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .single();
+
+  if (prodErr || !product) {
+    throw new Error(`Product "${product_key}" not found for org "${org_id}"`);
+  }
+
+  // Retrieve the service role key from env (set as a Supabase secret)
+  const serviceRoleKey = product.supabase_secret_name
+    ? Deno.env.get(product.supabase_secret_name) ?? ''
+    : '';
+
+  const steps = await runSteps(
+    supabase, logger,
+    org_id, product_key,
+    product.product_url ?? '',
+    product.supabase_url ?? '',
+    serviceRoleKey,
+  );
+
+  return { product_key, steps };
+}
+
+// ---------------------------------------------------------------------------
 // TOGGLE
 // ---------------------------------------------------------------------------
 
@@ -712,7 +1093,6 @@ async function handleToggle(
 ): Promise<Record<string, unknown>> {
   const { product_id, active } = body;
 
-  // Call the PostgreSQL function
   const { error } = await supabase.rpc('toggle_product_active', {
     _product_id: product_id,
     _active: active,
@@ -720,7 +1100,6 @@ async function handleToggle(
 
   if (error) throw new Error(`toggle_product_active failed: ${error.message}`);
 
-  // Fetch the updated product
   const { data: product } = await supabase
     .from('mkt_products')
     .select('id, product_key, product_name, active')
@@ -751,7 +1130,6 @@ async function handleSync(
 ): Promise<Record<string, unknown>> {
   const { org_id } = body;
 
-  // Get all products for this org that have a supabase_url
   const { data: products, error: fetchErr } = await supabase
     .from('mkt_products')
     .select('*')
@@ -772,7 +1150,6 @@ async function handleSync(
     };
 
     try {
-      // Get service key from env vars
       const serviceKey = getProductServiceKey(product.product_name);
       if (!serviceKey) {
         syncResult.status = 'skipped';
@@ -786,9 +1163,7 @@ async function handleSync(
       const dataBefore: Record<string, unknown> = {};
       const dataAfter: Record<string, unknown> = {};
 
-      // Read current counts
       if (schemaMap.registrations_table) {
-        // Total users
         const { count: totalUsers } = await productClient
           .from(schemaMap.registrations_table)
           .select('*', { count: 'exact', head: true });
@@ -796,14 +1171,12 @@ async function handleSync(
       }
 
       if (schemaMap.payments_table) {
-        // Total paid
         const { count: paidCount } = await productClient
           .from(schemaMap.payments_table)
           .select('*', { count: 'exact', head: true });
         dataAfter.total_payments = paidCount || 0;
       }
 
-      // Read current pricing if pricing table exists
       if (schemaMap.pricing_table) {
         const { data: pricing } = await productClient
           .from(schemaMap.pricing_table)
@@ -812,7 +1185,6 @@ async function handleSync(
         dataAfter.pricing = pricing || [];
       }
 
-      // Compare against last sync
       const { data: lastSync } = await supabase
         .from('mkt_product_sync_log')
         .select('data_after')
@@ -826,7 +1198,6 @@ async function handleSync(
         Object.assign(dataBefore, lastSync.data_after);
       }
 
-      // Check for pricing changes
       const pricingChanged =
         JSON.stringify(dataBefore.pricing) !== JSON.stringify(dataAfter.pricing) &&
         dataBefore.pricing !== undefined;
@@ -839,15 +1210,11 @@ async function handleSync(
         syncResult.pricing_changed = true;
       }
 
-      // Update mkt_products with latest counts
       await supabase
         .from('mkt_products')
-        .update({
-          last_synced_at: new Date().toISOString(),
-        })
+        .update({ last_synced_at: new Date().toISOString() })
         .eq('id', product.id);
 
-      // Write sync log
       await supabase.from('mkt_product_sync_log').insert({
         org_id,
         product_key: product.product_key,
@@ -863,9 +1230,7 @@ async function handleSync(
     } catch (err) {
       syncResult.status = 'error';
       syncResult.error = err instanceof Error ? err.message : String(err);
-      await logger.error('sync-product-failed', err, {
-        product_key: product.product_key,
-      });
+      await logger.error('sync-product-failed', err, { product_key: product.product_key });
     }
 
     results.push(syncResult);
@@ -907,6 +1272,9 @@ Deno.serve(async (req) => {
       case 'onboard':
         result = await handleOnboard(supabase, body as OnboardBody, logger);
         break;
+      case 'resume':
+        result = await handleResume(supabase, body as ResumeBody, logger);
+        break;
       case 'toggle':
         result = await handleToggle(supabase, body as ToggleBody, logger);
         break;
@@ -914,7 +1282,7 @@ Deno.serve(async (req) => {
         result = await handleSync(supabase, body as SyncBody, logger);
         break;
       default:
-        throw new Error(`Unknown mode: ${mode}`);
+        throw new Error(`Unknown mode: ${(body as Record<string, unknown>).mode}`);
     }
 
     return new Response(
