@@ -28,7 +28,19 @@ import {
   Target,
   Circle,
   Minus,
+  Trash2,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -260,6 +272,73 @@ function ReRunButton({
 }
 
 // ---------------------------------------------------------------------------
+// DeleteProductButton
+// ---------------------------------------------------------------------------
+
+function DeleteProductButton({
+  product,
+  effectiveOrgId,
+}: {
+  product: Product;
+  effectiveOrgId: string;
+}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [loading, setLoading] = useState(false);
+
+  const handleDelete = async () => {
+    setLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error("Not authenticated");
+
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/mkt-product-manager`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ mode: "delete", org_id: effectiveOrgId, product_key: product.product_key }),
+        }
+      );
+      if (!res.ok) throw new Error(await res.text());
+
+      toast({ title: `${product.product_name} removed` });
+      queryClient.invalidateQueries({ queryKey: ["mkt-products"] });
+      queryClient.removeQueries({ queryKey: ["mkt-onboarding-steps", product.product_key] });
+    } catch (err) {
+      toast({ title: "Delete failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive">
+          {loading ? <RefreshCw className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Remove {product.product_name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This will permanently delete the product and all its onboarding history — ICP, templates, campaigns, and scripts. You can re-onboard it from scratch.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+            Remove
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ProductCard — consumes step data from its own query
 // ---------------------------------------------------------------------------
 
@@ -370,6 +449,7 @@ function ProductCard({
             steps={steps}
             effectiveOrgId={effectiveOrgId}
           />
+          <DeleteProductButton product={p} effectiveOrgId={effectiveOrgId} />
         </div>
       </CardContent>
     </Card>

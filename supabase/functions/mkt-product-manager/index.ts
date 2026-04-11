@@ -38,7 +38,13 @@ interface SyncBody {
   org_id: string;
 }
 
-type RequestBody = OnboardBody | ResumeBody | ToggleBody | SyncBody;
+interface DeleteBody {
+  mode: 'delete';
+  org_id: string;
+  product_key: string;
+}
+
+type RequestBody = OnboardBody | ResumeBody | ToggleBody | SyncBody | DeleteBody;
 
 interface OnboardingStep {
   id: string;
@@ -331,27 +337,34 @@ async function stepRegister(ctx: StepContext): Promise<Record<string, unknown>> 
 
 async function stepSchemaSniff(ctx: StepContext): Promise<Record<string, unknown>> {
   const { supabase, org_id, product_key, supabase_url, supabase_service_role_key } = ctx;
+
+  // Skip if no product Supabase credentials were provided
+  if (!supabase_url || !supabase_service_role_key) {
+    await supabase
+      .from('mkt_products')
+      .update({ schema_map: {}, trial_days: 14 })
+      .eq('org_id', org_id)
+      .eq('product_key', product_key);
+    return { skipped: true, reason: 'No product Supabase credentials provided', schema_map: {} };
+  }
+
   const productClient = createProductClient(supabase_url, supabase_service_role_key);
   const schemaMap: Record<string, string> = {};
 
-  for (const tableName of ['users', 'profiles', 'registrations', 'accounts', 'customers']) {
-    const { error } = await productClient.from(tableName).select('*').limit(1);
-    if (!error) { schemaMap.registrations_table = tableName; break; }
-  }
-  for (const tableName of ['payments', 'subscriptions', 'orders', 'invoices', 'billing']) {
-    const { error } = await productClient.from(tableName).select('*').limit(1);
-    if (!error) { schemaMap.payments_table = tableName; break; }
-  }
-  for (const tableName of ['plans', 'pricing', 'products', 'tiers', 'packages']) {
-    const { error } = await productClient.from(tableName).select('*').limit(1);
-    if (!error) { schemaMap.pricing_table = tableName; break; }
-  }
-  for (const tableName of ['events', 'activities', 'activity_log', 'audit_log', 'usage']) {
-    const { error } = await productClient.from(tableName).select('*').limit(1);
-    if (!error) { schemaMap.events_table = tableName; break; }
-  }
+  const probe = async (names: string[], key: string) => {
+    for (const tableName of names) {
+      const { error } = await productClient.from(tableName).select('id').limit(1);
+      if (!error) { schemaMap[key] = tableName; return; }
+    }
+  };
 
-  // Persist schema_map and trial_days to product row
+  await Promise.all([
+    probe(['users', 'profiles', 'registrations', 'accounts', 'customers'], 'registrations_table'),
+    probe(['payments', 'subscriptions', 'orders', 'invoices', 'billing'], 'payments_table'),
+    probe(['plans', 'pricing', 'products', 'tiers', 'packages'], 'pricing_table'),
+    probe(['events', 'activities', 'activity_log', 'audit_log', 'usage'], 'events_table'),
+  ]);
+
   const trialDays = schemaMap.events_table ? 21 : 14;
   await supabase
     .from('mkt_products')
@@ -363,22 +376,23 @@ async function stepSchemaSniff(ctx: StepContext): Promise<Record<string, unknown
 }
 
 async function stepIcpInfer(ctx: StepContext): Promise<Record<string, unknown>> {
-  const { supabase, org_id, product_key, supabase_url, supabase_service_role_key } = ctx;
+  const { supabase, org_id, product_key, product_url, supabase_url, supabase_service_role_key } = ctx;
 
-  // Load schema_map from product row
   const { data: product } = await supabase
     .from('mkt_products')
-    .select('schema_map, trial_days')
+    .select('product_name, schema_map, trial_days')
     .eq('org_id', org_id)
     .eq('product_key', product_key)
     .single();
 
+  const product_name = product?.product_name ?? product_key;
   const schemaMap = (product?.schema_map || {}) as Record<string, string>;
   const trialDays = (product?.trial_days as number) ?? 14;
 
   let icpHints: Record<string, unknown> = {};
 
-  if (schemaMap.registrations_table) {
+  // Try to infer from actual product DB data if connected
+  if (schemaMap.registrations_table && supabase_url && supabase_service_role_key) {
     const productClient = createProductClient(supabase_url, supabase_service_role_key);
     const { data: sampleUsers } = await productClient
       .from(schemaMap.registrations_table)
@@ -393,22 +407,16 @@ async function stepIcpInfer(ctx: StepContext): Promise<Record<string, unknown>> 
 
       if (industryField) {
         const freq: Record<string, number> = {};
-        sampleUsers
-          .map((u: Record<string, unknown>) => u[industryField])
-          .filter(Boolean)
+        sampleUsers.map((u: Record<string, unknown>) => u[industryField]).filter(Boolean)
           .forEach((i: unknown) => { const k = String(i); freq[k] = (freq[k] || 0) + 1; });
         icpHints.industries = freq;
       }
       if (sizeField) {
-        icpHints.company_sizes = sampleUsers
-          .map((u: Record<string, unknown>) => u[sizeField])
-          .filter(Boolean);
+        icpHints.company_sizes = sampleUsers.map((u: Record<string, unknown>) => u[sizeField]).filter(Boolean);
       }
       if (designationField) {
         const freq: Record<string, number> = {};
-        sampleUsers
-          .map((u: Record<string, unknown>) => u[designationField])
-          .filter(Boolean)
+        sampleUsers.map((u: Record<string, unknown>) => u[designationField]).filter(Boolean)
           .forEach((t: unknown) => { const k = String(t); freq[k] = (freq[k] || 0) + 1; });
         icpHints.designations = freq;
       }
@@ -416,7 +424,44 @@ async function stepIcpInfer(ctx: StepContext): Promise<Record<string, unknown>> 
     }
   }
 
-  // Store icp_hints on product for use by later steps
+  // If no DB data available, use a fast Haiku call to infer a starting ICP
+  if (Object.keys(icpHints).length === 0) {
+    try {
+      const { data: llmIcp } = await callLLMJson<{
+        industries: string[];
+        designations: string[];
+        company_sizes: string[];
+        geographies: string[];
+        pain_points: string[];
+      }>(
+        `You are inferring an Ideal Customer Profile (ICP) for a B2B SaaS product.
+Product name: "${product_name}"
+Product URL: ${product_url || 'not provided'}
+
+Based on the product name and URL, infer the most likely B2B ICP.
+Return JSON only:
+{
+  "industries": ["up to 5 likely industries"],
+  "designations": ["up to 5 likely buyer titles"],
+  "company_sizes": ["SMB", "Mid-Market"],
+  "geographies": ["India"],
+  "pain_points": ["up to 3 key pain points this product likely solves"]
+}`,
+        { model: 'haiku', max_tokens: 400, temperature: 0.3 },
+      );
+      icpHints = {
+        industries: llmIcp.industries?.reduce((f: Record<string, number>, v: string) => { f[v] = 1; return f; }, {}),
+        designations: llmIcp.designations?.reduce((f: Record<string, number>, v: string) => { f[v] = 1; return f; }, {}),
+        company_sizes: llmIcp.company_sizes ?? [],
+        pain_points: llmIcp.pain_points ?? [],
+        geographies: llmIcp.geographies ?? [],
+        source: 'llm_inferred',
+      };
+    } catch (err) {
+      console.warn('[icp_infer] LLM fallback failed:', err instanceof Error ? err.message : String(err));
+    }
+  }
+
   await supabase
     .from('mkt_products')
     .update({ icp_hints: icpHints })
@@ -428,7 +473,7 @@ async function stepIcpInfer(ctx: StepContext): Promise<Record<string, unknown>> 
     (msg) => console.log(`[icp_infer] ${msg}`),
   );
 
-  return { icp_persisted: persisted, sample_size: icpHints.sample_size ?? 0 };
+  return { icp_persisted: persisted, sample_size: icpHints.sample_size ?? 0, source: icpHints.source ?? 'db_sampled' };
 }
 
 async function stepEmailTemplates(ctx: StepContext): Promise<Record<string, unknown>> {
@@ -465,34 +510,37 @@ async function stepEmailTemplates(ctx: StepContext): Promise<Record<string, unkn
     { category: 'reactivation', description: 'reactivation emails for churned or dormant users' },
   ];
 
-  const allEmails: Array<{
-    name: string; subject: string; body_html: string; body_text: string; category: string;
-  }> = [];
+  const icpContext = Object.keys(icpHints).length > 0 ? `ICP hints: ${JSON.stringify(icpHints)}` : '';
 
-  for (const cat of emailCategories) {
-    try {
-      const { data: emails } = await callLLMJson<
-        Array<{ name: string; subject: string; body_html: string; body_text: string }>
-      >(
-        `Generate 5 ${cat.description} for a B2B SaaS product called "${product_name}" (${product_url}).
-${Object.keys(icpHints).length > 0 ? `ICP hints: ${JSON.stringify(icpHints)}` : 'No ICP data available yet.'}
+  const results = await Promise.all(
+    emailCategories.map(async (cat) => {
+      try {
+        const { data: emails } = await callLLMJson<
+          Array<{ name: string; subject: string; body_html: string; body_text: string }>
+        >(
+          `Generate 3 ${cat.description} for a B2B SaaS product called "${product_name}" (${product_url}).
+${icpContext}
 
-Each email should have:
-- name: a short identifier like "${product_key}-${cat.category}-1"
+Each email must have:
+- name: short identifier like "${product_key}-${cat.category}-1"
 - subject: compelling subject line
-- body_html: full HTML email body (keep it professional, under 300 words)
+- body_html: professional HTML email body (under 200 words)
 - body_text: plain text version
 
-Return a JSON array of 5 email objects.`,
-        { model: 'sonnet', max_tokens: 4096, temperature: 0.5 },
-      );
-      if (Array.isArray(emails)) {
-        emails.forEach((e) => allEmails.push({ ...e, category: cat.category }));
+Return a JSON array of 3 email objects.`,
+          { model: 'haiku', max_tokens: 2048, temperature: 0.5 },
+        );
+        return Array.isArray(emails) ? emails.map((e) => ({ ...e, category: cat.category })) : [];
+      } catch (err) {
+        console.warn(`[email_templates] Failed to generate ${cat.category}: ${err instanceof Error ? err.message : String(err)}`);
+        return [];
       }
-    } catch (err) {
-      console.warn(`[email_templates] Failed to generate ${cat.category}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
+    }),
+  );
+
+  const allEmails: Array<{
+    name: string; subject: string; body_html: string; body_text: string; category: string;
+  }> = results.flat();
 
   if (allEmails.length > 0) {
     const emailRows = allEmails.map((e) => ({
@@ -617,7 +665,7 @@ Each script should have:
 - closing: how to end the call (2-3 sentences)
 
 Return a JSON array of 4 script objects.`,
-    { model: 'sonnet', max_tokens: 4096, temperature: 0.5 },
+    { model: 'haiku', max_tokens: 2048, temperature: 0.5 },
   );
   if (Array.isArray(data)) callScripts = data;
 
@@ -670,6 +718,7 @@ async function stepCampaignCreate(ctx: StepContext): Promise<Record<string, unkn
     .from('mkt_campaigns')
     .insert({
       org_id,
+      product_key,
       name: `${product_name} - Initial Outbound`,
       campaign_type: 'outbound',
       status: 'draft',
@@ -689,12 +738,12 @@ async function stepCampaignCreate(ctx: StepContext): Promise<Record<string, unkn
   ];
 
   const stepRows = steps.map((s) => ({
+    org_id,
     campaign_id: campaign.id,
-    step_order: s.step_order,
+    step_number: s.step_order,
     channel: s.channel,
     delay_hours: s.delay_hours,
-    action_type: s.action_type,
-    subject_line: s.subject_line,
+    is_active: true,
   }));
 
   const { error: stepErr } = await supabase.from('mkt_campaign_steps').insert(stepRows);
@@ -1290,6 +1339,64 @@ async function handleSync(
 }
 
 // ---------------------------------------------------------------------------
+// DELETE
+// ---------------------------------------------------------------------------
+
+async function handleDelete(
+  supabase: SupabaseClient,
+  body: DeleteBody,
+  logger: ReturnType<typeof createEngineLogger>,
+): Promise<Record<string, unknown>> {
+  const { org_id, product_key } = body;
+
+  const tablesToClear: string[] = [
+    'mkt_arohan_conversations',
+    'mkt_onboarding_steps',
+    'mkt_product_icp',
+    'mkt_email_templates',
+    'mkt_whatsapp_templates',
+    'mkt_call_scripts',
+    'mkt_engine_logs',
+    'mkt_engine_config',
+    'mkt_campaign_steps',
+  ];
+
+  // Delete campaign_steps via campaign_id first (no product_key column)
+  const { data: campaigns } = await supabase
+    .from('mkt_campaigns')
+    .select('id')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key);
+
+  if (campaigns && campaigns.length > 0) {
+    const ids = campaigns.map((c: { id: string }) => c.id);
+    await supabase.from('mkt_campaign_steps').delete().in('campaign_id', ids);
+    await supabase.from('mkt_campaigns').delete().in('id', ids);
+  }
+
+  // Delete all tables that have org_id + product_key
+  for (const table of ['mkt_onboarding_steps', 'mkt_product_icp', 'mkt_email_templates',
+    'mkt_whatsapp_templates', 'mkt_call_scripts']) {
+    await supabase.from(table).delete().eq('org_id', org_id).eq('product_key', product_key);
+  }
+
+  // Delete tables that only filter by org_id (shared across products)
+  // Only clear engine logs for this product_key
+  await supabase.from('mkt_engine_logs').delete()
+    .eq('org_id', org_id)
+    .contains('details', { product_key });
+
+  // Delete the product row itself
+  await supabase.from('mkt_products').delete()
+    .eq('org_id', org_id)
+    .eq('product_key', product_key);
+
+  await logger.info('product-deleted', { org_id, product_key });
+
+  return { deleted: true, product_key };
+}
+
+// ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
 
@@ -1319,6 +1426,9 @@ Deno.serve(async (req) => {
         break;
       case 'sync':
         result = await handleSync(supabase, body as SyncBody, logger);
+        break;
+      case 'delete':
+        result = await handleDelete(supabase, body as DeleteBody, logger);
         break;
       default:
         throw new Error(`Unknown mode: ${(body as Record<string, unknown>).mode}`);
