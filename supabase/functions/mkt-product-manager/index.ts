@@ -28,6 +28,13 @@ interface ResumeBody {
   product_key: string;
 }
 
+interface ResetStepBody {
+  mode: 'reset_step';
+  org_id: string;
+  product_key: string;
+  step_name: string;
+}
+
 interface ToggleBody {
   mode: 'toggle';
   product_id: string;
@@ -1502,6 +1509,97 @@ async function handleDelete(
 }
 
 // ---------------------------------------------------------------------------
+// RESET STEP
+// ---------------------------------------------------------------------------
+
+/** Delete whatever a step wrote so it can be cleanly re-executed. */
+async function clearStepOutput(
+  supabase: SupabaseClient,
+  org_id: string,
+  product_key: string,
+  step_name: string,
+): Promise<void> {
+  switch (step_name) {
+    case 'schema_sniff':
+      await supabase.from('mkt_products')
+        .update({ schema_map: null, trial_days: 14 })
+        .eq('org_id', org_id).eq('product_key', product_key);
+      break;
+    case 'icp_infer':
+      await supabase.from('mkt_product_icp')
+        .delete().eq('org_id', org_id).eq('product_key', product_key).eq('version', 1);
+      await supabase.from('mkt_products')
+        .update({ icp_hints: null })
+        .eq('org_id', org_id).eq('product_key', product_key);
+      break;
+    case 'email_templates':
+      await supabase.from('mkt_email_templates')
+        .delete().eq('org_id', org_id).ilike('name', `${product_key}-%`);
+      break;
+    case 'whatsapp_templates':
+      await supabase.from('mkt_whatsapp_templates')
+        .delete().eq('org_id', org_id).ilike('name', `${product_key}-%`);
+      break;
+    case 'call_scripts':
+      await supabase.from('mkt_call_scripts')
+        .delete().eq('org_id', org_id).eq('product_key', product_key);
+      break;
+    case 'campaign_create': {
+      const { data: camps } = await supabase.from('mkt_campaigns')
+        .select('id').eq('org_id', org_id).eq('product_key', product_key);
+      if (camps && camps.length > 0) {
+        const ids = camps.map((c: { id: string }) => c.id);
+        await supabase.from('mkt_campaign_steps').delete().in('campaign_id', ids);
+        await supabase.from('mkt_campaigns').delete().in('id', ids);
+      }
+      break;
+    }
+    // register, source_leads, vapi_assistants — no destructive cleanup
+  }
+}
+
+async function handleResetStep(
+  supabase: SupabaseClient,
+  body: ResetStepBody,
+  logger: ReturnType<typeof createEngineLogger>,
+): Promise<Record<string, unknown>> {
+  const { org_id, product_key, step_name } = body;
+
+  // 1. Delete previous output for this step
+  await clearStepOutput(supabase, org_id, product_key, step_name);
+
+  // 2. Reset the step row to pending
+  await supabase.from('mkt_onboarding_steps')
+    .update({ status: 'pending', attempts: 0, error: null, completed_at: null, details: null })
+    .eq('org_id', org_id).eq('product_key', product_key).eq('step_name', step_name);
+
+  // 3. Reset product-level status so it doesn't stay stuck at 'complete' or 'failed'
+  await supabase.from('mkt_products')
+    .update({ onboarding_status: 'in_progress' })
+    .eq('org_id', org_id).eq('product_key', product_key);
+
+  // 4. Load product connection details and re-run steps
+  const { data: product } = await supabase.from('mkt_products')
+    .select('product_url, git_repo_url, supabase_url, supabase_secret_name')
+    .eq('org_id', org_id).eq('product_key', product_key).single();
+
+  const serviceRoleKey = product?.supabase_secret_name
+    ? Deno.env.get(product.supabase_secret_name) ?? '' : '';
+
+  const steps = await runSteps(
+    supabase, logger,
+    org_id, product_key,
+    product?.product_url ?? '',
+    product?.git_repo_url ?? '',
+    product?.supabase_url ?? '',
+    serviceRoleKey,
+  );
+
+  await logger.info('step-reset', { product_key, step_name });
+  return { product_key, step_name, steps };
+}
+
+// ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
 
@@ -1534,6 +1632,9 @@ Deno.serve(async (req) => {
         break;
       case 'delete':
         result = await handleDelete(supabase, body as DeleteBody, logger);
+        break;
+      case 'reset_step':
+        result = await handleResetStep(supabase, body as ResetStepBody, logger);
         break;
       default:
         throw new Error(`Unknown mode: ${(body as Record<string, unknown>).mode}`);
