@@ -117,7 +117,11 @@ const NON_RESETTABLE_STEPS = new Set(["register"]);
 function callProductManager(token: string, body: Record<string, unknown>) {
   return fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/mkt-product-manager`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+      "apikey": import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+    },
     body: JSON.stringify(body),
   });
 }
