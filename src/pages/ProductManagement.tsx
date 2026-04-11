@@ -58,7 +58,7 @@ interface OnboardingStep {
   status: "pending" | "in_progress" | "complete" | "failed" | "skipped";
   scheduled_for: string | null;
   completed_at: string | null;
-  error_message: string | null;
+  error: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +100,7 @@ function StepIcon({ step }: { step: OnboardingStep }) {
     return (
       <XCircle
         className="h-3.5 w-3.5 text-red-600 shrink-0"
-        title={step.error_message ?? "Step failed"}
+        title={step.error ?? "Step failed"}
       />
     );
   }

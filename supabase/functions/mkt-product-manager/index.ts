@@ -50,7 +50,7 @@ interface OnboardingStep {
   scheduled_for: string | null;
   completed_at: string | null;
   details: Record<string, unknown> | null;
-  error_message: string | null;
+  error: string | null;
 }
 
 interface StepResult {
@@ -250,7 +250,7 @@ async function markStepComplete(
       status: 'complete',
       completed_at: new Date().toISOString(),
       details,
-      error_message: null,
+      error: null,
     })
     .eq('id', stepId);
 }
@@ -266,7 +266,7 @@ async function markStepSkipped(
       status: 'skipped',
       completed_at: new Date().toISOString(),
       details: { reason },
-      error_message: null,
+      error: null,
     })
     .eq('id', stepId);
 }
@@ -280,7 +280,7 @@ async function markStepFailed(
     .from('mkt_onboarding_steps')
     .update({
       status: 'failed',
-      error_message: errorMessage,
+      error: errorMessage,
     })
     .eq('id', stepId);
 }
@@ -1007,18 +1007,18 @@ async function runSteps(
   // Reload all steps to return final state
   const { data: finalSteps } = await supabase
     .from('mkt_onboarding_steps')
-    .select('step_name, status, completed_at, error_message')
+    .select('step_name, status, completed_at, error')
     .eq('org_id', org_id)
     .eq('product_key', product_key)
     .order('step_order', { ascending: true });
 
   return (finalSteps ?? []).map((s: {
-    step_name: string; status: string; completed_at: string | null; error_message: string | null;
+    step_name: string; status: string; completed_at: string | null; error: string | null;
   }) => ({
     step_name: s.step_name,
     status: s.status,
     completed_at: s.completed_at,
-    error: s.error_message,
+    error: s.error,
   }));
 }
 
