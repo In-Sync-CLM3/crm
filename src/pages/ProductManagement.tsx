@@ -83,6 +83,7 @@ interface OnboardingStep {
   completed_at: string | null;
   error: string | null;
   attempts: number;
+  details: Record<string, unknown> | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +140,34 @@ async function getToken() {
 
 function daysUntil(dateStr: string): number {
   return Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86_400_000);
+}
+
+function getStepSummary(step: OnboardingStep): string | null {
+  const d = step.details;
+  if (!d) return null;
+  switch (step.step_name) {
+    case "register":           return "registered";
+    case "schema_sniff":       return d.tables_found != null ? `${d.tables_found} tables` : null;
+    case "icp_infer":          return d.source === "page_crawled" ? "from landing page" : "inferred";
+    case "email_templates":    return d.emails_generated != null ? `${d.emails_generated} emails` : null;
+    case "whatsapp_templates": return d.wa_templates_generated != null ? `${d.wa_templates_generated} templates` : null;
+    case "call_scripts":       return d.call_scripts_generated != null ? `${d.call_scripts_generated} scripts` : null;
+    case "campaign_create":    return d.already_existed ? "existing" : d.steps_created != null ? `${d.steps_created} steps` : null;
+    case "source_leads": {
+      const s = d.sourced as Record<string, unknown> | null;
+      return s?.total != null ? `${s.total} contacts` : null;
+    }
+    case "vapi_assistants":    return d.assistants_created != null ? `${d.assistants_created} assistants` : null;
+    default:                   return null;
+  }
+}
+
+function formatStepDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  const diffH = (Date.now() - d.getTime()) / 3_600_000;
+  if (diffH < 1)  return "just now";
+  if (diffH < 24) return `${Math.floor(diffH)}h ago`;
+  return d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 }
 
 // ---------------------------------------------------------------------------
@@ -330,9 +359,24 @@ function StepList({
           <span className="text-xs font-medium w-20 shrink-0">
             {STEP_META[step.step_name]?.label ?? step.step_name}
           </span>
-          <span className="text-xs flex-1 min-w-0">
-            <StepStatusText step={step} />
-          </span>
+          {step.status === "complete" || step.status === "skipped" ? (
+            <>
+              <span className="text-xs flex-1 min-w-0 text-muted-foreground truncate">
+                {step.status === "skipped"
+                  ? (step.details?.reason as string | undefined ?? "skipped")
+                  : (getStepSummary(step) ?? "done")}
+              </span>
+              {step.completed_at && (
+                <span className="text-[10px] text-muted-foreground/70 shrink-0 tabular-nums">
+                  {formatStepDate(step.completed_at)}
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="text-xs flex-1 min-w-0">
+              <StepStatusText step={step} />
+            </span>
+          )}
           <StepRerunButton step={step} product={product} effectiveOrgId={effectiveOrgId} />
         </div>
       ))}
@@ -410,6 +454,8 @@ function ProductCard({
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [resuming, setResuming] = useState(false);
+  const [waSubmitting, setWaSubmitting] = useState(false);
+  const [waSyncing, setWaSyncing] = useState(false);
 
   const { data: steps, isLoading: stepsLoading } = useQuery<OnboardingStep[]>({
     queryKey: ["mkt-onboarding-steps", p.product_key],
@@ -429,6 +475,75 @@ function ProductCard({
       return data.some((s) => s.status === "pending" || s.status === "in_progress") ? 3000 : false;
     },
   });
+
+  const waStep = steps?.find((s) => s.step_name === "whatsapp_templates");
+  const waStepDone = waStep?.status === "complete";
+
+  const { data: waStats, refetch: refetchWaStats } = useQuery<{
+    total: number; pending: number; submitted: number; approved: number; rejected: number;
+  }>({
+    queryKey: ["wa-template-stats", p.product_key, effectiveOrgId],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("mkt_whatsapp_templates")
+        .select("id, approval_status")
+        .eq("org_id", effectiveOrgId)
+        .ilike("name", `${p.product_key}-%`);
+      const stats = { total: 0, pending: 0, submitted: 0, approved: 0, rejected: 0 };
+      (data || []).forEach((t) => {
+        stats.total++;
+        const s = t.approval_status as keyof typeof stats;
+        if (s in stats) stats[s]++;
+      });
+      return stats;
+    },
+    enabled: !!effectiveOrgId && waStepDone,
+    staleTime: 30_000,
+  });
+
+  const handleSubmitWA = async () => {
+    setWaSubmitting(true);
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/mkt-submit-whatsapp-templates`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "apikey": import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY },
+          body: JSON.stringify({ org_id: effectiveOrgId }),
+        },
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? res.statusText);
+      toast({ title: "WhatsApp: submitted", description: `${json.submitted ?? 0} submitted, ${json.failed ?? 0} failed` });
+      refetchWaStats();
+    } catch (err) {
+      toast({ title: "Submit failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setWaSubmitting(false);
+    }
+  };
+
+  const handleSyncWA = async () => {
+    setWaSyncing(true);
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/mkt-sync-whatsapp-status`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "apikey": import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY },
+          body: JSON.stringify({ org_id: effectiveOrgId }),
+        },
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? res.statusText);
+      toast({ title: "WhatsApp: synced", description: `${json.approved ?? 0} approved, ${json.synced ?? 0} total` });
+      refetchWaStats();
+    } catch (err) {
+      toast({ title: "Sync failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setWaSyncing(false);
+    }
+  };
 
   const completedCount = steps?.filter((s) => s.status === "complete" || s.status === "skipped").length ?? 0;
   const totalCount = steps?.length ?? 9;
@@ -521,6 +636,39 @@ function ProductCard({
           <StepList steps={steps} product={p} effectiveOrgId={effectiveOrgId} />
         ) : (
           <p className="text-xs text-muted-foreground px-2 py-3">No steps yet</p>
+        )}
+
+        {/* ── WhatsApp template status ── */}
+        {waStepDone && waStats && waStats.total > 0 && (
+          <div className="mt-1 pt-2 border-t px-2 flex items-center justify-between gap-2">
+            <div className="text-[11px] text-muted-foreground flex items-center gap-1.5 flex-wrap">
+              <span className="font-medium">WA:</span>
+              {waStats.approved > 0  && <span className="text-green-600">{waStats.approved} approved</span>}
+              {waStats.submitted > 0 && <span className="text-blue-600">{waStats.submitted} at Meta</span>}
+              {waStats.pending > 0   && <span className="text-amber-600">{waStats.pending} pending</span>}
+              {waStats.rejected > 0  && <span className="text-red-600">{waStats.rejected} rejected</span>}
+            </div>
+            <div className="flex gap-1 shrink-0">
+              {waStats.pending > 0 && (
+                <Button
+                  variant="ghost" size="sm"
+                  className="h-6 text-[10px] px-2 text-amber-700 hover:text-amber-900"
+                  disabled={waSubmitting}
+                  onClick={handleSubmitWA}
+                >
+                  {waSubmitting ? <RefreshCw className="h-3 w-3 animate-spin" /> : "Submit"}
+                </Button>
+              )}
+              <Button
+                variant="ghost" size="sm"
+                className="h-6 text-[10px] px-2"
+                disabled={waSyncing}
+                onClick={handleSyncWA}
+              >
+                {waSyncing ? <RefreshCw className="h-3 w-3 animate-spin" /> : "Sync"}
+              </Button>
+            </div>
+          </div>
         )}
       </CardContent>
 
