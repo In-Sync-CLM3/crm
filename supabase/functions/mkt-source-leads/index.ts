@@ -173,8 +173,9 @@ async function sourceFromNative(
     query = query.in('emp_size', icp.company_sizes);
   }
 
-  // Fetch a reasonable pool — we will dedup in-process
-  const { data: candidates, error: fetchError } = await query.limit(limit * 3);
+  // Fetch a reasonable pool — limit to 2x target to keep dedup queries manageable
+  const poolSize = Math.min(limit * 2, 2000);
+  const { data: candidates, error: fetchError } = await query.limit(poolSize);
 
   if (fetchError) throw new Error(`Failed to query mkt_native_contacts: ${fetchError.message}`);
   if (!candidates || candidates.length === 0) {
@@ -182,7 +183,7 @@ async function sourceFromNative(
     return 0;
   }
 
-  // Collect all phones and emails to exclude in a single lookup
+  // Collect all phones and emails to check for duplicates
   const phones = (candidates as NativeContact[])
     .map((c) => c.phone)
     .filter(Boolean) as string[];
@@ -191,29 +192,31 @@ async function sourceFromNative(
     .flatMap((c) => [c.email_official, c.email_personal, c.email_generic])
     .filter(Boolean) as string[];
 
-  // Fetch existing contacts for this org that match any phone or email
-  const [phoneCheck, emailCheck] = await Promise.all([
-    phones.length > 0
-      ? supabase
-          .from('contacts')
-          .select('phone')
-          .eq('org_id', orgId)
-          .in('phone', phones)
-      : Promise.resolve({ data: [], error: null }),
-    emails.length > 0
-      ? supabase
-          .from('contacts')
-          .select('email')
-          .eq('org_id', orgId)
-          .in('email', emails)
-      : Promise.resolve({ data: [], error: null }),
+  // Batch the dedup checks — PostgREST encodes .in() as a URL param, which breaks
+  // with thousands of values. Chunk into groups of 200.
+  const DEDUP_CHUNK = 200;
+
+  async function batchedInCheck(column: string, values: string[]): Promise<Set<string>> {
+    const found = new Set<string>();
+    for (let i = 0; i < values.length; i += DEDUP_CHUNK) {
+      const chunk = values.slice(i, i + DEDUP_CHUNK);
+      const { data, error } = await supabase
+        .from('contacts')
+        .select(column)
+        .eq('org_id', orgId)
+        .in(column, chunk);
+      if (error) throw new Error(`${column} dedup check failed: ${error.message}`);
+      for (const row of (data || []) as Record<string, string>[]) {
+        if (row[column]) found.add(row[column]);
+      }
+    }
+    return found;
+  }
+
+  const [existingPhones, existingEmails] = await Promise.all([
+    phones.length > 0 ? batchedInCheck('phone', phones) : Promise.resolve(new Set<string>()),
+    emails.length > 0 ? batchedInCheck('email', emails) : Promise.resolve(new Set<string>()),
   ]);
-
-  if (phoneCheck.error) throw new Error(`Phone dedup check failed: ${phoneCheck.error.message}`);
-  if (emailCheck.error) throw new Error(`Email dedup check failed: ${emailCheck.error.message}`);
-
-  const existingPhones = new Set((phoneCheck.data || []).map((r: { phone: string }) => r.phone));
-  const existingEmails = new Set((emailCheck.data || []).map((r: { email: string }) => r.email));
 
   // Filter out duplicates
   const fresh = (candidates as NativeContact[]).filter((c) => {
@@ -255,13 +258,15 @@ async function sourceFromNative(
     };
   });
 
-  // Insert in batches of BATCH_SIZE
+  // Insert in batches of BATCH_SIZE.
+  // Plain insert — dedup was already done above so conflicts are rare.
+  // contacts has no unique constraint on phone/email, so upsert onConflict would fail.
   let inserted = 0;
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const batch = rows.slice(i, i + BATCH_SIZE);
     const { error: insertError, data: insertData } = await supabase
       .from('contacts')
-      .upsert(batch, { ignoreDuplicates: true, onConflict: 'org_id,phone' })
+      .insert(batch)
       .select('id');
 
     if (insertError) {
@@ -379,7 +384,7 @@ async function sourceFromApollo(
       const batch = rows.slice(i, i + BATCH_SIZE);
       const { error: insertError, data: insertData } = await supabase
         .from('contacts')
-        .upsert(batch, { ignoreDuplicates: true, onConflict: 'org_id,phone' })
+        .insert(batch)
         .select('id');
 
       if (insertError) {
