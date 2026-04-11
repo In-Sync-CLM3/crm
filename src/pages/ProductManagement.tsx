@@ -54,6 +54,7 @@ export default function ProductManagement() {
     product_name: "",
     product_url: "",
     supabase_url: "",
+    supabase_service_role_key: "",
   });
 
   const { data: products, isLoading } = useQuery({
@@ -109,7 +110,7 @@ export default function ProductManagement() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["mkt-products"] });
       setDialogOpen(false);
-      setFormData({ product_name: "", product_url: "", supabase_url: "" });
+      setFormData({ product_name: "", product_url: "", supabase_url: "", supabase_service_role_key: "" });
       toast({ title: "Product onboarding started" });
     },
     onError: (err: Error) => {
@@ -175,6 +176,17 @@ export default function ProductManagement() {
                     value={formData.supabase_url}
                     onChange={(e) =>
                       setFormData({ ...formData, supabase_url: e.target.value })
+                    }
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Supabase Service Role Key</Label>
+                  <Input
+                    type="password"
+                    placeholder="eyJhbGciOiJIUzI1NiIs..."
+                    value={formData.supabase_service_role_key}
+                    onChange={(e) =>
+                      setFormData({ ...formData, supabase_service_role_key: e.target.value })
                     }
                   />
                 </div>
