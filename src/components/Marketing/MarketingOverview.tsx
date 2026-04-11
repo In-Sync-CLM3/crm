@@ -77,15 +77,15 @@ export function MarketingOverview({ days }: MarketingOverviewProps) {
 
   if (isLoading) return <LoadingState message="Loading overview..." />;
 
-  const stats = data ?? {
-    active_campaigns: 0,
-    leads_sourced: 0,
-    leads_converted: 0,
-    total_actions: 0,
-    active_enrollments: 0,
-    conversion_rate: 0,
-    funnel: { sourced: 0, enriched: 0, scored: 0, enrolled: 0, converted: 0 },
-    channel_performance: [],
+  const stats = {
+    active_campaigns: data?.active_campaigns ?? 0,
+    leads_sourced: data?.leads_sourced ?? 0,
+    leads_converted: data?.leads_converted ?? 0,
+    total_actions: data?.total_actions ?? 0,
+    active_enrollments: data?.active_enrollments ?? 0,
+    conversion_rate: data?.conversion_rate ?? 0,
+    funnel: data?.funnel ?? { sourced: 0, enriched: 0, scored: 0, enrolled: 0, converted: 0 },
+    channel_performance: data?.channel_performance ?? [],
   };
 
   const statCards = [
