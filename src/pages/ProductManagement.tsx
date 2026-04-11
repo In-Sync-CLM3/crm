@@ -499,6 +499,12 @@ function ProductCard({
     },
     enabled: !!effectiveOrgId && waStepDone,
     staleTime: 30_000,
+    // Auto-poll while any templates are awaiting Meta review
+    refetchInterval: (query) => {
+      const d = query.state.data;
+      if (!d) return false;
+      return d.submitted > 0 ? 60_000 : false;
+    },
   });
 
   const handleSubmitWA = async () => {

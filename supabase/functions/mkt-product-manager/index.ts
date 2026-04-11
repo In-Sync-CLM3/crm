@@ -686,6 +686,20 @@ async function stepWhatsappTemplates(ctx: StepContext): Promise<Record<string, u
   const product_url = product?.product_url ?? ctx.product_url;
   const templateBase = product_key.replace(/-/g, '_');
 
+  // Pick a version suffix to avoid collision with previously rejected template names on Meta.
+  // Meta permanently blacklists rejected names — resubmissions must use a new name.
+  const { data: existingNames } = await supabase
+    .from('mkt_whatsapp_templates')
+    .select('template_name')
+    .eq('org_id', org_id)
+    .ilike('template_name', `${templateBase}_welcome%`);
+  const usedWelcomeNames = new Set((existingNames ?? []).map((r: { template_name: string }) => r.template_name));
+  let vNum = 1;
+  while (usedWelcomeNames.has(vNum === 1 ? `${templateBase}_welcome` : `${templateBase}_welcome_v${vNum}`)) {
+    vNum++;
+  }
+  const versionSuffix = vNum === 1 ? '' : `_v${vNum}`;
+
   let waTemplates: Array<{
     name: string; template_name: string; body: string; category: string;
     variables: string[]; cta_url?: string; cta_button_text?: string;
@@ -704,8 +718,8 @@ CRITICAL META/WHATSAPP COMPLIANCE RULES — violations cause automatic rejection
 6. "utility" category for transactional messages, "marketing" for promotional
 
 Each template object must have:
-- name: like "${product_key}-wa-welcome"
-- template_name: lowercase + underscores only, e.g. "${templateBase}_welcome"
+- name: like "${product_key}-wa-welcome${versionSuffix}"
+- template_name: lowercase + underscores only, e.g. "${templateBase}_welcome${versionSuffix}"
 - body: message text using {{1}}, {{2}} for personalisation (NO URLs, NO reply instructions)
 - category: "marketing" or "utility"
 - variables: ordered array of variable names matching the placeholders, e.g. ["first_name", "days_left"]
@@ -717,25 +731,41 @@ Return a JSON array of exactly 4 template objects.`,
   );
   if (Array.isArray(data)) waTemplates = data;
 
-  if (waTemplates.length > 0) {
-    const waRows = waTemplates.map((w) => ({
-      org_id,
-      name: w.name,
-      template_name: w.template_name,
-      body: w.body,
-      category: w.category || 'marketing',
-      variables: Array.isArray(w.variables) ? w.variables : [],
-      buttons: w.cta_url
-        ? [{ type: 'URL', text: w.cta_button_text || 'Learn More', url: w.cta_url }]
-        : [],
-      approval_status: 'pending',
-      is_active: true,
-    }));
-    const { error: waErr } = await supabase.from('mkt_whatsapp_templates').insert(waRows);
-    if (waErr) throw new Error(`WhatsApp insert error: ${waErr.message}`);
+  if (waTemplates.length === 0) {
+    return { wa_templates_generated: 0 };
   }
 
-  return { wa_templates_generated: waTemplates.length };
+  const waRows = waTemplates.map((w) => ({
+    org_id,
+    name: w.name,
+    template_name: w.template_name,
+    body: w.body,
+    category: w.category || 'marketing',
+    variables: Array.isArray(w.variables) ? w.variables : [],
+    buttons: w.cta_url
+      ? [{ type: 'URL', text: w.cta_button_text || 'Learn More', url: w.cta_url }]
+      : [],
+    approval_status: 'pending',
+    is_active: true,
+  }));
+  const { error: waErr } = await supabase.from('mkt_whatsapp_templates').insert(waRows);
+  if (waErr) throw new Error(`WhatsApp insert error: ${waErr.message}`);
+
+  // Auto-submit to Exotel/Meta immediately after insert — no manual step needed
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+  const submitResp = await fetch(`${supabaseUrl}/functions/v1/mkt-submit-whatsapp-templates`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ org_id }),
+  });
+  const submitResult = submitResp.ok ? await submitResp.json() : { submitted: 0, failed: 0 };
+
+  return {
+    wa_templates_generated: waTemplates.length,
+    wa_submitted: submitResult.submitted ?? 0,
+    wa_failed: submitResult.failed ?? 0,
+  };
 }
 
 async function stepCallScripts(ctx: StepContext): Promise<Record<string, unknown>> {
