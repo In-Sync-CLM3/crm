@@ -230,6 +230,14 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
                 <Palette size={16} className="shrink-0 text-sidebar-muted" />
                 <span>Templates</span>
               </Link>
+              <Link
+                to="/marketing/products"
+                className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary transition-colors"
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Package size={16} className="shrink-0 text-sidebar-muted" />
+                <span>Products</span>
+              </Link>
 
               {/* Operations Section */}
               {showOperationsSection && (
