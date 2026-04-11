@@ -688,19 +688,31 @@ async function stepWhatsappTemplates(ctx: StepContext): Promise<Record<string, u
 
   let waTemplates: Array<{
     name: string; template_name: string; body: string; category: string;
+    variables: string[]; cta_url?: string; cta_button_text?: string;
   }> = [];
 
   const { data } = await callLLMJson<typeof waTemplates>(
-    `Generate 4 WhatsApp message templates for a B2B SaaS product called "${product_name}" (${product_url}).
+    `Generate 4 WhatsApp message templates for a B2B SaaS product called "${product_name}".
 Types needed: 1 welcome/intro, 1 trial reminder, 1 feature highlight, 1 reactivation.
 
-Each template should have:
-- name: human-readable name like "${product_key}-wa-welcome"
-- template_name: Exotel-compatible template name (lowercase, underscores, e.g. "${templateBase}_welcome")
-- body: WhatsApp message body (max 1024 chars, can use {{1}}, {{2}} for variables)
-- category: "marketing" or "utility"
+CRITICAL META/WHATSAPP COMPLIANCE RULES — violations cause automatic rejection:
+1. Body must NOT contain any URLs — put the URL in "cta_url" instead (rendered as a button)
+2. Body must NOT ask users to "reply with KEYWORD" — this violates Meta policy
+3. Every {{1}}, {{2}} placeholder must be listed in order in "variables" (e.g. ["first_name", "days_left"])
+4. Keep body under 600 chars — shorter templates get approved faster
+5. No HTML, no markdown — plain text only
+6. "utility" category for transactional messages, "marketing" for promotional
 
-Return a JSON array of 4 template objects.`,
+Each template object must have:
+- name: like "${product_key}-wa-welcome"
+- template_name: lowercase + underscores only, e.g. "${templateBase}_welcome"
+- body: message text using {{1}}, {{2}} for personalisation (NO URLs, NO reply instructions)
+- category: "marketing" or "utility"
+- variables: ordered array of variable names matching the placeholders, e.g. ["first_name", "days_left"]
+- cta_url: "${product_url}" (the product URL — goes in the CTA button, not the body)
+- cta_button_text: a short CTA label like "Get Started", "View Dashboard", "Upgrade Now"
+
+Return a JSON array of exactly 4 template objects.`,
     { model: 'sonnet', max_tokens: 2048, temperature: 0.5 },
   );
   if (Array.isArray(data)) waTemplates = data;
@@ -712,6 +724,10 @@ Return a JSON array of 4 template objects.`,
       template_name: w.template_name,
       body: w.body,
       category: w.category || 'marketing',
+      variables: Array.isArray(w.variables) ? w.variables : [],
+      buttons: w.cta_url
+        ? [{ type: 'URL', text: w.cta_button_text || 'Learn More', url: w.cta_url }]
+        : [],
       approval_status: 'pending',
       is_active: true,
     }));

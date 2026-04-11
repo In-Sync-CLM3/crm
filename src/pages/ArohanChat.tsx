@@ -58,6 +58,8 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
                     <CheckCircle2 className="h-3 w-3 text-green-600" />
                     {action.type === "icp_update"
                       ? `ICP updated — ${(action.details as { product_key?: string }).product_key ?? ""} v${(action.details as { new_version?: number }).new_version ?? "?"}`
+                      : action.type === "regenerate_step"
+                      ? `Regenerating ${(action.details as { step_name?: string }).step_name?.replace(/_/g, " ") ?? "step"} — ${(action.details as { product_key?: string }).product_key ?? ""}`
                       : action.type}
                   </Badge>
                 ))}

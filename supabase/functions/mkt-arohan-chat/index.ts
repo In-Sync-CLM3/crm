@@ -19,8 +19,9 @@ interface ConversationMessage {
 }
 
 interface SuggestionPayload {
-  type: 'icp_update' | 'campaign_pause' | 'campaign_resume' | 'none';
+  type: 'icp_update' | 'campaign_pause' | 'campaign_resume' | 'regenerate_step' | 'none';
   product_key?: string;
+  step_name?: string;
   field?: string;
   value?: unknown;
   reason?: string;
@@ -115,7 +116,7 @@ async function loadContext(
   orgId: string,
   threadId: string,
 ) {
-  const [productsRes, icpsRes, campaignsRes, pendingRes, historyRes] = await Promise.all([
+  const [productsRes, icpsRes, campaignsRes, pendingRes, historyRes, waTemplatesRes] = await Promise.all([
     supabase
       .from('mkt_products')
       .select('product_key, product_name, active, onboarding_status')
@@ -149,6 +150,13 @@ async function loadContext(
       .eq('thread_id', threadId)
       .order('created_at', { ascending: true })
       .limit(20),
+
+    supabase
+      .from('mkt_whatsapp_templates')
+      .select('name, template_name, approval_status, submission_error')
+      .eq('org_id', orgId)
+      .order('created_at', { ascending: false })
+      .limit(20),
   ]);
 
   return {
@@ -157,6 +165,7 @@ async function loadContext(
     campaigns: campaignsRes.data || [],
     pendingSuggestions: pendingRes.data || [],
     threadHistory: (historyRes.data || []) as Array<{ role: string; message: string }>,
+    waTemplates: (waTemplatesRes.data || []) as Array<{ name: string; template_name: string; approval_status: string; submission_error: string | null }>,
   };
 }
 
@@ -169,19 +178,29 @@ async function classifySuggestion(message: string): Promise<SuggestionClassifica
 
 Message: "${message}"
 
-Is this message an actionable suggestion (ICP update, campaign pause/resume)?
+Is this message an actionable suggestion?
 
 Return JSON only:
 {
   "is_suggestion": true | false,
   "suggestion_payload": {
-    "type": "icp_update" | "campaign_pause" | "campaign_resume" | "none",
+    "type": "icp_update" | "campaign_pause" | "campaign_resume" | "regenerate_step" | "none",
     "product_key": "string or null",
+    "step_name": "whatsapp_templates | email_templates | call_scripts | icp_infer | campaign_create | source_leads | null",
     "field": "industries | company_sizes | designations | geographies | languages | pain_points | null",
     "value": ["array", "of", "values"] | null,
     "reason": "brief reason string or null"
   } | null
 }
+
+Type guide:
+- "icp_update": user wants to change ICP targeting (industries, designations, etc.)
+- "campaign_pause": user wants to pause a campaign
+- "campaign_resume": user wants to resume a campaign
+- "regenerate_step": user wants to regenerate/redo/recreate a step output (templates, ICP, scripts, leads, campaign)
+  → set step_name to the matching step: whatsapp_templates, email_templates, call_scripts, icp_infer, campaign_create, source_leads
+  → set product_key if mentioned
+- "none": informational question or general conversation
 
 If not a suggestion, set is_suggestion to false and suggestion_payload to null.`;
 
@@ -224,6 +243,12 @@ function buildSystemPrompt(
     ? context.pendingSuggestions.map((s) => `• "${s.message}"`).join('\n')
     : 'None.';
 
+  const waLines = context.waTemplates.length
+    ? context.waTemplates.map((t) =>
+        `• ${t.template_name} — ${t.approval_status}${t.submission_error ? ` (${t.submission_error})` : ''}`
+      ).join('\n')
+    : 'No WhatsApp templates yet.';
+
   return `You are Arohan — the autonomous revenue engine for In-Sync. You are a strategic AI advisor helping Amit (the founder/operator) understand performance, refine targeting strategy, and make data-driven decisions.
 
 ## Identity
@@ -248,8 +273,17 @@ ${icpLines}
 ## Active Campaigns
 ${campaignLines}
 
+## WhatsApp Templates
+${waLines}
+
 ## Pending Suggestions (not yet applied)
-${pendingLines}`;
+${pendingLines}
+
+## Actions you can take
+- Update an ICP field (industries, designations, company_sizes, geographies, pain_points)
+- Pause or resume a campaign
+- Regenerate a step: whatsapp_templates, email_templates, call_scripts, icp_infer, campaign_create, source_leads
+  → When Amit asks to redo/recreate/regenerate any of these, you will trigger it automatically.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +338,50 @@ async function applyICPSuggestion(
   } catch (err) {
     await log.error('apply-icp-suggestion', err instanceof Error ? err : new Error(String(err)));
     return { applied: false, new_version: null };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Regenerate Step Action
+// ---------------------------------------------------------------------------
+
+async function applyRegenerateStep(
+  orgId: string,
+  payload: SuggestionPayload,
+  log: ReturnType<typeof createEngineLogger>,
+): Promise<{ applied: boolean; step_name: string | null }> {
+  if (!payload.product_key || !payload.step_name) {
+    return { applied: false, step_name: null };
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+
+  try {
+    const res = await fetch(`${supabaseUrl}/functions/v1/mkt-product-manager`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${serviceKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        mode: 'reset_step',
+        org_id: orgId,
+        product_key: payload.product_key,
+        step_name: payload.step_name,
+      }),
+    });
+
+    if (res.ok) {
+      return { applied: true, step_name: payload.step_name };
+    }
+
+    const errText = await res.text();
+    await log.error('apply-regenerate-step', new Error(`reset_step failed: ${errText}`));
+    return { applied: false, step_name: null };
+  } catch (err) {
+    await log.error('apply-regenerate-step', err instanceof Error ? err : new Error(String(err)));
+    return { applied: false, step_name: null };
   }
 }
 
@@ -375,37 +453,35 @@ Deno.serve(async (req: Request) => {
     // Step 5: Apply ICP suggestion if detected
     const actionsTriggered: Array<{ type: string; details: Record<string, unknown> }> = [];
 
-    if (
-      classification.is_suggestion &&
-      classification.suggestion_payload?.type === 'icp_update'
-    ) {
-      const { applied, new_version } = await applyICPSuggestion(
-        org_id,
-        classification.suggestion_payload,
-        trimmedMessage,
-        log,
-      );
+    if (classification.is_suggestion && classification.suggestion_payload) {
+      const sp = classification.suggestion_payload;
 
-      if (applied) {
-        actionsTriggered.push({
-          type: 'icp_update',
-          details: {
-            product_key: classification.suggestion_payload.product_key,
-            field: classification.suggestion_payload.field,
-            new_version,
-          },
-        });
-
-        // Mark the Amit message as suggestion_applied
-        if (amitRow?.id) {
-          await supabase
-            .from('mkt_arohan_conversations')
-            .update({
-              suggestion_applied: true,
-              suggestion_applied_at: new Date().toISOString(),
-            })
-            .eq('id', amitRow.id);
+      if (sp.type === 'icp_update') {
+        const { applied, new_version } = await applyICPSuggestion(org_id, sp, trimmedMessage, log);
+        if (applied) {
+          actionsTriggered.push({
+            type: 'icp_update',
+            details: { product_key: sp.product_key, field: sp.field, new_version },
+          });
         }
+      } else if (sp.type === 'regenerate_step') {
+        const { applied, step_name } = await applyRegenerateStep(org_id, sp, log);
+        if (applied) {
+          actionsTriggered.push({
+            type: 'regenerate_step',
+            details: { product_key: sp.product_key, step_name },
+          });
+        }
+      }
+
+      if (actionsTriggered.length > 0 && amitRow?.id) {
+        await supabase
+          .from('mkt_arohan_conversations')
+          .update({
+            suggestion_applied: true,
+            suggestion_applied_at: new Date().toISOString(),
+          })
+          .eq('id', amitRow.id);
       }
     }
 
