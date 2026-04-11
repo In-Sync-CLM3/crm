@@ -468,6 +468,7 @@ export default function ProductManagement() {
   const [formData, setFormData] = useState({
     product_name: "",
     product_url: "",
+    git_repo_url: "",
     supabase_url: "",
     supabase_service_role_key: "",
   });
@@ -537,6 +538,7 @@ export default function ProductManagement() {
       setFormData({
         product_name: "",
         product_url: "",
+        git_repo_url: "",
         supabase_url: "",
         supabase_service_role_key: "",
       });
@@ -589,7 +591,17 @@ export default function ProductManagement() {
                   />
                 </div>
                 <div>
-                  <Label className="text-xs">Supabase URL</Label>
+                  <Label className="text-xs">GitHub Repo URL <span className="text-muted-foreground">(optional — Arohan reads README for ICP)</span></Label>
+                  <Input
+                    placeholder="https://github.com/owner/repo"
+                    value={formData.git_repo_url}
+                    onChange={(e) =>
+                      setFormData({ ...formData, git_repo_url: e.target.value })
+                    }
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Supabase URL <span className="text-muted-foreground">(optional)</span></Label>
                   <Input
                     placeholder="https://xxx.supabase.co"
                     value={formData.supabase_url}

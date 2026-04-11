@@ -17,6 +17,7 @@ interface OnboardBody {
   org_id: string;
   product_name: string;
   product_url: string;
+  git_repo_url?: string;
   supabase_url: string;
   supabase_service_role_key: string;
 }
@@ -72,6 +73,7 @@ interface StepContext {
   org_id: string;
   product_key: string;
   product_url: string;
+  git_repo_url: string;
   supabase_url: string;
   supabase_service_role_key: string;
 }
@@ -102,6 +104,63 @@ function createProductClient(url: string, key: string): SupabaseClient {
   return createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+/**
+ * Fetch a URL and return plain-text content (HTML stripped).
+ * Strips scripts/styles, collapses whitespace, caps at 6000 chars.
+ * Returns empty string on any error — callers treat it as optional context.
+ */
+async function crawlPageContent(url: string): Promise<string> {
+  if (!url) return '';
+  try {
+    const resp = await fetch(url, {
+      signal: AbortSignal.timeout(10_000),
+      headers: { 'User-Agent': 'Arohan-Revenue-Engine/1.0 (product-onboarding)' },
+    });
+    if (!resp.ok) return '';
+    const html = await resp.text();
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 6000);
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Fetch README.md (and optionally package.json) from a GitHub repo URL.
+ * Accepts https://github.com/owner/repo or https://github.com/owner/repo.git
+ * Returns empty string if not accessible.
+ */
+async function crawlGitRepoContent(repoUrl: string): Promise<string> {
+  if (!repoUrl) return '';
+  try {
+    const match = repoUrl.match(/github\.com\/([^/]+)\/([^/.\s?#]+)/);
+    if (!match) return '';
+    const [, owner, repo] = match;
+
+    const tryFetch = async (branch: string): Promise<string> => {
+      const base = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}`;
+      const readmeResp = await fetch(`${base}/README.md`, { signal: AbortSignal.timeout(8_000) });
+      if (!readmeResp.ok) return '';
+      return (await readmeResp.text()).slice(0, 5000);
+    };
+
+    return (await tryFetch('main')) || (await tryFetch('master'));
+  } catch {
+    return '';
+  }
 }
 
 /** Read the service role key for a product from env vars */
@@ -296,7 +355,7 @@ async function markStepFailed(
 // ---------------------------------------------------------------------------
 
 async function stepRegister(ctx: StepContext): Promise<Record<string, unknown>> {
-  const { supabase, org_id, product_key, product_url, supabase_url } = ctx;
+  const { supabase, org_id, product_key, product_url, git_repo_url, supabase_url } = ctx;
   const initials = deriveInitials(product_key.replace(/-/g, ' '));
   const secretUrlName = `${initials}_SUPABASE_URL`;
   const secretKeyName = `${initials}_SUPABASE_SERVICE_KEY`;
@@ -315,6 +374,7 @@ async function stepRegister(ctx: StepContext): Promise<Record<string, unknown>> 
         product_key,
         product_name,
         product_url,
+        git_repo_url: git_repo_url || null,
         supabase_url,
         supabase_secret_name: secretKeyName,
         onboarding_status: 'in_progress',
@@ -376,7 +436,7 @@ async function stepSchemaSniff(ctx: StepContext): Promise<Record<string, unknown
 }
 
 async function stepIcpInfer(ctx: StepContext): Promise<Record<string, unknown>> {
-  const { supabase, org_id, product_key, product_url, supabase_url, supabase_service_role_key } = ctx;
+  const { supabase, org_id, product_key, product_url, git_repo_url, supabase_url, supabase_service_role_key } = ctx;
 
   const { data: product } = await supabase
     .from('mkt_products')
@@ -389,77 +449,105 @@ async function stepIcpInfer(ctx: StepContext): Promise<Record<string, unknown>> 
   const schemaMap = (product?.schema_map || {}) as Record<string, string>;
   const trialDays = (product?.trial_days as number) ?? 14;
 
-  let icpHints: Record<string, unknown> = {};
+  // ── Step 1: Crawl landing page + git repo (primary signal) ───────────────
+  const [pageText, repoText] = await Promise.all([
+    crawlPageContent(product_url),
+    crawlGitRepoContent(git_repo_url),
+  ]);
 
-  // Try to infer from actual product DB data if connected
+  const crawledContext = [
+    pageText ? `=== Landing Page (${product_url}) ===\n${pageText}` : '',
+    repoText ? `=== Repository README ===\n${repoText}` : '',
+  ].filter(Boolean).join('\n\n');
+
+  // ── Step 2: Optionally enrich with real DB user data ─────────────────────
+  let dbEnrichment = '';
   if (schemaMap.registrations_table && supabase_url && supabase_service_role_key) {
-    const productClient = createProductClient(supabase_url, supabase_service_role_key);
-    const { data: sampleUsers } = await productClient
-      .from(schemaMap.registrations_table)
-      .select('*')
-      .limit(50);
+    try {
+      const productClient = createProductClient(supabase_url, supabase_service_role_key);
+      const { data: sampleUsers } = await productClient
+        .from(schemaMap.registrations_table)
+        .select('*')
+        .limit(50);
 
-    if (sampleUsers && sampleUsers.length > 0) {
-      const fields = Object.keys(sampleUsers[0]);
-      const industryField = fields.find((f) => /industry|sector|vertical/i.test(f));
-      const sizeField = fields.find((f) => /size|employees|company_size/i.test(f));
-      const designationField = fields.find((f) => /designation|role|title|position/i.test(f));
+      if (sampleUsers && sampleUsers.length > 0) {
+        const fields = Object.keys(sampleUsers[0]);
+        const industryField = fields.find((f) => /industry|sector|vertical/i.test(f));
+        const sizeField = fields.find((f) => /size|employees|company_size/i.test(f));
+        const designationField = fields.find((f) => /designation|role|title|position/i.test(f));
 
-      if (industryField) {
-        const freq: Record<string, number> = {};
-        sampleUsers.map((u: Record<string, unknown>) => u[industryField]).filter(Boolean)
-          .forEach((i: unknown) => { const k = String(i); freq[k] = (freq[k] || 0) + 1; });
-        icpHints.industries = freq;
+        const dbSummary: string[] = [`DB sample: ${sampleUsers.length} real users`];
+        if (industryField) {
+          const freq: Record<string, number> = {};
+          sampleUsers.map((u: Record<string, unknown>) => u[industryField]).filter(Boolean)
+            .forEach((i: unknown) => { const k = String(i); freq[k] = (freq[k] || 0) + 1; });
+          dbSummary.push(`Industries: ${Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,v])=>`${k}(${v})`).join(', ')}`);
+        }
+        if (sizeField) {
+          const sizes = [...new Set(sampleUsers.map((u: Record<string, unknown>) => u[sizeField]).filter(Boolean).map(String))].slice(0, 5);
+          dbSummary.push(`Company sizes: ${sizes.join(', ')}`);
+        }
+        if (designationField) {
+          const freq: Record<string, number> = {};
+          sampleUsers.map((u: Record<string, unknown>) => u[designationField]).filter(Boolean)
+            .forEach((t: unknown) => { const k = String(t); freq[k] = (freq[k] || 0) + 1; });
+          dbSummary.push(`Designations: ${Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,v])=>`${k}(${v})`).join(', ')}`);
+        }
+        dbEnrichment = dbSummary.join('\n');
       }
-      if (sizeField) {
-        icpHints.company_sizes = sampleUsers.map((u: Record<string, unknown>) => u[sizeField]).filter(Boolean);
-      }
-      if (designationField) {
-        const freq: Record<string, number> = {};
-        sampleUsers.map((u: Record<string, unknown>) => u[designationField]).filter(Boolean)
-          .forEach((t: unknown) => { const k = String(t); freq[k] = (freq[k] || 0) + 1; });
-        icpHints.designations = freq;
-      }
-      icpHints.sample_size = sampleUsers.length;
+    } catch (e) {
+      console.warn('[icp_infer] DB enrichment failed (non-fatal):', e instanceof Error ? e.message : String(e));
     }
   }
 
-  // If no DB data available, use a fast Haiku call to infer a starting ICP
-  if (Object.keys(icpHints).length === 0) {
-    try {
-      const { data: llmIcp } = await callLLMJson<{
-        industries: string[];
-        designations: string[];
-        company_sizes: string[];
-        geographies: string[];
-        pain_points: string[];
-      }>(
-        `You are inferring an Ideal Customer Profile (ICP) for a B2B SaaS product.
-Product name: "${product_name}"
-Product URL: ${product_url || 'not provided'}
+  // ── Step 3: Build ICP via Claude ──────────────────────────────────────────
+  let icpHints: Record<string, unknown> = {};
 
-Based on the product name and URL, infer the most likely B2B ICP.
+  const contextSection = [
+    crawledContext || `Product URL: ${product_url || 'not provided'}`,
+    dbEnrichment ? `=== Real User Data ===\n${dbEnrichment}` : '',
+  ].filter(Boolean).join('\n\n');
+
+  try {
+    const { data: llmIcp } = await callLLMJson<{
+      industries: string[];
+      designations: string[];
+      company_sizes: string[];
+      geographies: string[];
+      pain_points: string[];
+      value_proposition: string;
+    }>(
+      `You are building an Ideal Customer Profile (ICP) for a B2B SaaS product.
+
+Product name: "${product_name}"
+
+${contextSection}
+
+Using the product content above as your PRIMARY signal (what the product says about itself and who it targets), infer the most accurate B2B ICP.
+${dbEnrichment ? 'The real user data above should CONFIRM or REFINE the ICP — not replace what the product copy says.' : ''}
+
 Return JSON only:
 {
-  "industries": ["up to 5 likely industries"],
-  "designations": ["up to 5 likely buyer titles"],
-  "company_sizes": ["SMB", "Mid-Market"],
-  "geographies": ["India"],
-  "pain_points": ["up to 3 key pain points this product likely solves"]
+  "industries": ["up to 5 most likely target industries"],
+  "designations": ["up to 5 buyer/user job titles"],
+  "company_sizes": ["e.g. SMB", "Mid-Market"],
+  "geographies": ["primary target geographies"],
+  "pain_points": ["3-5 key pain points this product solves"],
+  "value_proposition": "one sentence summary of the core value"
 }`,
-        { model: 'haiku', max_tokens: 400, temperature: 0.3 },
-      );
-      icpHints = {
-        industries: llmIcp.industries?.reduce((f: Record<string, number>, v: string) => { f[v] = 1; return f; }, {}),
-        designations: llmIcp.designations?.reduce((f: Record<string, number>, v: string) => { f[v] = 1; return f; }, {}),
-        company_sizes: llmIcp.company_sizes ?? [],
-        pain_points: llmIcp.pain_points ?? [],
-        geographies: llmIcp.geographies ?? [],
-        source: 'llm_inferred',
-      };
-    } catch (err) {
-      console.warn('[icp_infer] LLM fallback failed:', err instanceof Error ? err.message : String(err));
-    }
+      { model: 'haiku', max_tokens: 600, temperature: 0.3 },
+    );
+    icpHints = {
+      industries: llmIcp.industries?.reduce((f: Record<string, number>, v: string) => { f[v] = 1; return f; }, {}),
+      designations: llmIcp.designations?.reduce((f: Record<string, number>, v: string) => { f[v] = 1; return f; }, {}),
+      company_sizes: llmIcp.company_sizes ?? [],
+      pain_points: llmIcp.pain_points ?? [],
+      geographies: llmIcp.geographies ?? [],
+      value_proposition: llmIcp.value_proposition ?? '',
+      source: crawledContext ? 'page_crawled' : 'llm_name_only',
+    };
+  } catch (err) {
+    console.warn('[icp_infer] LLM inference failed:', err instanceof Error ? err.message : String(err));
   }
 
   await supabase
@@ -473,7 +561,14 @@ Return JSON only:
     (msg) => console.log(`[icp_infer] ${msg}`),
   );
 
-  return { icp_persisted: persisted, sample_size: icpHints.sample_size ?? 0, source: icpHints.source ?? 'db_sampled' };
+  const source = String(icpHints.source ?? 'unknown');
+  return {
+    icp_persisted: persisted,
+    source,
+    page_crawled: !!pageText,
+    repo_crawled: !!repoText,
+    db_enriched: !!dbEnrichment,
+  };
 }
 
 async function stepEmailTemplates(ctx: StepContext): Promise<Record<string, unknown>> {
@@ -989,6 +1084,7 @@ async function runSteps(
   org_id: string,
   product_key: string,
   product_url: string,
+  git_repo_url: string,
   supabase_url: string,
   supabase_service_role_key: string,
 ): Promise<StepResult[]> {
@@ -1008,6 +1104,7 @@ async function runSteps(
     org_id,
     product_key,
     product_url,
+    git_repo_url,
     supabase_url,
     supabase_service_role_key,
   };
@@ -1098,7 +1195,7 @@ async function handleOnboard(
   body: OnboardBody,
   logger: ReturnType<typeof createEngineLogger>,
 ): Promise<Record<string, unknown>> {
-  const { org_id, product_name, product_url, supabase_url, supabase_service_role_key } = body;
+  const { org_id, product_name, product_url, git_repo_url = '', supabase_url, supabase_service_role_key } = body;
   const product_key = deriveProductKey(product_name);
 
   // Initialize all step rows (idempotent)
@@ -1106,7 +1203,7 @@ async function handleOnboard(
 
   // Run the register step synchronously so the product row exists before we return.
   // The frontend can then show the product card immediately.
-  const ctx: StepContext = { supabase, logger, org_id, product_key, product_url, supabase_url, supabase_service_role_key };
+  const ctx: StepContext = { supabase, logger, org_id, product_key, product_url, git_repo_url, supabase_url, supabase_service_role_key };
   const { data: registerRow } = await supabase
     .from('mkt_onboarding_steps')
     .select('id, attempts')
@@ -1130,7 +1227,7 @@ async function handleOnboard(
 
   // Fire remaining steps in the background. EdgeRuntime.waitUntil keeps the
   // function alive after the response is sent so the steps can complete.
-  const bgRun = runSteps(supabase, logger, org_id, product_key, product_url, supabase_url, supabase_service_role_key)
+  const bgRun = runSteps(supabase, logger, org_id, product_key, product_url, git_repo_url, supabase_url, supabase_service_role_key)
     .catch((e) => logger.error('bg-steps-failed', e, { product_key }));
 
   // deno-lint-ignore no-explicit-any
@@ -1152,7 +1249,7 @@ async function handleResume(
   // Load the product to retrieve connection details stored during onboarding
   const { data: product, error: prodErr } = await supabase
     .from('mkt_products')
-    .select('product_url, supabase_url, supabase_secret_name')
+    .select('product_url, git_repo_url, supabase_url, supabase_secret_name')
     .eq('org_id', org_id)
     .eq('product_key', product_key)
     .single();
@@ -1170,6 +1267,7 @@ async function handleResume(
     supabase, logger,
     org_id, product_key,
     product.product_url ?? '',
+    product.git_repo_url ?? '',
     product.supabase_url ?? '',
     serviceRoleKey,
   );
