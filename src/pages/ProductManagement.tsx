@@ -381,11 +381,13 @@ export default function ProductManagement() {
   });
 
   const { data: products, isLoading } = useQuery({
-    queryKey: ["mkt-products"],
+    queryKey: ["mkt-products", effectiveOrgId],
     queryFn: async () => {
+      if (!effectiveOrgId) return [];
       const { data, error } = await supabase
         .from("mkt_products")
         .select("*")
+        .eq("org_id", effectiveOrgId)
         .order("created_at", { ascending: false });
       if (error) throw error;
       return (data || []) as Product[];
