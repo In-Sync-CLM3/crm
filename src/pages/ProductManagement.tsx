@@ -25,7 +25,6 @@ import {
   CheckCircle2,
   Clock,
   XCircle,
-  ExternalLink,
   Target,
 } from "lucide-react";
 
@@ -258,16 +257,6 @@ export default function ProductManagement() {
                     <span>Growth:</span>
                     <span>{formatPaise(p.price_growth_monthly_paise)}/mo</span>
                   </div>
-                  {p.supabase_url && (
-                    <a
-                      href={p.supabase_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1 text-blue-600 hover:underline"
-                    >
-                      <ExternalLink className="h-3 w-3" /> Supabase Project
-                    </a>
-                  )}
                   {p.last_synced_at && (
                     <p className="text-muted-foreground">
                       Last sync: {new Date(p.last_synced_at).toLocaleString()}
