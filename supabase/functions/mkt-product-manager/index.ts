@@ -702,7 +702,7 @@ async function stepCampaignCreate(ctx: StepContext): Promise<Record<string, unkn
     .single();
 
   if (existingCampaign) {
-    return { skipped: true, reason: 'Campaign already exists', campaign_id: existingCampaign.id };
+    return { campaign_id: existingCampaign.id, already_existed: true };
   }
 
   const { data: product } = await supabase
@@ -761,10 +761,10 @@ async function stepSourceLeads(ctx: StepContext): Promise<Record<string, unknown
   startOfMonth.setHours(0, 0, 0, 0);
 
   const { count: contactsThisMonth } = await supabase
-    .from('mkt_contacts')
+    .from('contacts')
     .select('*', { count: 'exact', head: true })
     .eq('org_id', org_id)
-    .eq('product_key', product_key)
+    .eq('mkt_product_key', product_key)
     .gte('created_at', startOfMonth.toISOString());
 
   if ((contactsThisMonth ?? 0) >= 3000) {
@@ -1056,13 +1056,20 @@ async function runSteps(
   // Reload all steps to return final state
   const { data: finalSteps } = await supabase
     .from('mkt_onboarding_steps')
-    .select('step_name, status, completed_at, error')
+    .select('step_name, status, completed_at, error, scheduled_for')
     .eq('org_id', org_id)
     .eq('product_key', product_key)
     .order('step_order', { ascending: true });
 
-  // Update product onboarding_status based on step outcomes
-  const allDone = (finalSteps ?? []).every((s) => s.status === 'complete' || s.status === 'skipped');
+  // Update product onboarding_status based on step outcomes.
+  // A deferred-pending step (scheduled_for > now) counts as "done for now" —
+  // it will run automatically when its scheduled_for time arrives.
+  const runNow = new Date();
+  const allDone = (finalSteps ?? []).every((s) =>
+    s.status === 'complete' ||
+    s.status === 'skipped' ||
+    (s.status === 'pending' && s.scheduled_for && new Date(s.scheduled_for) > runNow),
+  );
   const anyFailed = (finalSteps ?? []).some((s) => s.status === 'failed');
   if (allDone || anyFailed) {
     await supabase
@@ -1073,7 +1080,7 @@ async function runSteps(
   }
 
   return (finalSteps ?? []).map((s: {
-    step_name: string; status: string; completed_at: string | null; error: string | null;
+    step_name: string; status: string; completed_at: string | null; error: string | null; scheduled_for: string | null;
   }) => ({
     step_name: s.step_name,
     status: s.status,
