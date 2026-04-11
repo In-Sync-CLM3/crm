@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import { useOrgContext } from "@/hooks/useOrgContext";
 import DashboardLayout from "@/components/Layout/DashboardLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -47,6 +48,7 @@ export default function ProductManagement() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { effectiveOrgId } = useOrgContext();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [formData, setFormData] = useState({
     product_name: "",
@@ -85,12 +87,20 @@ export default function ProductManagement() {
 
   const onboardMutation = useMutation({
     mutationFn: async (data: typeof formData) => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error("Not authenticated");
+      if (!effectiveOrgId) throw new Error("No org context");
+
       const res = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/mkt-product-manager`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mode: "onboard", ...data }),
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ mode: "onboard", org_id: effectiveOrgId, ...data }),
         }
       );
       if (!res.ok) throw new Error(await res.text());
