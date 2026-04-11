@@ -85,7 +85,7 @@ export function MarketingOverview({ days }: MarketingOverviewProps) {
     active_enrollments: data?.active_enrollments ?? 0,
     conversion_rate: data?.conversion_rate ?? 0,
     funnel: data?.funnel ?? { sourced: 0, enriched: 0, scored: 0, enrolled: 0, converted: 0 },
-    channel_performance: data?.channel_performance ?? [],
+    channel_performance: Array.isArray(data?.channel_performance) ? data.channel_performance : [],
   };
 
   const statCards = [

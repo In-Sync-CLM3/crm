@@ -71,10 +71,10 @@ export function LeadFunnel({ days }: LeadFunnelProps) {
 
   if (isLoading) return <LoadingState message="Loading lead funnel..." />;
 
-  const funnelData = data?.funnel ?? [];
-  const byStatus = data?.by_status ?? [];
-  const bySource = data?.by_source ?? [];
-  const scoreDist = data?.score_distribution ?? [];
+  const funnelData = Array.isArray(data?.funnel) ? data.funnel : [];
+  const byStatus = Array.isArray(data?.by_status) ? data.by_status : [];
+  const bySource = Array.isArray(data?.by_source) ? data.by_source : [];
+  const scoreDist = Array.isArray(data?.score_distribution) ? data.score_distribution : [];
   const totalLeads = data?.total_leads ?? 0;
   const avgScore = data?.avg_score ?? 0;
   const conversionRate = data?.conversion_rate ?? 0;
