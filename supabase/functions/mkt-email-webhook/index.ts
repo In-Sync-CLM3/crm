@@ -236,24 +236,45 @@ async function handleResendWebhook(req: Request): Promise<Response> {
         updates.status = 'delivered';
         updates.delivered_at = new Date().toISOString();
         break;
+
       case 'email.opened':
         updates.opened_at = new Date().toISOString();
         await updateEngagementScore(supabase, action.id, 'email_open', 3);
         break;
+
       case 'email.clicked':
         updates.clicked_at = new Date().toISOString();
         await updateEngagementScore(supabase, action.id, 'email_click', 5);
         break;
-      case 'email.bounced':
+
+      case 'email.delivery_delayed':
+        // Temporary delay — do not mark as failed; Resend will retry
+        updates.metadata = { delivery_delayed_at: new Date().toISOString() };
+        break;
+
+      case 'email.bounced': {
+        const bounceType = (data.bounce_type as string || '').toLowerCase();
+        const isHard = bounceType === 'hard' || bounceType === '' || bounceType === 'unknown';
         updates.status = 'bounced';
         updates.failed_at = new Date().toISOString();
-        updates.failure_reason = `Bounced: ${data.bounce_type || 'unknown'}`;
+        updates.failure_reason = `Bounced (${bounceType || 'unknown'})`;
+
+        if (isHard) {
+          await suppressContact(supabase, action, 'hard_bounce', logger);
+        } else {
+          // Soft bounce — increment counter; escalate at threshold
+          await handleSoftBounce(supabase, action, logger);
+        }
         break;
+      }
+
       case 'email.complained':
         updates.status = 'bounced';
         updates.complained_at = new Date().toISOString();
         updates.failure_reason = 'Spam complaint';
+        await suppressContact(supabase, action, 'spam_complaint', logger);
         break;
+
       default:
         break;
     }
@@ -412,6 +433,136 @@ async function updateABTestMetrics(
     }
   } catch (error) {
     console.error('[mkt-email-webhook] A/B update failed:', error);
+  }
+}
+
+const SOFT_BOUNCE_HARD_THRESHOLD = 3;
+
+/**
+ * Permanently suppress a contact from email sending.
+ * Reason: 'hard_bounce' | 'spam_complaint'
+ * - Marks contact email_bounce_type = 'hard'
+ * - Upserts into mkt_unsubscribes (channel = 'email')
+ * - Cancels all active enrollments
+ */
+async function suppressContact(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  action: { id: string; enrollment_id: string; org_id: string },
+  reason: string,
+  logger: ReturnType<typeof createEngineLogger>
+): Promise<void> {
+  try {
+    // Get lead_id from enrollment
+    const { data: enrollment } = await supabase
+      .from('mkt_sequence_enrollments')
+      .select('lead_id')
+      .eq('id', action.enrollment_id)
+      .single();
+
+    if (!enrollment?.lead_id) return;
+
+    const leadId = enrollment.lead_id;
+
+    // Get contact email
+    const { data: contact } = await supabase
+      .from('contacts')
+      .select('email, org_id')
+      .eq('id', leadId)
+      .single();
+
+    // Mark contact as hard-bounced
+    await supabase
+      .from('contacts')
+      .update({
+        email_bounce_type: 'hard',
+        email_bounced_at: new Date().toISOString(),
+      })
+      .eq('id', leadId);
+
+    // Add to suppression list (mkt_unsubscribes)
+    await supabase
+      .from('mkt_unsubscribes')
+      .upsert(
+        {
+          org_id: action.org_id,
+          lead_id: leadId,
+          email: contact?.email || null,
+          channel: 'email',
+          reason,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'org_id,email,channel' }
+      );
+
+    // Cancel all active enrollments for this contact
+    const { count } = await supabase
+      .from('mkt_sequence_enrollments')
+      .update({
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+        cancel_reason: reason === 'spam_complaint' ? 'Spam complaint' : 'Hard bounce — email undeliverable',
+      })
+      .eq('lead_id', leadId)
+      .eq('status', 'active')
+      .select('id', { count: 'exact', head: true });
+
+    await logger.info('contact-suppressed', {
+      lead_id: leadId,
+      reason,
+      enrollments_cancelled: count || 0,
+    });
+  } catch (err) {
+    console.error('[mkt-email-webhook] suppressContact failed:', err);
+  }
+}
+
+/**
+ * Handle a soft bounce: increment counter, escalate to hard if threshold reached.
+ */
+async function handleSoftBounce(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  action: { id: string; enrollment_id: string; org_id: string },
+  logger: ReturnType<typeof createEngineLogger>
+): Promise<void> {
+  try {
+    const { data: enrollment } = await supabase
+      .from('mkt_sequence_enrollments')
+      .select('lead_id')
+      .eq('id', action.enrollment_id)
+      .single();
+
+    if (!enrollment?.lead_id) return;
+
+    // Increment soft bounce counter
+    const { data: contact } = await supabase
+      .from('contacts')
+      .select('email_soft_bounce_count, email_bounce_type')
+      .eq('id', enrollment.lead_id)
+      .single();
+
+    // Already hard-suppressed — nothing more to do
+    if (contact?.email_bounce_type === 'hard') return;
+
+    const newCount = (contact?.email_soft_bounce_count || 0) + 1;
+
+    await supabase
+      .from('contacts')
+      .update({
+        email_soft_bounce_count: newCount,
+        email_bounce_type: newCount >= SOFT_BOUNCE_HARD_THRESHOLD ? 'hard' : 'soft',
+        email_bounced_at: new Date().toISOString(),
+      })
+      .eq('id', enrollment.lead_id);
+
+    if (newCount >= SOFT_BOUNCE_HARD_THRESHOLD) {
+      // Escalate to hard bounce treatment
+      await suppressContact(supabase, action, 'soft_bounce_escalated', logger);
+      await logger.info('soft-bounce-escalated', { lead_id: enrollment.lead_id, count: newCount });
+    } else {
+      await logger.info('soft-bounce-recorded', { lead_id: enrollment.lead_id, count: newCount });
+    }
+  } catch (err) {
+    console.error('[mkt-email-webhook] handleSoftBounce failed:', err);
   }
 }
 

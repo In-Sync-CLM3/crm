@@ -44,6 +44,19 @@ Deno.serve(async (req) => {
 
     const orgId = lead.org_id;
 
+    // Pre-flight: check if this contact is hard-suppressed
+    if ((lead as Record<string, unknown>).email_bounce_type === 'hard') {
+      // Mark action as skipped (not failed) — don't retry
+      await supabase
+        .from('mkt_sequence_actions')
+        .update({ status: 'skipped', failure_reason: 'Email suppressed (hard bounce or spam complaint)' })
+        .eq('id', action_id);
+      return new Response(
+        JSON.stringify({ success: true, action_id, skipped: 'suppressed' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Check warmup cap
     const { data: configRows } = await supabase
       .from('mkt_engine_config')
@@ -194,6 +207,28 @@ Deno.serve(async (req) => {
 
     if (!sendResponse.ok) {
       const errText = await sendResponse.text();
+      // Resend 422 = address is in suppression list
+      if (sendResponse.status === 422 && errText.toLowerCase().includes('suppression')) {
+        // Treat as hard bounce — suppress the contact
+        await supabase.from('contacts').update({
+          email_bounce_type: 'hard',
+          email_bounced_at: new Date().toISOString(),
+        }).eq('id', lead_id);
+        await supabase.from('mkt_unsubscribes').upsert(
+          { org_id: orgId, lead_id, email: lead.email, channel: 'email', reason: 'resend_suppressed' },
+          { onConflict: 'org_id,email,channel' }
+        );
+        await supabase.from('mkt_sequence_actions')
+          .update({ status: 'skipped', failure_reason: 'Resend suppression list' })
+          .eq('id', action_id);
+        await supabase.from('mkt_sequence_enrollments')
+          .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), cancel_reason: 'Resend suppressed' })
+          .eq('id', enrollment_id).eq('status', 'active');
+        return new Response(
+          JSON.stringify({ success: true, action_id, skipped: 'resend_suppressed' }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
       throw new Error(`Resend API failed: ${sendResponse.status} ${errText}`);
     }
 
