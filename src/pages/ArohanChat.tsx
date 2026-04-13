@@ -60,6 +60,12 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
                       ? `ICP updated — ${(action.details as { product_key?: string }).product_key ?? ""} v${(action.details as { new_version?: number }).new_version ?? "?"}`
                       : action.type === "regenerate_step"
                       ? `Regenerating ${(action.details as { step_name?: string }).step_name?.replace(/_/g, " ") ?? "step"} — ${(action.details as { product_key?: string }).product_key ?? ""}`
+                      : action.type === "campaign_launch"
+                      ? `Campaign launched — ${(action.details as { product_key?: string }).product_key ?? ""} · ${(action.details as { enrolled?: number }).enrolled ?? 0} leads enrolled`
+                      : action.type === "campaign_pause"
+                      ? `Campaign paused — ${(action.details as { product_key?: string }).product_key ?? ""} · ${(action.details as { paused?: number }).paused ?? 0} enrollments halted`
+                      : action.type === "campaign_resume"
+                      ? `Campaign resumed — ${(action.details as { product_key?: string }).product_key ?? ""} · ${(action.details as { resumed?: number }).resumed ?? 0} enrollments restarted`
                       : action.type}
                   </Badge>
                 ))}
