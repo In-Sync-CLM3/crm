@@ -139,7 +139,7 @@ async function handleUnsubscribe(url: URL): Promise<Response> {
 
   // Get lead email
   const { data: lead } = await supabase
-    .from('mkt_leads')
+    .from('contacts')
     .select('email')
     .eq('id', leadId)
     .single();
@@ -251,6 +251,7 @@ async function handleResendWebhook(req: Request): Promise<Response> {
         break;
       case 'email.complained':
         updates.status = 'bounced';
+        updates.complained_at = new Date().toISOString();
         updates.failure_reason = 'Spam complaint';
         break;
       default:

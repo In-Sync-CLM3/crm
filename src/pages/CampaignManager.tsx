@@ -49,12 +49,19 @@ import {
   MessageSquare,
   Phone,
   Send,
+  Clock,
+  TrendingUp,
+  AlertTriangle,
+  CheckCircle2,
+  MousePointerClick,
+  Reply,
+  Users,
 } from "lucide-react";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import { useNotification } from "@/hooks/useNotification";
 import { LoadingState } from "@/components/common/LoadingState";
 import { EmptyState } from "@/components/common/EmptyState";
-import { format } from "date-fns";
+import { format, formatDistanceToNow, isPast } from "date-fns";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -94,6 +101,40 @@ interface CampaignStep {
 interface TemplateOption {
   id: string;
   name: string;
+}
+
+interface CampaignAnalytics {
+  enrolled: number;
+  active_enrollments: number;
+  completed_enrollments: number;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  replied: number;
+  failed: number;
+  bounced: number;
+  complained: number;
+  next_fire_at: string | null;
+  last_sent_at: string | null;
+}
+
+interface AllCampaignAnalytics {
+  campaign_id: string;
+  campaign_name: string;
+  campaign_status: string;
+  product_key: string | null;
+  enrolled: number;
+  active_enrollments: number;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  replied: number;
+  failed: number;
+  complained: number;
+  next_fire_at: string | null;
+  last_sent_at: string | null;
 }
 
 type CampaignStatus = "draft" | "active" | "paused" | "completed" | "archived";
@@ -272,6 +313,35 @@ export default function CampaignManager() {
       return (data || []) as CampaignStep[];
     },
     enabled: !!selectedCampaign,
+  });
+
+  // Campaign analytics
+  const { data: campaignAnalytics, isLoading: analyticsLoading } = useQuery({
+    queryKey: ["campaign_analytics", selectedCampaign?.id],
+    queryFn: async () => {
+      if (!selectedCampaign) return null;
+      const { data, error } = await supabase
+        .rpc("get_campaign_analytics", { p_campaign_id: selectedCampaign.id })
+        .single();
+      if (error) throw error;
+      return data as CampaignAnalytics | null;
+    },
+    enabled: !!selectedCampaign,
+    refetchInterval: 60_000,
+  });
+
+  // All-campaign analytics for list view
+  const { data: allAnalytics = [] } = useQuery({
+    queryKey: ["all_campaigns_analytics", effectiveOrgId],
+    queryFn: async () => {
+      if (!effectiveOrgId) return [];
+      const { data, error } = await supabase
+        .rpc("get_all_campaigns_analytics", { p_org_id: effectiveOrgId });
+      if (error) throw error;
+      return (data || []) as AllCampaignAnalytics[];
+    },
+    enabled: !!effectiveOrgId,
+    refetchInterval: 120_000,
   });
 
   // Fetch templates for the current step channel
@@ -559,8 +629,122 @@ export default function CampaignManager() {
             </TooltipProvider>
           </div>
 
-          {/* Campaign summary cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {/* Analytics section */}
+          {analyticsLoading ? (
+            <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <Card key={i} className="p-3 animate-pulse">
+                  <div className="h-3 bg-muted rounded w-3/4 mb-2" />
+                  <div className="h-5 bg-muted rounded w-1/2" />
+                </Card>
+              ))}
+            </div>
+          ) : campaignAnalytics ? (
+            <div className="space-y-3">
+              {/* Enrollment + timing row */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                <Card className="p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                    <p className="text-xs text-muted-foreground">Enrolled</p>
+                  </div>
+                  <p className="text-lg font-bold">{(campaignAnalytics.enrolled ?? 0).toLocaleString("en-IN")}</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    {(campaignAnalytics.active_enrollments ?? 0).toLocaleString("en-IN")} active · {(campaignAnalytics.completed_enrollments ?? 0).toLocaleString("en-IN")} done
+                  </p>
+                </Card>
+                <Card className="p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                    <p className="text-xs text-muted-foreground">Next Fire</p>
+                  </div>
+                  {campaignAnalytics.next_fire_at ? (
+                    <>
+                      <p className="text-sm font-semibold">
+                        {isPast(new Date(campaignAnalytics.next_fire_at))
+                          ? "Now (pending)"
+                          : formatDistanceToNow(new Date(campaignAnalytics.next_fire_at), { addSuffix: true })}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        {format(new Date(campaignAnalytics.next_fire_at), "dd MMM, HH:mm 'UTC'")}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No pending sends</p>
+                  )}
+                </Card>
+                <Card className="p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Send className="h-3.5 w-3.5 text-muted-foreground" />
+                    <p className="text-xs text-muted-foreground">Last Sent</p>
+                  </div>
+                  {campaignAnalytics.last_sent_at ? (
+                    <>
+                      <p className="text-sm font-semibold">
+                        {formatDistanceToNow(new Date(campaignAnalytics.last_sent_at), { addSuffix: true })}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        {format(new Date(campaignAnalytics.last_sent_at), "dd MMM, HH:mm")}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Not sent yet</p>
+                  )}
+                </Card>
+                <Card className="p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <TrendingUp className="h-3.5 w-3.5 text-muted-foreground" />
+                    <p className="text-xs text-muted-foreground">Open Rate</p>
+                  </div>
+                  <p className="text-lg font-bold">
+                    {campaignAnalytics.sent > 0
+                      ? `${Math.round((campaignAnalytics.opened / campaignAnalytics.sent) * 100)}%`
+                      : "—"}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    Click: {campaignAnalytics.sent > 0 ? `${Math.round((campaignAnalytics.clicked / campaignAnalytics.sent) * 100)}%` : "—"}
+                  </p>
+                </Card>
+              </div>
+
+              {/* Email funnel row */}
+              <Card>
+                <CardHeader className="py-2 px-4">
+                  <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Email Funnel</CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="grid grid-cols-4 md:grid-cols-8 divide-x">
+                    {[
+                      { label: "Sent", value: campaignAnalytics.sent, color: "text-blue-600", icon: <Mail className="h-3.5 w-3.5" /> },
+                      { label: "Delivered", value: campaignAnalytics.delivered, color: "text-emerald-600", icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
+                      { label: "Opened", value: campaignAnalytics.opened, color: "text-violet-600", icon: <TrendingUp className="h-3.5 w-3.5" /> },
+                      { label: "Clicked", value: campaignAnalytics.clicked, color: "text-sky-600", icon: <MousePointerClick className="h-3.5 w-3.5" /> },
+                      { label: "Replied", value: campaignAnalytics.replied, color: "text-green-600", icon: <Reply className="h-3.5 w-3.5" /> },
+                      { label: "Failed", value: campaignAnalytics.failed, color: "text-red-500", icon: <AlertTriangle className="h-3.5 w-3.5" /> },
+                      { label: "Bounced", value: campaignAnalytics.bounced, color: "text-orange-500", icon: <AlertTriangle className="h-3.5 w-3.5" /> },
+                      { label: "Complained", value: campaignAnalytics.complained, color: "text-rose-600", icon: <AlertTriangle className="h-3.5 w-3.5" /> },
+                    ].map(({ label, value, color, icon }) => (
+                      <div key={label} className="px-3 py-3 text-center">
+                        <div className={`flex items-center justify-center gap-1 mb-1 ${color}`}>
+                          {icon}
+                          <span className="text-[10px] font-medium uppercase tracking-wide">{label}</span>
+                        </div>
+                        <p className={`text-lg font-bold ${color}`}>{(value ?? 0).toLocaleString("en-IN")}</p>
+                        {campaignAnalytics.sent > 0 && value > 0 && label !== "Sent" && (
+                          <p className="text-[10px] text-muted-foreground">
+                            {Math.round((value / campaignAnalytics.sent) * 100)}%
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          ) : null}
+
+          {/* Campaign meta row */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             <Card className="p-3">
               <p className="text-xs text-muted-foreground">Budget</p>
               <p className="text-sm font-semibold">{formatPaiseToCurrency(selectedCampaign.budget)}</p>
@@ -742,15 +926,18 @@ export default function CampaignManager() {
                     <TableHead className="text-xs">Name</TableHead>
                     <TableHead className="text-xs">Type</TableHead>
                     <TableHead className="text-xs">Status</TableHead>
-                    <TableHead className="text-xs text-right">Budget</TableHead>
-                    <TableHead className="text-xs text-right">Spent</TableHead>
-                    <TableHead className="text-xs text-right">Max Enrollments</TableHead>
-                    <TableHead className="text-xs">Created</TableHead>
+                    <TableHead className="text-xs text-right">Enrolled</TableHead>
+                    <TableHead className="text-xs text-right">Sent</TableHead>
+                    <TableHead className="text-xs text-right">Opened</TableHead>
+                    <TableHead className="text-xs text-right">Replied</TableHead>
+                    <TableHead className="text-xs">Next Fire</TableHead>
                     <TableHead className="text-xs w-24">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {campaigns.map((c) => (
+                  {campaigns.map((c) => {
+                    const stats = allAnalytics.find((a) => a.campaign_id === c.id);
+                    return (
                     <TableRow
                       key={c.id}
                       className="cursor-pointer hover:bg-muted/50"
@@ -768,16 +955,25 @@ export default function CampaignManager() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-xs text-right">
-                        {formatPaiseToCurrency(c.budget)}
+                        {stats ? (stats.enrolled ?? 0).toLocaleString("en-IN") : "—"}
                       </TableCell>
                       <TableCell className="text-xs text-right">
-                        {formatPaiseToCurrency(c.budget_spent)}
+                        {stats ? (stats.sent ?? 0).toLocaleString("en-IN") : "—"}
                       </TableCell>
                       <TableCell className="text-xs text-right">
-                        {c.max_enrollments?.toLocaleString("en-IN") ?? "-"}
+                        {stats && stats.sent > 0
+                          ? `${(stats.opened ?? 0).toLocaleString("en-IN")} (${Math.round(((stats.opened ?? 0) / stats.sent) * 100)}%)`
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-right">
+                        {stats ? (stats.replied ?? 0).toLocaleString("en-IN") : "—"}
                       </TableCell>
                       <TableCell className="text-xs">
-                        {format(new Date(c.created_at), "dd MMM yyyy")}
+                        {stats?.next_fire_at
+                          ? isPast(new Date(stats.next_fire_at))
+                            ? <span className="text-amber-600 font-medium">Now (pending)</span>
+                            : formatDistanceToNow(new Date(stats.next_fire_at), { addSuffix: true })
+                          : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
@@ -826,7 +1022,8 @@ export default function CampaignManager() {
                         </div>
                       </TableCell>
                     </TableRow>
-                  ))}
+                  );
+                  })}
                 </TableBody>
               </Table>
             )}
