@@ -20,7 +20,9 @@ Deno.serve(async (req) => {
   try {
     const supabase = getSupabaseClient();
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    // Forward the incoming Authorization header — avoids SUPABASE_SERVICE_ROLE_KEY env var issues
+    const serviceRoleKey = (req.headers.get('authorization') || '').replace('Bearer ', '')
+      || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const now = new Date();
 
     // Sending window: 03:30–13:30 UTC (09:00–19:00 IST)

@@ -161,8 +161,8 @@ export async function updateMemory(
     );
 
   if (error) {
-    console.error('[ConversationMemory] Upsert failed:', error);
-    throw error;
+    // Log but don't throw — memory update failure must never fail an email send
+    console.error('[ConversationMemory] Upsert failed:', JSON.stringify(error));
   }
 }
 
