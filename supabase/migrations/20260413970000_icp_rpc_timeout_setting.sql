@@ -27,7 +27,7 @@ RETURNS TABLE (
   linkedin_url    text
 )
 LANGUAGE plpgsql
-STABLE
+VOLATILE
 SECURITY DEFINER
 AS $$
 DECLARE
