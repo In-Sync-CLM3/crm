@@ -1,9 +1,21 @@
 import postgres from "npm:postgres@3";
 
-const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!);
+const sql = postgres(Deno.env.get("SUPABASE_DB_URL")!, { max: 1 });
 
 Deno.serve(async () => {
   try {
+    // GIN trigram indexes for fast ILIKE matching on native contacts
+    await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm`);
+    await sql.unsafe(`
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_native_designation_trgm
+        ON mkt_native_contacts USING GIN (LOWER(designation) gin_trgm_ops)
+    `);
+    await sql.unsafe(`
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_native_industry_trgm
+        ON mkt_native_contacts USING GIN (LOWER(industry_type) gin_trgm_ops)
+    `);
+
+    // Per-step analytics RPC
     await sql.unsafe(`
 CREATE OR REPLACE FUNCTION get_campaign_step_analytics(p_campaign_id uuid)
 RETURNS TABLE (

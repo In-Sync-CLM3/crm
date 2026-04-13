@@ -173,7 +173,17 @@ async function sourceFromNative(
     },
   );
 
-  if (fetchError) throw new Error(`Failed to query mkt_native_contacts via RPC: ${fetchError.message}`);
+  if (fetchError) {
+    // Statement timeout = native dataset is under load; skip native this cycle,
+    // fall through to Apollo and let cron re-run tomorrow.
+    const isTimeout = fetchError.message?.toLowerCase().includes('statement timeout')
+      || fetchError.message?.toLowerCase().includes('canceling statement');
+    if (isTimeout) {
+      await logger.warn('native-rpc-timeout', { org_id: orgId, product_key: productKey, error: fetchError.message });
+      return { inserted: 0, pageWasFull: false, lastId: minId };
+    }
+    throw new Error(`Failed to query mkt_native_contacts via RPC: ${fetchError.message}`);
+  }
   if (!candidates || candidates.length === 0) {
     await logger.info('native-no-candidates', { org_id: orgId, product_key: productKey, min_id: minId });
     return { inserted: 0, pageWasFull: false, lastId: minId };
