@@ -150,6 +150,7 @@ interface SequenceAction {
   failed_at: string | null;
   failure_reason: string | null;
   created_at: string;
+  metadata: Record<string, unknown> | null;
 }
 
 interface ConversationMemory {
@@ -252,10 +253,22 @@ function actionStatusColor(status: string): string {
       return "bg-red-100 text-red-700";
     case "pending":
       return "bg-amber-100 text-amber-700";
+    case "replied":
+      return "bg-purple-100 text-purple-700";
     case "skipped":
       return "bg-gray-100 text-gray-500";
     default:
       return "bg-gray-100 text-gray-700";
+  }
+}
+
+function replyIntentColor(intent: string): string {
+  switch (intent) {
+    case "interested": return "bg-green-100 text-green-700";
+    case "objection": return "bg-amber-100 text-amber-700";
+    case "unsubscribe": return "bg-red-100 text-red-700";
+    case "out_of_office": return "bg-blue-100 text-blue-700";
+    default: return "bg-gray-100 text-gray-600";
   }
 }
 
@@ -1547,44 +1560,70 @@ export default function LeadBrowser() {
                         {recentActions.map((action) => (
                           <div
                             key={action.id}
-                            className="flex items-center gap-2 p-1.5 rounded border text-xs"
+                            className={`p-1.5 rounded border text-xs ${action.status === "replied" ? "border-purple-200 bg-purple-50/50" : ""}`}
                           >
-                            <div className="shrink-0">
-                              {action.channel === "email" && (
-                                <Mail className="h-3 w-3 text-blue-500" />
-                              )}
-                              {action.channel === "whatsapp" && (
-                                <MessageSquare className="h-3 w-3 text-green-500" />
-                              )}
-                              {action.channel === "call" && (
-                                <Phone className="h-3 w-3 text-amber-500" />
-                              )}
-                              {action.channel === "sms" && (
-                                <MessageSquare className="h-3 w-3 text-purple-500" />
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <span className="capitalize">{action.channel}</span>
-                              <span className="text-muted-foreground">
-                                {" "}
-                                - Step {action.step_number}
-                              </span>
-                              {action.variant && (
+                            <div className="flex items-center gap-2">
+                              <div className="shrink-0">
+                                {action.channel === "email" && (
+                                  <Mail className="h-3 w-3 text-blue-500" />
+                                )}
+                                {action.channel === "whatsapp" && (
+                                  <MessageSquare className="h-3 w-3 text-green-500" />
+                                )}
+                                {action.channel === "call" && (
+                                  <Phone className="h-3 w-3 text-amber-500" />
+                                )}
+                                {action.channel === "sms" && (
+                                  <MessageSquare className="h-3 w-3 text-purple-500" />
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <span className="capitalize">{action.channel}</span>
                                 <span className="text-muted-foreground">
-                                  {" "}
-                                  (Variant {action.variant})
+                                  {" "}- Step {action.step_number}
                                 </span>
-                              )}
+                                {action.variant && (
+                                  <span className="text-muted-foreground">
+                                    {" "}(Variant {action.variant})
+                                  </span>
+                                )}
+                              </div>
+                              <Badge
+                                variant="outline"
+                                className={`text-[10px] capitalize shrink-0 ${actionStatusColor(action.status)}`}
+                              >
+                                {action.status}
+                              </Badge>
+                              <span className="text-[10px] text-muted-foreground shrink-0">
+                                {format(new Date(action.created_at), "dd MMM HH:mm")}
+                              </span>
                             </div>
-                            <Badge
-                              variant="outline"
-                              className={`text-[10px] capitalize shrink-0 ${actionStatusColor(action.status)}`}
-                            >
-                              {action.status}
-                            </Badge>
-                            <span className="text-[10px] text-muted-foreground shrink-0">
-                              {format(new Date(action.created_at), "dd MMM HH:mm")}
-                            </span>
+                            {action.status === "replied" && action.metadata && (
+                              <div className="mt-1.5 pl-5 space-y-1">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {action.metadata.reply_intent && (
+                                    <Badge variant="outline" className={`text-[10px] capitalize ${replyIntentColor(action.metadata.reply_intent as string)}`}>
+                                      {String(action.metadata.reply_intent).replace(/_/g, " ")}
+                                    </Badge>
+                                  )}
+                                  {action.metadata.reply_subject && (
+                                    <span className="text-[10px] text-muted-foreground truncate">
+                                      Re: {String(action.metadata.reply_subject)}
+                                    </span>
+                                  )}
+                                </div>
+                                {action.metadata.reply_preview && (
+                                  <p className="text-[10px] text-muted-foreground line-clamp-2 italic">
+                                    "{String(action.metadata.reply_preview)}"
+                                  </p>
+                                )}
+                                {action.replied_at && (
+                                  <p className="text-[10px] text-muted-foreground">
+                                    Replied {format(new Date(action.replied_at), "dd MMM yyyy HH:mm")}
+                                  </p>
+                                )}
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
