@@ -97,48 +97,27 @@ export default function Clients() {
     enabled: !!effectiveOrgId,
   });
 
-  // Lightweight stats query - only fetches status column, no joins
+  // Stats via RPC — single DB call with COUNT(*) FILTER instead of fetching all rows
   const { data: clientStats } = useQuery({
     queryKey: ["client-stats", effectiveOrgId],
     queryFn: async () => {
       if (!effectiveOrgId) return { total: 0, active: 0, inactive: 0, churned: 0, withInvoices: 0 };
-
-      const { data, error } = await supabase
-        .from("clients")
-        .select("status")
-        .eq("org_id", effectiveOrgId);
-
+      const { data, error } = await supabase.rpc("get_client_stats", { _org_id: effectiveOrgId });
       if (error) throw error;
-
-      const total = data?.length || 0;
-      const active = data?.filter(c => (c.status || 'active') === 'active').length || 0;
-      const inactive = data?.filter(c => c.status === 'inactive').length || 0;
-      const churned = data?.filter(c => c.status === 'churned').length || 0;
-
-      return { total, active, inactive, churned, withInvoices: 0 };
+      return data as { total: number; active: number; inactive: number; churned: number; withInvoices: number };
     },
     enabled: !!effectiveOrgId,
     staleTime: 30000,
   });
 
-  // Lightweight filter options query - only fetches columns needed for dropdowns
+  // Filter options via RPC — single DB call with SELECT DISTINCT instead of fetching all rows
   const { data: filterOptions } = useQuery({
     queryKey: ["client-filter-options", effectiveOrgId],
     queryFn: async () => {
       if (!effectiveOrgId) return { companies: [] as string[], cities: [] as string[], states: [] as string[] };
-
-      const { data, error } = await supabase
-        .from("clients")
-        .select("company, city, state")
-        .eq("org_id", effectiveOrgId);
-
+      const { data, error } = await supabase.rpc("get_client_filter_options", { _org_id: effectiveOrgId });
       if (error) throw error;
-
-      return {
-        companies: [...new Set(data?.map(c => c.company).filter(Boolean) || [])].sort() as string[],
-        cities: [...new Set(data?.map(c => c.city).filter(Boolean) || [])].sort() as string[],
-        states: [...new Set(data?.map(c => c.state).filter(Boolean) || [])].sort() as string[],
-      };
+      return data as { companies: string[]; cities: string[]; states: string[] };
     },
     enabled: !!effectiveOrgId,
     staleTime: 60000,

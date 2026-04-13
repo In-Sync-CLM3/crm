@@ -508,6 +508,36 @@ function ProductCard({
     },
   });
 
+  const campaignActive = p.active;
+  const { data: campaignStats } = useQuery<{
+    sent: number; opened: number; replied: number; failed: number;
+    email_sent: number; wa_sent: number;
+    active_enrollments: number; completed_enrollments: number;
+  }>({
+    queryKey: ["campaign-stats", p.product_key, effectiveOrgId],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc("get_campaign_stats", {
+        p_org_id: effectiveOrgId,
+        p_product_key: p.product_key,
+      });
+      if (error) throw error;
+      const r = (data as unknown[])?.[0] as Record<string, number> | undefined;
+      return r ? {
+        sent: Number(r.sent) || 0,
+        opened: Number(r.opened) || 0,
+        replied: Number(r.replied) || 0,
+        failed: Number(r.failed) || 0,
+        email_sent: Number(r.email_sent) || 0,
+        wa_sent: Number(r.wa_sent) || 0,
+        active_enrollments: Number(r.active_enrollments) || 0,
+        completed_enrollments: Number(r.completed_enrollments) || 0,
+      } : null;
+    },
+    enabled: !!effectiveOrgId && campaignActive,
+    staleTime: 60_000,
+    refetchInterval: campaignActive ? 120_000 : false,
+  });
+
   const handleSubmitWA = async () => {
     setWaSubmitting(true);
     try {
@@ -674,6 +704,37 @@ function ProductCard({
               >
                 {waSyncing ? <RefreshCw className="h-3 w-3 animate-spin" /> : "Sync"}
               </Button>
+            </div>
+          </div>
+        )}
+        {/* ── Campaign stats ── */}
+        {campaignActive && campaignStats && (campaignStats.sent > 0 || campaignStats.active_enrollments > 0) && (
+          <div className="mt-1 pt-2 border-t px-2">
+            <div className="text-[11px] text-muted-foreground flex items-center gap-3 flex-wrap">
+              <span className="font-medium text-foreground">Campaign</span>
+              {campaignStats.active_enrollments > 0 && (
+                <span>{campaignStats.active_enrollments.toLocaleString()} in queue</span>
+              )}
+              {campaignStats.email_sent > 0 && (
+                <span className="text-blue-600">✉ {campaignStats.email_sent.toLocaleString()} sent</span>
+              )}
+              {campaignStats.wa_sent > 0 && (
+                <span className="text-green-600">💬 {campaignStats.wa_sent.toLocaleString()} WA sent</span>
+              )}
+              {campaignStats.opened > 0 && (
+                <span className="text-indigo-600">
+                  👁 {campaignStats.opened.toLocaleString()} opened
+                  {campaignStats.email_sent > 0 && ` (${Math.round(campaignStats.opened / campaignStats.email_sent * 100)}%)`}
+                </span>
+              )}
+              {campaignStats.replied > 0 && (
+                <span className="text-emerald-600 font-medium">
+                  ↩ {campaignStats.replied.toLocaleString()} replied
+                </span>
+              )}
+              {campaignStats.completed_enrollments > 0 && (
+                <span className="text-gray-500">{campaignStats.completed_enrollments.toLocaleString()} completed</span>
+              )}
             </div>
           </div>
         )}

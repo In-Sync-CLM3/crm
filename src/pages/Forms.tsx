@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import { useDialogState } from "@/hooks/useDialogState";
@@ -54,7 +54,6 @@ export default function Forms() {
   const notification = useNotification();
   const [selectedFields, setSelectedFields] = useState<string[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [formsWithCounts, setFormsWithCounts] = useState<FormWithFields[]>([]);
   
   const dialog = useDialogState<FormData>({
     name: "",
@@ -66,6 +65,7 @@ export default function Forms() {
   const { data: forms = [], isLoading: formsLoading, refetch: refetchForms } = useOrgData<Form>(
     "forms",
     {
+      select: "*, form_fields(count)",
       orderBy: { column: "created_at", ascending: false },
       filter: { connector_type: "manual" },
     }
@@ -81,38 +81,17 @@ export default function Forms() {
 
   const loading = formsLoading || fieldsLoading;
 
-  const fetchFormsWithCounts = useCallback(async () => {
-    if (forms.length === 0) {
-      setFormsWithCounts([]);
-      return;
-    }
-
-    const formsWithCountsData = await Promise.all(
-      forms.map(async (form) => {
-        const { count } = await supabase
-          .from("form_fields")
-          .select("*", { count: "exact", head: true })
-          .eq("form_id", form.id);
-
-        return {
-          ...form,
-          field_count: count || 0,
-        };
-      })
-    );
-
-    setFormsWithCounts(formsWithCountsData as any);
-  }, [forms]);
+  // Derive field counts from nested select (eliminates N+1 queries)
+  const formsWithCounts: FormWithFields[] = forms.map(f => ({
+    ...f,
+    field_count: (f as any).form_fields?.[0]?.count || 0,
+  }));
 
   const { create, update, delete: deleteForm } = useCRUD("forms", {
     onSuccess: () => {
       refetchForms();
     },
   });
-
-  useEffect(() => {
-    fetchFormsWithCounts();
-  }, [fetchFormsWithCounts]);
 
   const fetchFormFields = async (formId: string) => {
     try {
@@ -197,7 +176,6 @@ export default function Forms() {
       dialog.closeDialog();
       setSelectedFields([]);
       refetchForms();
-      fetchFormsWithCounts();
     } catch (error: any) {
       notification.error("Error", error.message);
     }

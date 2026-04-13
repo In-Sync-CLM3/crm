@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "./AuthProvider";
 
@@ -14,39 +14,29 @@ interface OrgContextType {
 
 const OrgContext = createContext<OrgContextType | undefined>(undefined);
 
-const IMPERSONATION_KEY = "impersonated_org_id";
+const IMPERSONATION_KEY = "crm_impersonated_org_id";
 
 interface OrgContextProviderProps {
   children: ReactNode;
 }
 
-/**
- * Centralized Org Context Provider - Single source of truth for org context
- * Uses AuthProvider's session to trigger org fetch
- * Eliminates duplicate org context fetches across components
- */
 export function OrgContextProvider({ children }: OrgContextProviderProps) {
   const { user, isLoading: authLoading } = useAuth();
   const [userOrgId, setUserOrgId] = useState<string | null>(null);
-  const [impersonatedOrgId, setImpersonatedOrgIdState] = useState<string | null>(null);
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
+  const [impersonatedOrgId, setImpersonatedOrgIdState] = useState<string | null>(
+    () => localStorage.getItem(IMPERSONATION_KEY)
+  );
   const [isLoading, setIsLoading] = useState(true);
 
-  // Initialize impersonation from localStorage
-  useEffect(() => {
-    const stored = localStorage.getItem(IMPERSONATION_KEY);
-    if (stored) {
-      setImpersonatedOrgIdState(stored);
-    }
-  }, []);
-
-  // Fetch profile data when user changes
   useEffect(() => {
     if (authLoading) return;
 
     if (!user) {
       setUserOrgId(null);
       setIsPlatformAdmin(false);
+      setImpersonatedOrgIdState(null);
+      localStorage.removeItem(IMPERSONATION_KEY);
       setIsLoading(false);
       return;
     }
@@ -70,12 +60,13 @@ export function OrgContextProvider({ children }: OrgContextProviderProps) {
         }
 
         setUserOrgId(profile?.org_id || null);
-        setIsPlatformAdmin(profile?.is_platform_admin || false);
+        const admin = profile?.is_platform_admin === true;
+        setIsPlatformAdmin(admin);
 
-        // Clear impersonation if user is not platform admin
-        if (!profile?.is_platform_admin && impersonatedOrgId) {
-          localStorage.removeItem(IMPERSONATION_KEY);
+        // Clear any stale impersonation if user is not a platform admin
+        if (!admin) {
           setImpersonatedOrgIdState(null);
+          localStorage.removeItem(IMPERSONATION_KEY);
         }
       } catch (err) {
         console.error("[OrgContext] Error fetching profile:", err);
@@ -86,35 +77,26 @@ export function OrgContextProvider({ children }: OrgContextProviderProps) {
 
     fetchProfile();
 
-    return () => {
-      mounted = false;
-    };
-  }, [user, authLoading, impersonatedOrgId]);
+    return () => { mounted = false; };
+  }, [user, authLoading]);
 
-  const setImpersonatedOrgId = useCallback((orgId: string | null) => {
+  const setImpersonatedOrgId = (orgId: string | null) => {
+    if (!isPlatformAdmin) return;
+    setImpersonatedOrgIdState(orgId);
     if (orgId) {
       localStorage.setItem(IMPERSONATION_KEY, orgId);
     } else {
       localStorage.removeItem(IMPERSONATION_KEY);
     }
-    setImpersonatedOrgIdState(orgId);
-  }, []);
+  };
 
-  const clearImpersonation = useCallback(() => {
-    localStorage.removeItem(IMPERSONATION_KEY);
-    setImpersonatedOrgIdState(null);
-  }, []);
-
-  // Determine effective org ID
-  const effectiveOrgId = isPlatformAdmin && impersonatedOrgId 
-    ? impersonatedOrgId 
-    : userOrgId;
+  const clearImpersonation = () => setImpersonatedOrgId(null);
 
   const value: OrgContextType = {
     userOrgId,
-    effectiveOrgId,
+    effectiveOrgId: impersonatedOrgId ?? userOrgId,
     isPlatformAdmin,
-    isImpersonating: isPlatformAdmin && !!impersonatedOrgId,
+    isImpersonating: impersonatedOrgId !== null,
     isLoading: authLoading || isLoading,
     setImpersonatedOrgId,
     clearImpersonation,

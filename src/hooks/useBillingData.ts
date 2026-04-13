@@ -53,53 +53,37 @@ export function useBillingData() {
     if (!effectiveOrgId) return;
     setLoading(true);
     try {
-      // Fetch documents with items
-      const { data: docs, error: docsErr } = await supabase
-        .from("billing_documents")
-        .select("*")
-        .eq("org_id", effectiveOrgId)
-        .order("created_at", { ascending: false });
-      if (docsErr) throw docsErr;
-
-      // Fetch all items for these documents
-      const docIds = (docs || []).map(d => d.id);
-      let allItems: any[] = [];
-      if (docIds.length > 0) {
-        const { data: items, error: itemsErr } = await supabase
-          .from("billing_document_items")
+      // Parallel fetch: documents (with nested items), payments, and settings
+      const [docsResult, paysResult, settingsResult] = await Promise.all([
+        // Fetch documents with items via nested select (eliminates separate items query)
+        supabase
+          .from("billing_documents")
+          .select("*, billing_document_items(*)")
+          .eq("org_id", effectiveOrgId)
+          .order("created_at", { ascending: false }),
+        // Fetch payments
+        supabase
+          .from("billing_payments")
           .select("*")
-          .in("document_id", docIds)
-          .order("sort_order", { ascending: true });
-        if (itemsErr) throw itemsErr;
-        allItems = items || [];
-      }
+          .eq("org_id", effectiveOrgId)
+          .order("created_at", { ascending: false }),
+        // Fetch settings
+        supabase
+          .from("billing_settings")
+          .select("*")
+          .eq("org_id", effectiveOrgId)
+          .maybeSingle(),
+      ]);
 
-      // Map items to documents
-      const itemsByDoc: Record<string, BillingDocumentItem[]> = {};
-      for (const item of allItems) {
-        if (!itemsByDoc[item.document_id]) itemsByDoc[item.document_id] = [];
-        itemsByDoc[item.document_id].push({
-          id: item.id,
-          document_id: item.document_id,
-          description: item.description,
-          hsn_sac: item.hsn_sac || "",
-          qty: Number(item.qty),
-          unit: item.unit || "Nos",
-          rate: Number(item.rate),
-          discount: Number(item.discount || 0),
-          tax_rate: Number(item.tax_rate || 18),
-          taxable: Number(item.taxable || 0),
-          cgst: Number(item.cgst || 0),
-          sgst: Number(item.sgst || 0),
-          igst: Number(item.igst || 0),
-          total: Number(item.total || 0),
-          sort_order: item.sort_order || 0,
-        });
-      }
+      if (docsResult.error) throw docsResult.error;
+      if (paysResult.error) throw paysResult.error;
+      if (settingsResult.error) throw settingsResult.error;
+
+      const docs = docsResult.data || [];
 
       // For documents missing client_billing_snapshot, look up from clients table
       const missingClientIds = [...new Set(
-        (docs || [])
+        docs
           .filter(d => !(d as any).client_billing_snapshot && d.client_id)
           .map(d => d.client_id)
       )];
@@ -123,7 +107,7 @@ export function useBillingData() {
           };
         }
         // Auto-save snapshots back to DB so this lookup only happens once
-        for (const d of (docs || [])) {
+        for (const d of docs) {
           if (!(d as any).client_billing_snapshot && d.client_id && clientLookup[d.client_id]) {
             supabase.from("billing_documents")
               .update({ client_billing_snapshot: clientLookup[d.client_id] })
@@ -133,43 +117,61 @@ export function useBillingData() {
         }
       }
 
-      const mappedDocs: BillingDocument[] = (docs || []).map(d => ({
-        id: d.id,
-        org_id: d.org_id,
-        doc_type: d.doc_type as BillingDocumentType,
-        doc_number: d.doc_number,
-        client_id: d.client_id || "",
-        client_name: d.client_name,
-        client: (d as any).client_billing_snapshot || clientLookup[d.client_id] || undefined,
-        doc_date: d.doc_date,
-        due_date: d.due_date || "",
-        financial_year: d.financial_year || "",
-        supply_type: (d.supply_type || "intra_state") as any,
-        subtotal: Number(d.subtotal),
-        total_tax: Number(d.total_tax),
-        total_amount: Number(d.total_amount),
-        amount_paid: Number(d.amount_paid || 0),
-        balance_due: Number(d.balance_due),
-        status: (d.status || "draft") as BillingDocumentStatus,
-        notes: d.notes || undefined,
-        terms_and_conditions: d.terms_and_conditions || undefined,
-        original_invoice_id: d.original_invoice_id || undefined,
-        original_invoice_number: d.original_invoice_number || undefined,
-        items: itemsByDoc[d.id] || [],
-        created_at: d.created_at || undefined,
-        updated_at: d.updated_at || undefined,
-      }));
+      const mappedDocs: BillingDocument[] = docs.map(d => {
+        // Map nested items, sorted by sort_order
+        const rawItems = ((d as any).billing_document_items || []) as any[];
+        rawItems.sort((a: any, b: any) => (a.sort_order || 0) - (b.sort_order || 0));
+        const items: BillingDocumentItem[] = rawItems.map((item: any) => ({
+          id: item.id,
+          document_id: item.document_id,
+          description: item.description,
+          hsn_sac: item.hsn_sac || "",
+          qty: Number(item.qty),
+          unit: item.unit || "Nos",
+          rate: Number(item.rate),
+          discount: Number(item.discount || 0),
+          tax_rate: Number(item.tax_rate || 18),
+          taxable: Number(item.taxable || 0),
+          cgst: Number(item.cgst || 0),
+          sgst: Number(item.sgst || 0),
+          igst: Number(item.igst || 0),
+          total: Number(item.total || 0),
+          sort_order: item.sort_order || 0,
+        }));
+
+        return {
+          id: d.id,
+          org_id: d.org_id,
+          doc_type: d.doc_type as BillingDocumentType,
+          doc_number: d.doc_number,
+          client_id: d.client_id || "",
+          client_name: d.client_name,
+          client: (d as any).client_billing_snapshot || clientLookup[d.client_id] || undefined,
+          doc_date: d.doc_date,
+          due_date: d.due_date || "",
+          financial_year: d.financial_year || "",
+          supply_type: (d.supply_type || "intra_state") as any,
+          subtotal: Number(d.subtotal),
+          total_tax: Number(d.total_tax),
+          total_amount: Number(d.total_amount),
+          amount_paid: Number(d.amount_paid || 0),
+          balance_due: Number(d.balance_due),
+          status: (d.status || "draft") as BillingDocumentStatus,
+          notes: d.notes || undefined,
+          terms_and_conditions: d.terms_and_conditions || undefined,
+          original_invoice_id: d.original_invoice_id || undefined,
+          original_invoice_number: d.original_invoice_number || undefined,
+          items,
+          created_at: d.created_at || undefined,
+          updated_at: d.updated_at || undefined,
+        };
+      });
 
       setDocuments(mappedDocs);
 
-      // Fetch payments
-      const { data: pays, error: paysErr } = await supabase
-        .from("billing_payments")
-        .select("*")
-        .eq("org_id", effectiveOrgId)
-        .order("created_at", { ascending: false });
-      if (paysErr) throw paysErr;
-      setPayments((pays || []).map(p => ({
+      // Process payments (already fetched in parallel)
+      const pays = paysResult.data || [];
+      setPayments(pays.map(p => ({
         id: p.id,
         document_id: p.document_id,
         payment_date: p.payment_date,
@@ -183,14 +185,8 @@ export function useBillingData() {
         created_at: p.created_at || undefined,
       })));
 
-      // Fetch settings
-      const { data: settingsData, error: settingsErr } = await supabase
-        .from("billing_settings")
-        .select("*")
-        .eq("org_id", effectiveOrgId)
-        .maybeSingle();
-      if (settingsErr) throw settingsErr;
-
+      // Process settings (already fetched in parallel)
+      const settingsData = settingsResult.data;
       if (settingsData) {
         setSettingsState({
           id: settingsData.id,

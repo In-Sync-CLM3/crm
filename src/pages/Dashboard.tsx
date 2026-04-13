@@ -320,19 +320,41 @@ export default function Dashboard() {
     staleTime: 120000,
   });
 
-  // Fetch monthly actuals from backend API
+  // Fetch monthly actuals via RPC directly (no edge function cold-start)
   const currentYear = new Date().getFullYear();
   const { data: backendActuals, isLoading: actualsLoading } = useQuery({
     queryKey: ["monthly-actuals-backend-v2", effectiveOrgId, currentYear],
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
 
-      const { data, error } = await supabase.functions.invoke("get-monthly-actuals", {
-        body: { org_id: effectiveOrgId, year: currentYear }
+      const { data, error } = await supabase.rpc("get_monthly_actuals_optimized", {
+        _org_id: effectiveOrgId,
+        _year: currentYear,
       });
 
       if (error) throw error;
-      return data;
+
+      // Transform flat RPC result to match expected format
+      const rows = (data || []) as any[];
+      const monthly_actuals = rows.map((r: any) => ({
+        month: r.month,
+        qualified: r.qualified || 0,
+        proposals: r.proposals || 0,
+        deals: r.deals || 0,
+        invoiced: r.invoiced || 0,
+        received: r.received || 0,
+      }));
+      const annual_totals = monthly_actuals.reduce(
+        (acc: any, m: any) => ({
+          qualified: acc.qualified + m.qualified,
+          proposals: acc.proposals + m.proposals,
+          deals: acc.deals + m.deals,
+          invoiced: acc.invoiced + m.invoiced,
+          received: acc.received + m.received,
+        }),
+        { qualified: 0, proposals: 0, deals: 0, invoiced: 0, received: 0 }
+      );
+      return { success: true, year: currentYear, monthly_actuals, annual_totals };
     },
     enabled: !!effectiveOrgId,
     staleTime: 120000,

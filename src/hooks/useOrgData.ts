@@ -10,8 +10,9 @@ export interface OrgDataOptions {
 }
 
 /**
- * Fetch data scoped to the current organization
- * Automatically handles org context and common query patterns
+ * Fetch data scoped to the current organization.
+ * Explicitly filters by org_id as defense-in-depth — do not rely on RLS alone,
+ * since RLS policies can change and SECURITY DEFINER functions bypass RLS entirely.
  */
 export function useOrgData<T = any>(
   tableName: string,

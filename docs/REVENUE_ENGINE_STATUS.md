@@ -4,6 +4,7 @@
 **Project**: In-Sync CRM (ECR Technical Innovations Pvt Ltd)
 **E2E Status**: **45/45 tests pass** — Email + WhatsApp delivery verified with real recipients
 **Change Freeze**: 90-day change freeze in effect from April 2, 2026
+**Engine Status**: **LIVE** — 12 pg_cron jobs active, all edge functions deployed, frontend pushed to Azure
 
 ---
 
@@ -219,7 +220,7 @@ Progressive feature unlocks based on paying client count:
 
 ```
                     ┌─────────────────────────────────────────┐
-                    │           pg_cron (10 jobs)              │
+                    │           pg_cron (12 jobs)              │
                     └──────┬──────┬──────┬──────┬─────────────┘
                            │      │      │      │
                     ┌──────▼──┐ ┌─▼────┐ ┌▼─────▼──┐ ┌───────────┐
@@ -256,6 +257,23 @@ Progressive feature unlocks based on paying client count:
 **LLM Usage**: Claude Haiku (classification, scoring, email personalization) · Claude Sonnet (optimization, narrative, analysis, content generation) · Groq (real-time call inference, signal extraction)
 
 **All monetary values**: stored in paise (÷ 100 for rupees display)
+
+### pg_cron Schedule (12 jobs — all active)
+
+| Schedule | Job Name | Function |
+|----------|----------|----------|
+| `*/5 * * * *` | Every 5 min | `mkt-sequence-executor` |
+| `*/15 * * * *` | Every 15 min | `mkt-lead-scorer` |
+| `*/30 * * * *` | Every 30 min | `mkt-breakpoint-monitor` |
+| `0 * * * *` | Every hour | `mkt-ab-test-evaluator` |
+| `0 */6 * * *` | Every 6 hours | `mkt-apollo-sourcer` |
+| `0 2 * * *` | Daily 2 AM UTC | `mkt-campaign-optimizer` |
+| `0 3 * * *` | Daily 3 AM UTC | `mkt-google-ads-sync` |
+| `0 6 * * *` | Daily 6 AM UTC | `mkt-daily-digest` |
+| `0 1 * * 1` | Monday 1 AM UTC | `mkt-metrics-collector` |
+| `30 2 * * 3` | Wednesday 2:30 AM UTC | `mkt-product-intelligence-reporter` |
+| `0 4 1 * *` | 1st of month 4 AM UTC | `mkt-exit-surveyor` |
+| `0 5 2 * *` | 2nd of month 5 AM UTC | `mkt-client-reporter` |
 
 ---
 

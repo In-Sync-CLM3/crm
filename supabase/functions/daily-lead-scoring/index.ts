@@ -1,19 +1,12 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.58.0';
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+import { getSupabaseClient } from '../_shared/supabaseClient.ts';
+import { jsonResponse, errorResponse, handleCors } from '../_shared/responseHelpers.ts';
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
-  }
+  const cors = handleCors(req);
+  if (cors) return cors;
 
   try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    const supabase = getSupabaseClient();
 
     console.log('Starting daily lead scoring job...');
 
@@ -68,131 +61,130 @@ Deno.serve(async (req) => {
     console.log(`Found ${contacts.length} contacts to score`);
 
     if (contacts.length === 0) {
-      return new Response(
-        JSON.stringify({ message: 'No contacts need scoring', processed: 0 }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return jsonResponse({ message: 'No contacts need scoring', processed: 0 });
     }
 
     let processed = 0;
     let failed = 0;
 
-    // Process each contact
-    for (const contact of contacts) {
-      try {
-        console.log(`Scoring contact: ${contact.first_name} ${contact.last_name} (${contact.id})`);
+    // Batch-fetch all activities for all contacts at once (eliminates N+1)
+    const contactIds = contacts.map(c => c.id);
+    const { data: allActivities } = await supabase
+      .from('contact_activities')
+      .select('contact_id, activity_type, created_at, completed_at')
+      .in('contact_id', contactIds)
+      .order('created_at', { ascending: false });
 
-        // Get recent activities for this contact
-        const { data: activities } = await supabase
-          .from('contact_activities')
-          .select('activity_type, created_at, completed_at')
-          .eq('contact_id', contact.id)
-          .order('created_at', { ascending: false })
-          .limit(20);
+    // Group activities by contact_id
+    const activitiesByContact: Record<string, any[]> = {};
+    for (const act of allActivities || []) {
+      if (!activitiesByContact[act.contact_id]) activitiesByContact[act.contact_id] = [];
+      // Keep only last 20 per contact
+      if (activitiesByContact[act.contact_id].length < 20) {
+        activitiesByContact[act.contact_id].push(act);
+      }
+    }
 
-        // Calculate engagement metrics
-        const now = new Date();
-        const lastActivity = activities?.[0]?.created_at 
-          ? new Date(activities[0].created_at) 
-          : null;
-        const daysSinceLastActivity = lastActivity 
-          ? Math.floor((now.getTime() - lastActivity.getTime()) / (1000 * 60 * 60 * 24))
-          : 999;
+    // Build enriched payloads for all contacts
+    const now = new Date();
+    const contactPayloads = contacts.map(contact => {
+      const activities = activitiesByContact[contact.id] || [];
+      const lastActivity = activities[0]?.created_at
+        ? new Date(activities[0].created_at)
+        : null;
+      const daysSinceLastActivity = lastActivity
+        ? Math.floor((now.getTime() - lastActivity.getTime()) / (1000 * 60 * 60 * 24))
+        : 999;
+      const activityCounts = activities.reduce((acc: any, act: any) => {
+        acc[act.activity_type] = (acc[act.activity_type] || 0) + 1;
+        return acc;
+      }, {});
 
-        const activityCounts = activities?.reduce((acc: any, act: any) => {
-          acc[act.activity_type] = (acc[act.activity_type] || 0) + 1;
-          return acc;
-        }, {}) || {};
-
-        // Call the analyze-lead function with enriched data
-        const { data: scoreData, error: scoreError } = await supabase.functions.invoke('analyze-lead', {
-          body: {
-            contact: {
-              id: contact.id,
-              first_name: contact.first_name,
-              last_name: contact.last_name,
-              email: contact.email,
-              phone: contact.phone,
-              company: contact.company,
-              job_title: contact.job_title,
-              status: contact.status,
-              source: contact.source,
-              city: contact.city,
-              state: contact.state,
-              country: contact.country,
-              website: contact.website,
-              notes: contact.notes,
-              created_at: contact.created_at,
-              pipeline_stage: contact.pipeline_stages,
-              engagement_metrics: {
-                total_activities: activities?.length || 0,
-                last_activity_date: lastActivity?.toISOString(),
-                days_since_last_activity: daysSinceLastActivity,
-                meetings_count: activityCounts['meeting'] || 0,
-                calls_count: activityCounts['call'] || 0,
-                emails_count: activityCounts['email'] || 0,
-              }
+      return {
+        contact,
+        body: {
+          contact: {
+            id: contact.id,
+            first_name: contact.first_name,
+            last_name: contact.last_name,
+            email: contact.email,
+            phone: contact.phone,
+            company: contact.company,
+            job_title: contact.job_title,
+            status: contact.status,
+            source: contact.source,
+            city: contact.city,
+            state: contact.state,
+            country: contact.country,
+            website: contact.website,
+            notes: contact.notes,
+            created_at: contact.created_at,
+            pipeline_stage: contact.pipeline_stages,
+            engagement_metrics: {
+              total_activities: activities.length,
+              last_activity_date: lastActivity?.toISOString(),
+              days_since_last_activity: daysSinceLastActivity,
+              meetings_count: activityCounts['meeting'] || 0,
+              calls_count: activityCounts['call'] || 0,
+              emails_count: activityCounts['email'] || 0,
             }
           }
-        });
-
-        if (scoreError) {
-          console.error(`Error scoring contact ${contact.id}:`, scoreError);
-          failed++;
-          continue;
         }
+      };
+    });
 
-        if (!scoreData?.score) {
-          console.error(`Invalid score data for contact ${contact.id}`);
-          failed++;
-          continue;
-        }
+    // Batch invoke analyze-lead with concurrency limit of 10
+    const CONCURRENCY = 10;
+    for (let i = 0; i < contactPayloads.length; i += CONCURRENCY) {
+      const batch = contactPayloads.slice(i, i + CONCURRENCY);
+      const results = await Promise.allSettled(
+        batch.map(async ({ contact, body }) => {
+          console.log(`Scoring contact: ${contact.first_name} ${contact.last_name} (${contact.id})`);
 
-        // Save the score to the database
-        const { error: upsertError } = await supabase
-          .from('contact_lead_scores')
-          .upsert({
-            contact_id: contact.id,
-            org_id: contact.org_id,
-            score: scoreData.score,
-            score_category: scoreData.category?.toLowerCase() || 'cold',
-            score_breakdown: scoreData.breakdown || {},
-            last_calculated: new Date().toISOString(),
-          }, {
-            onConflict: 'contact_id'
-          });
+          const { data: scoreData, error: scoreError } = await supabase.functions.invoke('analyze-lead', { body });
 
-        if (upsertError) {
-          console.error(`Error saving score for contact ${contact.id}:`, upsertError);
-          failed++;
-        } else {
-          processed++;
+          if (scoreError) throw new Error(`Score error: ${scoreError.message}`);
+          if (!scoreData?.score) throw new Error('Invalid score data');
+
+          const { error: upsertError } = await supabase
+            .from('contact_lead_scores')
+            .upsert({
+              contact_id: contact.id,
+              org_id: contact.org_id,
+              score: scoreData.score,
+              score_category: scoreData.category?.toLowerCase() || 'cold',
+              score_breakdown: scoreData.breakdown || {},
+              last_calculated: new Date().toISOString(),
+            }, { onConflict: 'contact_id' });
+
+          if (upsertError) throw upsertError;
+
           console.log(`Successfully scored contact ${contact.id}: ${scoreData.score}/100 (${scoreData.category})`);
-        }
+          return contact.id;
+        })
+      );
 
-      } catch (error) {
-        console.error(`Error processing contact ${contact.id}:`, error);
-        failed++;
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          processed++;
+        } else {
+          console.error('Scoring failed:', result.reason);
+          failed++;
+        }
       }
     }
 
     console.log(`Daily lead scoring complete. Processed: ${processed}, Failed: ${failed}`);
 
-    return new Response(
-      JSON.stringify({ 
-        message: 'Daily lead scoring complete',
-        processed,
-        failed,
-        total: contacts.length
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return jsonResponse({
+      message: 'Daily lead scoring complete',
+      processed,
+      failed,
+      total: contacts.length,
+    });
 
   } catch (error) {
     console.error('Error in daily-lead-scoring function:', error);
-    return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return errorResponse(error);
   }
 });

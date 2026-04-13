@@ -13,7 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Mail, MessageCircle, Phone, Plus, Pencil, Trash2, Copy } from "lucide-react";
+import { Mail, MessageCircle, Phone, Plus, Pencil, Trash2, Copy, RefreshCw, CheckCircle2, Clock, AlertCircle } from "lucide-react";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import { useNotification } from "@/hooks/useNotification";
 import { LoadingState } from "@/components/common/LoadingState";
@@ -54,6 +54,7 @@ interface WhatsAppTemplate {
   variables: any;
   category: string;
   approval_status: string;
+  submission_error: string | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -98,6 +99,7 @@ const categoryColors: Record<string, string> = {
 
 const approvalColors: Record<string, string> = {
   pending: "bg-amber-100 text-amber-800",
+  submitted: "bg-blue-100 text-blue-800",
   approved: "bg-green-100 text-green-800",
   rejected: "bg-red-100 text-red-800",
 };
@@ -154,7 +156,8 @@ export default function TemplateEditor() {
   const queryClient = useQueryClient();
 
   // Tab state
-  const [activeTab, setActiveTab] = useState("email");
+  const [activeTab, setActiveTab] = useState("whatsapp");
+  const [syncing, setSyncing] = useState(false);
 
   // Email dialog state
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
@@ -225,6 +228,34 @@ export default function TemplateEditor() {
     },
     enabled: !!effectiveOrgId,
   });
+
+  // ─── Sync WhatsApp Status ─────────────────────────────────────────────
+
+  const handleSyncWhatsApp = async () => {
+    setSyncing(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/mkt-sync-whatsapp-status`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify({ org_id: effectiveOrgId }),
+        }
+      );
+      const result = await res.json();
+      if (result.error) throw new Error(result.error);
+      queryClient.invalidateQueries({ queryKey: ["mkt_whatsapp_templates"] });
+      notify.success(`Synced: ${result.approved} approved, ${result.rejected} rejected`);
+    } catch (err: any) {
+      notify.error(err.message || "Sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   // ─── Email Mutations ──────────────────────────────────────────────────
 
@@ -585,9 +616,28 @@ export default function TemplateEditor() {
 
           {/* ── Email Templates Tab ──────────────────────────────────── */}
           <TabsContent value="email" className="mt-4">
+            {/* Email status summary */}
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className="flex items-center gap-2 rounded-lg border bg-green-50 px-3 py-2">
+                <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+                <div>
+                  <p className="text-xs text-muted-foreground">Ready to Send</p>
+                  <p className="text-lg font-bold text-green-700">
+                    {emailTemplates.filter(t => t.is_active).length}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 rounded-lg border bg-gray-50 px-3 py-2">
+                <Mail className="h-4 w-4 text-gray-500 shrink-0" />
+                <div>
+                  <p className="text-xs text-muted-foreground">Total Templates</p>
+                  <p className="text-lg font-bold text-gray-700">{emailTemplates.length}</p>
+                </div>
+              </div>
+            </div>
             <Card>
               <CardHeader className="py-3 px-4 flex flex-row items-center justify-between">
-                <CardTitle className="text-sm font-semibold">Email Templates</CardTitle>
+                <CardTitle className="text-sm font-semibold">Email Templates ({emailTemplates.length})</CardTitle>
                 <Button size="sm" className="h-7 text-xs gap-1" onClick={openNewEmail}>
                   <Plus className="h-3.5 w-3.5" /> New Email Template
                 </Button>
@@ -664,12 +714,50 @@ export default function TemplateEditor() {
 
           {/* ── WhatsApp Templates Tab ───────────────────────────────── */}
           <TabsContent value="whatsapp" className="mt-4">
+            {/* Status summary */}
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <div className="flex items-center gap-2 rounded-lg border bg-green-50 px-3 py-2">
+                <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+                <div>
+                  <p className="text-xs text-muted-foreground">Approved</p>
+                  <p className="text-lg font-bold text-green-700">
+                    {whatsappTemplates.filter(t => t.approval_status === "approved").length}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 rounded-lg border bg-amber-50 px-3 py-2">
+                <Clock className="h-4 w-4 text-amber-600 shrink-0" />
+                <div>
+                  <p className="text-xs text-muted-foreground">Submitted / Pending</p>
+                  <p className="text-lg font-bold text-amber-700">
+                    {whatsappTemplates.filter(t => t.approval_status === "submitted" || t.approval_status === "pending").length}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 rounded-lg border bg-red-50 px-3 py-2">
+                <AlertCircle className="h-4 w-4 text-red-600 shrink-0" />
+                <div>
+                  <p className="text-xs text-muted-foreground">Rejected</p>
+                  <p className="text-lg font-bold text-red-700">
+                    {whatsappTemplates.filter(t => t.approval_status === "rejected").length}
+                  </p>
+                </div>
+              </div>
+            </div>
             <Card>
               <CardHeader className="py-3 px-4 flex flex-row items-center justify-between">
-                <CardTitle className="text-sm font-semibold">WhatsApp Templates</CardTitle>
-                <Button size="sm" className="h-7 text-xs gap-1" onClick={openNewWhatsApp}>
-                  <Plus className="h-3.5 w-3.5" /> New WhatsApp Template
-                </Button>
+                <CardTitle className="text-sm font-semibold">
+                  WhatsApp Templates ({whatsappTemplates.length})
+                </CardTitle>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={handleSyncWhatsApp} disabled={syncing}>
+                    <RefreshCw className={`h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
+                    {syncing ? "Syncing…" : "Sync Status"}
+                  </Button>
+                  <Button size="sm" className="h-7 text-xs gap-1" onClick={openNewWhatsApp}>
+                    <Plus className="h-3.5 w-3.5" /> New
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="p-0">
                 {whatsappLoading ? (
@@ -693,8 +781,7 @@ export default function TemplateEditor() {
                         <TableHead className="text-xs">Template Name</TableHead>
                         <TableHead className="text-xs">Language</TableHead>
                         <TableHead className="text-xs">Category</TableHead>
-                        <TableHead className="text-xs">Approval</TableHead>
-                        <TableHead className="text-xs">Active</TableHead>
+                        <TableHead className="text-xs">Approval Status</TableHead>
                         <TableHead className="text-xs text-right">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -710,13 +797,15 @@ export default function TemplateEditor() {
                             </Badge>
                           </TableCell>
                           <TableCell className="py-2">
-                            <Badge variant="secondary" className={`text-[10px] ${approvalColors[t.approval_status] || ""}`}>
-                              {formatLabel(t.approval_status)}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="py-2">
-                            <Badge variant={t.is_active ? "default" : "outline"} className="text-[10px]">
-                              {t.is_active ? "Active" : "Inactive"}
+                            <Badge
+                              variant="secondary"
+                              className={`text-[10px] ${approvalColors[t.approval_status] || "bg-gray-100 text-gray-700"}`}
+                              title={(t as any).submission_error || undefined}
+                            >
+                              {t.approval_status === "approved" ? "✓ Approved" :
+                               t.approval_status === "submitted" ? "Awaiting Approval" :
+                               t.approval_status === "rejected" ? "✗ Rejected" :
+                               "Pending Submission"}
                             </Badge>
                           </TableCell>
                           <TableCell className="py-2 text-right">

@@ -79,8 +79,8 @@ export function HybridImportHistoryTable({ orgId, tableName, limit = 5 }: Hybrid
 
   const cancelMutation = useMutation({
     mutationFn: async (importId: string) => {
-      const { data, error } = await supabase.functions.invoke('cancel-import', {
-        body: { importId }
+      const { data, error } = await supabase.rpc('cancel_import', {
+        _import_id: importId,
       });
       if (error) throw error;
       return data;

@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Phone, Clock, TrendingUp, Users, PhoneCall, CheckCircle, XCircle, Activity, Search, Download, User, Calendar, FileText, RefreshCw } from "lucide-react";
 import { useNotification } from "@/hooks/useNotification";
+import { useOrgContext } from "@/hooks/useOrgContext";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -89,10 +90,11 @@ export default function CallingDashboard() {
   const [callTypeFilter, setCallTypeFilter] = useState("all");
   const [syncing, setSyncing] = useState(false);
   const notify = useNotification();
+  const { effectiveOrgId } = useOrgContext();
 
   useEffect(() => {
-    fetchUsers();
-  }, []);
+    if (effectiveOrgId) fetchUsers();
+  }, [effectiveOrgId]);
 
   useEffect(() => {
     if (selectedUser !== "all") {
@@ -103,32 +105,27 @@ export default function CallingDashboard() {
   }, [selectedUser]);
 
   useEffect(() => {
-    fetchDashboardData();
-    fetchActiveCalls();
-    fetchCallLogs();
-    
+    if (!effectiveOrgId) return;
+
+    // Run all three fetches in parallel
+    Promise.all([fetchDashboardData(), fetchActiveCalls(), fetchCallLogs()]);
+
     // Auto-refresh every 20 seconds
     const intervalId = setInterval(() => {
-      fetchDashboardData();
-      fetchActiveCalls();
-      fetchCallLogs();
+      Promise.all([fetchDashboardData(), fetchActiveCalls(), fetchCallLogs()]);
     }, 20000);
-    
+
     return () => clearInterval(intervalId);
-  }, [timeRange, selectedUser, teamMemberIds, callTypeFilter]);
+  }, [effectiveOrgId, timeRange, selectedUser, teamMemberIds, callTypeFilter]);
 
   const fetchActiveCalls = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      const { data: profile } = await supabase.from("profiles").select("org_id").eq("id", user.id).single();
-      if (!profile?.org_id) return;
+      if (!effectiveOrgId) return;
 
       const { count } = await supabase
         .from("agent_call_sessions")
         .select("*", { count: "exact", head: true })
-        .eq("org_id", profile.org_id)
+        .eq("org_id", effectiveOrgId)
         .in("status", ["initiating", "ringing", "connected"]);
 
       setActiveCallsCount(count || 0);
@@ -139,21 +136,12 @@ export default function CallingDashboard() {
 
   const fetchUsers = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not authenticated");
-
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("org_id")
-        .eq("id", user.id)
-        .single();
-
-      if (!profile?.org_id) throw new Error("Organization not found");
+      if (!effectiveOrgId) throw new Error("Organization not found");
 
       const { data, error } = await supabase
         .from("profiles")
         .select("id, first_name, last_name")
-        .eq("org_id", profile.org_id)
+        .eq("org_id", effectiveOrgId)
         .order("first_name");
 
       if (error) throw error;
@@ -196,140 +184,45 @@ export default function CallingDashboard() {
 
   const fetchDashboardData = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("Not authenticated");
+      if (!effectiveOrgId) throw new Error("Organization not found");
 
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("org_id")
-        .eq("id", user.id)
-        .single();
+      const agentIds = (selectedUser !== "all" && teamMemberIds.length > 0) ? teamMemberIds : null;
 
-      if (!profile?.org_id) throw new Error("Organization not found");
+      // Single RPC call replaces fetching raw call_logs + ~140 lines of client-side aggregation
+      const { data, error } = await supabase.rpc("get_calling_dashboard_stats", {
+        _org_id: effectiveOrgId,
+        _days: parseInt(timeRange),
+        _agent_ids: agentIds,
+      });
 
-      const daysAgo = new Date();
-      daysAgo.setDate(daysAgo.getDate() - parseInt(timeRange));
+      if (error) throw error;
 
-      // Fetch from call_logs table - include all terminal status calls
-      let callLogsQuery = supabase
-        .from("call_logs")
-        .select(`
-          *,
-          profiles!call_logs_agent_id_fkey(id, first_name, last_name),
-          call_dispositions(name, category)
-        `)
-        .eq("org_id", profile.org_id)
-        .gte("created_at", daysAgo.toISOString())
-        .in("status", ["completed", "failed", "busy", "no-answer", "canceled"]);
-
-      if (selectedUser !== "all" && teamMemberIds.length > 0) {
-        callLogsQuery = callLogsQuery.in("agent_id", teamMemberIds);
-      }
-
-      const { data: callLogs, error: callLogsError } = await callLogsQuery;
-      if (callLogsError) throw callLogsError;
-
-      // Transform call_logs to activities format
-      const activities = callLogs?.map(log => ({
-        ...log,
-        created_by: log.agent_id,
-        call_duration: log.conversation_duration,
-      })) || [];
-
-      // Calculate overall stats
-      const totalCalls = activities?.length || 0;
-      const totalDuration = activities?.reduce((sum, a) => sum + (a.call_duration || 0), 0) || 0;
-      const avgDuration = totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0;
-      
-      // Get unique agents
-      const uniqueAgents = new Set(activities?.map(a => a.created_by).filter(Boolean));
-      const totalAgents = uniqueAgents.size;
-
-      // Calculate positive rate
-      const positiveCallsCount = activities?.filter(a => 
-        a.call_dispositions?.category === "positive"
-      ).length || 0;
-      const positiveRate = totalCalls > 0 ? Math.round((positiveCallsCount / totalCalls) * 100) : 0;
+      const result = data as any;
 
       setDashboardStats({
-        total_calls: totalCalls,
-        total_duration: totalDuration,
-        avg_duration: avgDuration,
-        total_agents: totalAgents,
-        positive_rate: positiveRate,
+        total_calls: result.overview.total_calls,
+        total_duration: result.overview.total_duration,
+        avg_duration: result.overview.avg_duration,
+        total_agents: result.overview.total_agents,
+        positive_rate: result.overview.positive_rate,
       });
 
-      // Calculate agent statistics
-      const agentMap = new Map<string, AgentStats>();
-      
-      activities?.forEach((activity: any) => {
-        if (!activity.created_by || !activity.profiles) return;
-        
-        const agentId = activity.created_by;
-        const agentName = `${activity.profiles.first_name} ${activity.profiles.last_name}`;
-        
-        if (!agentMap.has(agentId)) {
-          agentMap.set(agentId, {
-            agent_id: agentId,
-            agent_name: agentName,
-            total_calls: 0,
-            total_duration: 0,
-            positive_calls: 0,
-            negative_calls: 0,
-            conversion_rate: 0,
-            avg_call_duration: 0,
-          });
-        }
-        
-        const stats = agentMap.get(agentId)!;
-        stats.total_calls++;
-        stats.total_duration += activity.call_duration || 0;
-        
-        if (activity.call_dispositions?.category === "positive") {
-          stats.positive_calls++;
-        } else if (activity.call_dispositions?.category === "negative") {
-          stats.negative_calls++;
-        }
-      });
+      setAgentStats((result.agent_stats || []).map((a: any) => ({
+        agent_id: a.agent_id,
+        agent_name: a.agent_name,
+        total_calls: a.total_calls,
+        total_duration: a.total_duration,
+        avg_call_duration: a.avg_call_duration,
+        positive_calls: a.positive_calls,
+        negative_calls: a.negative_calls,
+        conversion_rate: a.conversion_rate,
+      })));
 
-      // Calculate derived metrics
-      const agentStatsArray = Array.from(agentMap.values()).map(stats => ({
-        ...stats,
-        avg_call_duration: stats.total_calls > 0 
-          ? Math.round(stats.total_duration / stats.total_calls) 
-          : 0,
-        conversion_rate: stats.total_calls > 0 
-          ? Math.round((stats.positive_calls / stats.total_calls) * 100) 
-          : 0,
-      }));
-
-      // Sort by total calls descending
-      agentStatsArray.sort((a, b) => b.total_calls - a.total_calls);
-      setAgentStats(agentStatsArray);
-
-      // Calculate disposition statistics
-      const dispositionMap = new Map<string, DispositionStats>();
-      
-      activities?.forEach((activity: any) => {
-        if (!activity.call_dispositions) return;
-        
-        const dispositionName = activity.call_dispositions.name;
-        const category = activity.call_dispositions.category;
-        
-        if (!dispositionMap.has(dispositionName)) {
-          dispositionMap.set(dispositionName, {
-            disposition_name: dispositionName,
-            count: 0,
-            category: category || "neutral",
-          });
-        }
-        
-        dispositionMap.get(dispositionName)!.count++;
-      });
-
-      const dispositionStatsArray = Array.from(dispositionMap.values());
-      dispositionStatsArray.sort((a, b) => b.count - a.count);
-      setDispositionStats(dispositionStatsArray);
+      setDispositionStats((result.disposition_stats || []).map((d: any) => ({
+        disposition_name: d.disposition_name,
+        count: d.count,
+        category: d.category || "neutral",
+      })));
 
     } catch (error: any) {
       notify.error("Error loading dashboard", error);
@@ -351,16 +244,7 @@ export default function CallingDashboard() {
 
   const fetchCallLogs = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('org_id')
-        .eq('id', user.id)
-        .single();
-
-      if (!profile) return;
+      if (!effectiveOrgId) return;
 
       const daysAgo = new Date();
       daysAgo.setDate(daysAgo.getDate() - parseInt(timeRange));
@@ -372,7 +256,7 @@ export default function CallingDashboard() {
           contacts (first_name, last_name),
           call_dispositions (name, category)
         `)
-        .eq('org_id', profile.org_id)
+        .eq('org_id', effectiveOrgId)
         .gte('created_at', daysAgo.toISOString())
         .order('created_at', { ascending: false });
 

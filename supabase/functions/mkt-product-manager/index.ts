@@ -52,7 +52,13 @@ interface DeleteBody {
   product_key: string;
 }
 
-type RequestBody = OnboardBody | ResumeBody | ToggleBody | SyncBody | DeleteBody;
+interface RefreshContentBody {
+  mode: 'refresh_content';
+  org_id: string;
+  product_key: string;
+}
+
+type RequestBody = OnboardBody | ResumeBody | ToggleBody | SyncBody | DeleteBody | RefreshContentBody;
 
 interface OnboardingStep {
   id: string;
@@ -394,6 +400,24 @@ async function stepRegister(ctx: StepContext): Promise<Record<string, unknown>> 
 
   if (error) throw new Error(`Failed to upsert mkt_products: ${error.message}`);
 
+  // Persist service role key as a Supabase project secret so resume/reset_step
+  // can retrieve it without asking the user again.
+  if (ctx.supabase_service_role_key) {
+    const mgmtToken = Deno.env.get('SB_MGMT_TOKEN') ?? '';
+    const projectRef = (Deno.env.get('SUPABASE_URL') ?? '')
+      .replace('https://', '').replace('.supabase.co', '');
+    if (mgmtToken && projectRef) {
+      await fetch(`https://api.supabase.com/v1/projects/${projectRef}/secrets`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${mgmtToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify([
+          { name: secretKeyName, value: ctx.supabase_service_role_key },
+          { name: secretUrlName, value: supabase_url },
+        ]),
+      }).catch((e) => console.warn('[register] Failed to store product secret:', e));
+    }
+  }
+
   return {
     product_id: product.id,
     product_name: product.product_name,
@@ -418,19 +442,57 @@ async function stepSchemaSniff(ctx: StepContext): Promise<Record<string, unknown
   const productClient = createProductClient(supabase_url, supabase_service_role_key);
   const schemaMap: Record<string, string> = {};
 
-  const probe = async (names: string[], key: string) => {
-    for (const tableName of names) {
-      const { error } = await productClient.from(tableName).select('id').limit(1);
-      if (!error) { schemaMap[key] = tableName; return; }
-    }
-  };
+  // Step 1: enumerate all public tables via information_schema (service role can always read this)
+  let allTables: string[] = [];
+  try {
+    const { data: rows } = await (productClient as any)
+      .schema('information_schema')
+      .from('tables')
+      .select('table_name')
+      .eq('table_schema', 'public')
+      .eq('table_type', 'BASE TABLE');
+    allTables = ((rows as Array<{ table_name: string }>) || []).map((r) => r.table_name.toLowerCase());
+  } catch { /* fall through to probe */ }
 
-  await Promise.all([
-    probe(['users', 'profiles', 'registrations', 'accounts', 'customers'], 'registrations_table'),
-    probe(['payments', 'subscriptions', 'orders', 'invoices', 'billing'], 'payments_table'),
-    probe(['plans', 'pricing', 'products', 'tiers', 'packages'], 'pricing_table'),
-    probe(['events', 'activities', 'activity_log', 'audit_log', 'usage'], 'events_table'),
-  ]);
+  // Broad keyword lists for role categorisation — first match wins
+  const REGISTRATION_NAMES = ['users', 'user', 'profiles', 'profile', 'registrations', 'accounts', 'customers', 'employees', 'employee', 'workers', 'worker', 'members', 'member', 'staff', 'agents', 'agent', 'contacts', 'contact', 'vendors', 'vendor', 'suppliers', 'supplier', 'partners', 'partner', 'clients', 'client', 'technicians', 'technician', 'field_agents', 'field_workers'];
+  const PAYMENT_NAMES      = ['payments', 'payment', 'subscriptions', 'subscription', 'orders', 'order', 'invoices', 'invoice', 'billing', 'transactions', 'transaction', 'charges', 'charge'];
+  const PRICING_NAMES      = ['plans', 'plan', 'pricing', 'price', 'products', 'tiers', 'tier', 'packages', 'package'];
+  const EVENT_NAMES        = ['events', 'event', 'activities', 'activity', 'activity_log', 'audit_log', 'usage', 'logs', 'log', 'tasks', 'task', 'assignments', 'assignment', 'attendance', 'shifts', 'shift', 'sessions', 'session', 'verifications', 'verification', 'checks', 'check', 'inspections', 'inspection', 'site_visits', 'visits', 'visit', 'work_orders', 'tickets', 'ticket', 'jobs', 'job'];
+
+  if (allTables.length > 0) {
+    const find = (keywords: string[]) => allTables.find((t) => keywords.includes(t));
+    const r = find(REGISTRATION_NAMES);
+    const p = find(PAYMENT_NAMES);
+    const pr = find(PRICING_NAMES);
+    const e = find(EVENT_NAMES);
+    if (r)  schemaMap.registrations_table = r;
+    if (p)  schemaMap.payments_table      = p;
+    if (pr) schemaMap.pricing_table       = pr;
+    if (e)  schemaMap.events_table        = e;
+  } else {
+    // Fallback: blind probe using all known names across all categories
+    const allProbeNames = [...new Set([...REGISTRATION_NAMES, ...PAYMENT_NAMES, ...PRICING_NAMES, ...EVENT_NAMES])];
+    const probeResults: string[] = [];
+    await Promise.all(allProbeNames.map(async (tableName) => {
+      const { error } = await productClient.from(tableName).select('id').limit(1);
+      if (!error) probeResults.push(tableName);
+    }));
+    allTables = probeResults; // use discovered tables for all_tables below
+
+    const find = (keywords: string[]) => probeResults.find((t) => keywords.includes(t));
+    const r = find(REGISTRATION_NAMES);
+    const p = find(PAYMENT_NAMES);
+    const pr = find(PRICING_NAMES);
+    const e = find(EVENT_NAMES);
+    if (r)  schemaMap.registrations_table = r;
+    if (p)  schemaMap.payments_table      = p;
+    if (pr) schemaMap.pricing_table       = pr;
+    if (e)  schemaMap.events_table        = e;
+  }
+
+  // Always store the full table list so Arohan sees every table, not just the 4 role buckets
+  (schemaMap as Record<string, unknown>).all_tables = allTables;
 
   const trialDays = schemaMap.events_table ? 21 : 14;
   await supabase
@@ -813,7 +875,7 @@ Each script should have:
 - closing: how to end the call (2-3 sentences)
 
 Return a JSON array of 4 script objects.`,
-    { model: 'haiku', max_tokens: 2048, temperature: 0.5 },
+    { model: 'sonnet', max_tokens: 4096, temperature: 0.5 },
   );
   if (Array.isArray(data)) callScripts = data;
 
@@ -850,6 +912,25 @@ async function stepCampaignCreate(ctx: StepContext): Promise<Record<string, unkn
     .single();
 
   if (existingCampaign) {
+    // Campaign exists — but check if it has steps; if not, create them now
+    const { count: existingSteps } = await supabase
+      .from('mkt_campaign_steps')
+      .select('id', { count: 'exact', head: true })
+      .eq('campaign_id', existingCampaign.id);
+
+    if (!existingSteps || existingSteps === 0) {
+      const stepRows = [
+        { org_id, campaign_id: existingCampaign.id, step_number: 1, channel: 'email',    delay_hours: 0,   is_active: true },
+        { org_id, campaign_id: existingCampaign.id, step_number: 2, channel: 'email',    delay_hours: 72,  is_active: true },
+        { org_id, campaign_id: existingCampaign.id, step_number: 3, channel: 'whatsapp', delay_hours: 48,  is_active: true },
+        { org_id, campaign_id: existingCampaign.id, step_number: 4, channel: 'email',    delay_hours: 96,  is_active: true },
+        { org_id, campaign_id: existingCampaign.id, step_number: 5, channel: 'email',    delay_hours: 120, is_active: true },
+      ];
+      const { error: stepErr } = await supabase.from('mkt_campaign_steps').insert(stepRows);
+      if (stepErr) throw new Error(`Campaign steps error: ${stepErr.message}`);
+      return { campaign_id: existingCampaign.id, already_existed: true, steps_created: stepRows.length };
+    }
+
     return { campaign_id: existingCampaign.id, already_existed: true };
   }
 
@@ -1348,21 +1429,138 @@ async function handleToggle(
 
   const { data: product } = await supabase
     .from('mkt_products')
-    .select('id, product_key, product_name, active')
+    .select('id, product_key, product_name, active, org_id')
     .eq('id', product_id)
     .single();
 
-  await logger.info('product-toggled', {
-    product_id,
-    active,
-    product_key: product?.product_key,
-  });
+  await logger.info('product-toggled', { product_id, active, product_key: product?.product_key });
 
-  return {
-    product_id,
-    active,
-    product: product || null,
-  };
+  if (active && product) {
+    const { product_key, org_id } = product as { product_key: string; org_id: string };
+
+    // Find all campaigns for this product
+    const { data: campaigns } = await supabase
+      .from('mkt_campaigns')
+      .select('id')
+      .eq('org_id', org_id)
+      .eq('product_key', product_key);
+
+    for (const campaign of (campaigns || [])) {
+      const campaign_id = campaign.id as string;
+
+      // Check step count — FieldSync was onboarded before ICP existed, so steps may be missing
+      const { count: stepCount } = await supabase
+        .from('mkt_campaign_steps')
+        .select('id', { count: 'exact', head: true })
+        .eq('campaign_id', campaign_id);
+
+      if (!stepCount || stepCount === 0) {
+        // Reset campaign_create so runSteps recreates the steps, then stop here —
+        // the next activation will proceed with steps in place
+        await supabase.from('mkt_onboarding_steps')
+          .update({ status: 'pending', attempts: 0, error: null, completed_at: null, details: null })
+          .eq('org_id', org_id).eq('product_key', product_key).eq('step_name', 'campaign_create');
+        await logger.info('campaign-steps-missing-reset', { org_id, product_key, campaign_id });
+        continue;
+      }
+
+      // Fetch steps in order
+      const { data: steps } = await supabase
+        .from('mkt_campaign_steps')
+        .select('id, step_number, channel, template_id')
+        .eq('campaign_id', campaign_id)
+        .order('step_number');
+
+      // Fetch templates by product_key prefix (naming convention: productkey_*)
+      const [{ data: emailTpls }, { data: waTpls }] = await Promise.all([
+        supabase.from('mkt_email_templates')
+          .select('id')
+          .eq('org_id', org_id)
+          .ilike('name', `${product_key}%`)
+          .eq('is_active', true)
+          .order('created_at'),
+        supabase.from('mkt_whatsapp_templates')
+          .select('id')
+          .eq('org_id', org_id)
+          .ilike('template_name', `${product_key}%`)
+          .eq('approval_status', 'approved')
+          .order('created_at'),
+      ]);
+
+      // Link templates to steps in sequence order (email steps cycle through email templates, WA through WA)
+      let emailIdx = 0, waIdx = 0;
+      for (const step of (steps || [])) {
+        if (step.template_id) continue; // already linked
+        let tplId: string | null = null;
+        if (step.channel === 'email' && emailTpls && emailIdx < emailTpls.length) {
+          tplId = (emailTpls[emailIdx++] as { id: string }).id;
+        } else if (step.channel === 'whatsapp' && waTpls && waIdx < waTpls.length) {
+          tplId = (waTpls[waIdx++] as { id: string }).id;
+        }
+        if (tplId) {
+          await supabase.from('mkt_campaign_steps').update({ template_id: tplId }).eq('id', step.id as string);
+        }
+      }
+
+      // Activate campaign
+      await supabase.from('mkt_campaigns')
+        .update({ status: 'active', start_date: new Date().toISOString() })
+        .eq('id', campaign_id);
+
+      // Bulk enroll contacts (status='new') — skip any already enrolled to avoid duplicates
+      const { data: existing } = await supabase
+        .from('mkt_sequence_enrollments')
+        .select('lead_id')
+        .eq('campaign_id', campaign_id);
+      const enrolledIds = new Set((existing || []).map((e: Record<string, unknown>) => e.lead_id as string));
+
+      // Paginate contacts in chunks of 1000 (PostgREST max per request)
+      const now = new Date().toISOString();
+      let offset = 0;
+      let totalEnrolled = 0;
+      while (true) {
+        const { data: batch } = await supabase
+          .from('contacts')
+          .select('id, org_id')
+          .eq('org_id', org_id)
+          .eq('mkt_product_key', product_key)
+          .eq('status', 'new')
+          .range(offset, offset + 999);
+
+        if (!batch || batch.length === 0) break;
+
+        const rows = (batch as Array<{ id: string; org_id: string }>)
+          .filter((c) => !enrolledIds.has(c.id))
+          .map((c) => ({
+            org_id: c.org_id,
+            lead_id: c.id,
+            campaign_id,
+            current_step: 1,
+            status: 'active',
+            next_action_at: now,
+            enrolled_at: now,
+          }));
+
+        for (let i = 0; i < rows.length; i += 500) {
+          await supabase.from('mkt_sequence_enrollments').insert(rows.slice(i, i + 500));
+        }
+        totalEnrolled += rows.length;
+
+        if (batch.length < 1000) break;
+        offset += 1000;
+      }
+
+      await logger.info('campaign-activated', { org_id, product_key, campaign_id, enrolled: totalEnrolled });
+    }
+  } else if (!active && product) {
+    // Pause all campaigns for this product
+    await supabase.from('mkt_campaigns')
+      .update({ status: 'paused' })
+      .eq('org_id', (product as { org_id: string }).org_id)
+      .eq('product_key', (product as { product_key: string }).product_key);
+  }
+
+  return { product_id, active, product: product || null };
 }
 
 // ---------------------------------------------------------------------------
@@ -1646,6 +1844,58 @@ async function handleResetStep(
 }
 
 // ---------------------------------------------------------------------------
+// refresh_content — atomically wipe + regenerate all 3 content steps
+// Called automatically after every ICP evolution (manual or cron-driven).
+// Running a single runSteps() call avoids the race condition that 3 parallel
+// reset_step calls would create (each invoking runSteps concurrently).
+// ---------------------------------------------------------------------------
+
+const CONTENT_STEPS = ['email_templates', 'whatsapp_templates', 'call_scripts'] as const;
+
+async function handleRefreshContent(
+  supabase: SupabaseClient,
+  body: RefreshContentBody,
+  logger: ReturnType<typeof createEngineLogger>,
+): Promise<Record<string, unknown>> {
+  const { org_id, product_key } = body;
+
+  // 1. Delete stale content for all 3 steps
+  for (const step_name of CONTENT_STEPS) {
+    await clearStepOutput(supabase, org_id, product_key, step_name);
+  }
+
+  // 2. Reset all 3 step rows to pending in one query
+  await supabase.from('mkt_onboarding_steps')
+    .update({ status: 'pending', attempts: 0, error: null, completed_at: null, details: null })
+    .eq('org_id', org_id).eq('product_key', product_key).in('step_name', [...CONTENT_STEPS]);
+
+  // 3. Mark product as in_progress so status reflects regeneration
+  await supabase.from('mkt_products')
+    .update({ onboarding_status: 'in_progress' })
+    .eq('org_id', org_id).eq('product_key', product_key);
+
+  // 4. Load product connection details and run all pending steps once (sequential, no race)
+  const { data: product } = await supabase.from('mkt_products')
+    .select('product_url, git_repo_url, supabase_url, supabase_secret_name')
+    .eq('org_id', org_id).eq('product_key', product_key).single();
+
+  const serviceRoleKey = product?.supabase_secret_name
+    ? Deno.env.get(product.supabase_secret_name) ?? '' : '';
+
+  const steps = await runSteps(
+    supabase, logger,
+    org_id, product_key,
+    product?.product_url ?? '',
+    product?.git_repo_url ?? '',
+    product?.supabase_url ?? '',
+    serviceRoleKey,
+  );
+
+  await logger.info('content-refreshed', { org_id, product_key, steps_run: CONTENT_STEPS.length });
+  return { org_id, product_key, steps };
+}
+
+// ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
 
@@ -1681,6 +1931,9 @@ Deno.serve(async (req) => {
         break;
       case 'reset_step':
         result = await handleResetStep(supabase, body as ResetStepBody, logger);
+        break;
+      case 'refresh_content':
+        result = await handleRefreshContent(supabase, body as RefreshContentBody, logger);
         break;
       default:
         throw new Error(`Unknown mode: ${(body as Record<string, unknown>).mode}`);

@@ -1,10 +1,13 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.58.0';
 import { getSupabaseClient } from '../_shared/supabaseClient.ts';
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+import { corsHeaders } from '../_shared/corsHeaders.ts';
+import { jsonResponse, errorResponse, handleCors } from '../_shared/responseHelpers.ts';
+import { getUserFromRequest } from '../_shared/authHelpers.ts';
+import {
+  formatPhoneE164,
+  buildExotelPayload,
+  sendViaExotel,
+  getWhatsAppSettings,
+} from '../_shared/exotelWhatsApp.ts';
 
 interface SendMessageRequest {
   contactId: string;
@@ -15,84 +18,23 @@ interface SendMessageRequest {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
-  }
+  const cors = handleCors(req);
+  if (cors) return cors;
 
   try {
-    console.log('=== send-whatsapp-message Request Started ===');
-    console.log('Request method:', req.method);
-    console.log('Timestamp:', new Date().toISOString());
-
-    // Check for Authorization header
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      throw new Error('No Authorization header provided');
-    }
-
-    // Extract JWT token (remove "Bearer " prefix)
-    const token = authHeader.replace('Bearer ', '');
-
-    // Create Supabase client
-    const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      {
-        global: {
-          headers: { Authorization: authHeader },
-        },
-        auth: {
-          persistSession: false,
-        },
-      }
-    );
-
-    // Authenticate user
-    const { data: { user }, error: userError } = await supabaseClient.auth.getUser(token);
-
-    if (userError || !user) {
-      throw new Error(`Authentication failed: ${userError?.message || 'No user found'}`);
-    }
-
-    console.log('✓ User authenticated:', user.email);
+    // Authenticate user and get org
+    const { user, orgId, supabaseClient } = await getUserFromRequest(req);
 
     const body: SendMessageRequest = await req.json();
     const { contactId, phoneNumber, templateId, templateVariables, message } = body;
 
-    // Fetch user profile and org_id
-    const { data: profile, error: profileError } = await supabaseClient
-      .from('profiles')
-      .select('org_id')
-      .eq('id', user.id)
-      .single();
-
-    if (profileError || !profile?.org_id) {
-      throw new Error('Organization not found');
-    }
-
-    console.log('✓ Organization verified:', profile.org_id);
-
-    // Get Exotel settings (now used for WhatsApp)
-    const { data: exotelSettings } = await supabaseClient
-      .from('exotel_settings')
-      .select('*')
-      .eq('org_id', profile.org_id)
-      .eq('is_active', true)
-      .eq('whatsapp_enabled', true)
-      .single();
-
+    // Get WhatsApp settings
+    const exotelSettings = await getWhatsAppSettings(supabaseClient, orgId);
     if (!exotelSettings) {
-      return new Response(JSON.stringify({ error: 'WhatsApp not configured for this organization' }), {
-        status: 404,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: 'WhatsApp not configured for this organization' }, 404);
     }
-
     if (!exotelSettings.whatsapp_source_number) {
-      return new Response(JSON.stringify({ error: 'WhatsApp source number not configured' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: 'WhatsApp source number not configured' }, 400);
     }
 
     let messageContent = message || '';
@@ -104,18 +46,15 @@ Deno.serve(async (req) => {
         .from('communication_templates')
         .select('*')
         .eq('id', templateId)
-        .eq('org_id', profile.org_id)
+        .eq('org_id', orgId)
         .single();
 
       if (!template) {
-        return new Response(JSON.stringify({ error: 'Template not found' }), {
-          status: 404,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+        return jsonResponse({ error: 'Template not found' }, 404);
       }
 
       messageContent = template.content;
-      
+
       // Replace variables in template
       if (templateVariables) {
         Object.entries(templateVariables).forEach(([key, value]) => {
@@ -130,68 +69,28 @@ Deno.serve(async (req) => {
       };
     }
 
-    // Format phone number (ensure it's in e.164 format)
-    let formattedPhone = phoneNumber.replace(/[^\d+]/g, '');
-    if (!formattedPhone.startsWith('+')) {
-      // Assume Indian number if no country code
-      if (!formattedPhone.startsWith('91') && formattedPhone.length === 10) {
-        formattedPhone = '+91' + formattedPhone;
-      } else {
-        formattedPhone = '+' + formattedPhone;
-      }
-    }
-
-    // Get webhook callback URL
+    const formattedPhone = formatPhoneE164(phoneNumber);
     const webhookUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/whatsapp-webhook`;
 
-    // Build Exotel WhatsApp API request
-    const exotelUrl = `https://${exotelSettings.api_key}:${exotelSettings.api_token}@${exotelSettings.subdomain}/v2/accounts/${exotelSettings.account_sid}/messages`;
+    // Build and send
+    const content = templateData
+      ? { type: 'template', template: templateData }
+      : { recipient_type: 'individual', type: 'text', text: { preview_url: false, body: messageContent } };
 
-    const exotelPayload: any = {
-      custom_data: contactId,
-      status_callback: webhookUrl,
-      whatsapp: {
-        messages: [
-          {
-            from: exotelSettings.whatsapp_source_number,
-            to: formattedPhone,
-            content: templateData ? {
-              type: 'template',
-              template: templateData,
-            } : {
-              recipient_type: 'individual',
-              type: 'text',
-              text: {
-                preview_url: false,
-                body: messageContent,
-              },
-            },
-          },
-        ],
-      },
-    };
-
-    console.log('Sending WhatsApp message via Exotel:', JSON.stringify(exotelPayload, null, 2));
-
-    const exotelResponse = await fetch(exotelUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(exotelPayload),
+    const payload = buildExotelPayload({
+      sourceNumber: exotelSettings.whatsapp_source_number,
+      toNumber: formattedPhone,
+      content,
+      customData: contactId,
+      statusCallback: webhookUrl,
     });
 
-    const exotelResult = await exotelResponse.json();
-    console.log('Exotel response:', JSON.stringify(exotelResult, null, 2));
+    const result = await sendViaExotel(exotelSettings, payload);
 
-    // Check for success (Exotel returns response.whatsapp.messages array)
-    const messageResponse = exotelResult?.response?.whatsapp?.messages?.[0];
-    const isSuccess = exotelResponse.ok && messageResponse?.code === 200;
-
-    if (!isSuccess) {
+    if (!result.success) {
       // Log failed message
       await supabaseClient.from('whatsapp_messages').insert({
-        org_id: profile.org_id,
+        org_id: orgId,
         contact_id: contactId,
         template_id: templateId || null,
         sent_by: user.id,
@@ -199,51 +98,40 @@ Deno.serve(async (req) => {
         message_content: messageContent,
         template_variables: templateVariables || null,
         status: 'failed',
-        error_message: messageResponse?.error_data?.message || exotelResult?.message || 'Failed to send message',
-        exotel_status_code: messageResponse?.code?.toString() || exotelResponse.status.toString(),
+        error_message: result.error,
+        exotel_status_code: String(result.statusCode),
       });
 
-      return new Response(
-        JSON.stringify({ error: messageResponse?.error_data?.message || exotelResult?.message || 'Failed to send message' }),
-        {
-          status: exotelResponse.status,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
-      );
+      return jsonResponse({ error: result.error }, result.statusCode);
     }
-
-    // Extract message SID from response
-    const messageSid = messageResponse?.data?.sid;
 
     // Log successful message
     const { data: messageRecord } = await supabaseClient
       .from('whatsapp_messages')
       .insert({
-        org_id: profile.org_id,
+        org_id: orgId,
         contact_id: contactId,
         template_id: templateId || null,
         sent_by: user.id,
         phone_number: formattedPhone,
         message_content: messageContent,
         template_variables: templateVariables || null,
-        exotel_message_id: messageSid,
+        exotel_message_id: result.messageSid,
         status: 'sent',
       })
       .select()
       .single();
 
-    // Use shared service role client for wallet deduction
-    const supabaseServiceClient = getSupabaseClient();
-
     // Deduct WhatsApp cost from wallet
+    const supabaseServiceClient = getSupabaseClient();
     const { data: deductResult, error: deductError } = await supabaseServiceClient.rpc('deduct_from_wallet', {
-      _org_id: profile.org_id,
+      _org_id: orgId,
       _amount: 1.00,
       _service_type: 'whatsapp',
       _reference_id: messageRecord?.id,
       _quantity: 1,
       _unit_cost: 1.00,
-      _user_id: user.id
+      _user_id: user.id,
     });
 
     if (deductError || !deductResult?.success) {
@@ -252,7 +140,7 @@ Deno.serve(async (req) => {
 
     // Log activity
     await supabaseClient.from('contact_activities').insert({
-      org_id: profile.org_id,
+      org_id: orgId,
       contact_id: contactId,
       activity_type: 'whatsapp',
       subject: 'WhatsApp Message Sent',
@@ -260,91 +148,55 @@ Deno.serve(async (req) => {
       created_by: user.id,
     });
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        messageId: messageSid,
-        message: messageRecord,
-      }),
-      {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      }
-    );
+    return jsonResponse({
+      success: true,
+      messageId: result.messageSid,
+      message: messageRecord,
+    });
   } catch (error) {
     const err = error as Error;
-    console.error('=== send-whatsapp-message Error ===');
-    console.error('Error Message:', err.message);
-    console.error('Timestamp:', new Date().toISOString());
-    
-    return new Response(
-      JSON.stringify({ 
-        error: err.message,
-        timestamp: new Date().toISOString()
-      }),
-      {
-        status: err.message?.includes('Unauthorized') || err.message?.includes('Authentication') ? 401 : 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      }
-    );
+    console.error('send-whatsapp-message error:', err.message);
+    const status = err.message?.includes('Authentication') ? 401 : 500;
+    return errorResponse(error, status);
   }
 });
 
 // Helper function to build template components for Exotel format
 function buildTemplateComponents(template: any, variables?: Record<string, string>): any[] {
   const components: any[] = [];
-  
-  // Header component
+
   if (template.header_type && template.header_content) {
-    const headerComponent: any = {
-      type: 'header',
-    };
-    
+    const headerComponent: any = { type: 'header' };
     if (template.header_type === 'text') {
-      headerComponent.parameters = [{
-        type: 'text',
-        text: template.header_content,
-      }];
+      headerComponent.parameters = [{ type: 'text', text: template.header_content }];
     } else if (['image', 'video', 'document'].includes(template.header_type)) {
       headerComponent.parameters = [{
         type: template.header_type,
-        [template.header_type]: {
-          link: template.header_content,
-        },
+        [template.header_type]: { link: template.header_content },
       }];
     }
-    
     components.push(headerComponent);
   }
-  
-  // Body component with variables
+
   if (variables && Object.keys(variables).length > 0) {
-    const bodyParameters = Object.values(variables).map((value) => ({
-      type: 'text',
-      text: value,
-    }));
-    
     components.push({
       type: 'body',
-      parameters: bodyParameters,
+      parameters: Object.values(variables).map(value => ({ type: 'text', text: value })),
     });
   }
-  
-  // Button components
+
   if (template.buttons && Array.isArray(template.buttons)) {
     template.buttons.forEach((button: any, index: number) => {
       if (button.type === 'url' && button.url?.includes('{{')) {
         components.push({
           type: 'button',
           sub_type: 'url',
-          index: index,
-          parameters: [{
-            type: 'text',
-            text: variables?.[`button_${index}`] || '',
-          }],
+          index,
+          parameters: [{ type: 'text', text: variables?.[`button_${index}`] || '' }],
         });
       }
     });
   }
-  
+
   return components;
 }

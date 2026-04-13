@@ -135,15 +135,15 @@ async function countTaggedContacts(
   orgId: string,
   productKey: string,
 ): Promise<number> {
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-
+  // Count contacts with status='new' (uncontacted, available pool).
+  // This reflects the actionable lead pool, not historical sourcing volume —
+  // so the cap stays relevant as contacts move through the pipeline.
   const { count, error } = await supabase
     .from('contacts')
     .select('id', { count: 'exact', head: true })
     .eq('org_id', orgId)
     .eq('mkt_product_key', productKey)
-    .gte('mkt_sourced_at', monthStart);
+    .eq('status', 'new');
 
   if (error) throw new Error(`Failed to count tagged contacts: ${error.message}`);
   return count ?? 0;
@@ -181,7 +181,9 @@ async function sourceFromNative(
 
   const lastId = (candidates as NativeContact[]).at(-1)?.id ?? minId;
 
-  // Collect all phones and emails to check for duplicates
+  const candidateIds = (candidates as NativeContact[]).map((c) => c.id);
+
+  // Collect phones and emails for legacy dedup (contacts inserted before native-ID tracking)
   const phones = (candidates as NativeContact[])
     .map((c) => c.phone)
     .filter(Boolean) as string[];
@@ -211,16 +213,43 @@ async function sourceFromNative(
     return found;
   }
 
-  const [existingPhones, existingEmails] = await Promise.all([
+  // Primary dedup: check native IDs already claimed by ANY product in this org,
+  // BUT only for cold/new contacts — if a contact has already engaged (converted,
+  // replied, attended a demo etc.) they are known prospects eligible for cross-sell
+  // to other products.  We exclude statuses that indicate an established connection.
+  const ENGAGED_STATUSES = ['converted', 'customer', 'opportunity', 'qualified', 'demo_done', 'negotiation'];
+
+  async function batchedNativeIdCheck(ids: string[]): Promise<Set<string>> {
+    const found = new Set<string>();
+    for (let i = 0; i < ids.length; i += DEDUP_CHUNK) {
+      const chunk = ids.slice(i, i + DEDUP_CHUNK);
+      const { data, error } = await supabase
+        .from('contacts')
+        .select('mkt_native_contact_id')
+        .eq('org_id', orgId)
+        .in('mkt_native_contact_id', chunk)
+        .not('status', 'in', `(${ENGAGED_STATUSES.join(',')})`);  // exclude engaged contacts — they CAN be retargeted
+      if (error) throw new Error(`native-id dedup check failed: ${error.message}`);
+      for (const row of (data || []) as Record<string, string>[]) {
+        if (row['mkt_native_contact_id']) found.add(row['mkt_native_contact_id']);
+      }
+    }
+    return found;
+  }
+
+  const [existingNativeIds, existingPhones, existingEmails] = await Promise.all([
+    batchedNativeIdCheck(candidateIds),
     phones.length > 0 ? batchedInCheck('phone', phones) : Promise.resolve(new Set<string>()),
     emails.length > 0 ? batchedInCheck('email', emails) : Promise.resolve(new Set<string>()),
   ]);
 
-  // Filter out duplicates
+  // Filter out contacts already sourced (as cold leads) for any product in this org.
+  // Engaged/converted contacts are allowed through for cross-product retargeting.
   const fresh = (candidates as NativeContact[]).filter((c) => {
-    if (c.phone && existingPhones.has(c.phone)) return false;
+    if (existingNativeIds.has(c.id)) return false;                            // already cold-sourced (any product)
+    if (c.phone && existingPhones.has(c.phone)) return false;                 // phone clash (legacy rows without native ID)
     const email = firstNonNull(c.email_official, c.email_personal, c.email_generic);
-    if (email && existingEmails.has(email)) return false;
+    if (email && existingEmails.has(email)) return false;                     // email clash (legacy rows)
     return true;
   }).slice(0, limit);
 
@@ -251,6 +280,7 @@ async function sourceFromNative(
       country: c.country || null,
       linkedin_url: c.linkedin_url || null,
       mkt_product_key: productKey,
+      mkt_native_contact_id: c.id,        // track native UUID for cross-product dedup
       mkt_source: 'native',
       mkt_sourced_at: now,
       source: 'native_dataset',
@@ -489,15 +519,27 @@ Deno.serve(async (req) => {
     const serviceRoleKey2 = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
     /** Write current total back to the onboarding step so the UI always reflects live progress. */
-    async function updateStepTotal(total: number) {
+    async function updateStepTotal(total: number, done = false) {
+      const patch: Record<string, unknown> = {
+        status: done ? 'complete' : 'in_progress',
+        details: { sourced: { status: 'sourced', total } },
+      };
+      if (done) patch.completed_at = new Date().toISOString();
       await supabase.from('mkt_onboarding_steps')
-        .update({ details: { sourced: { status: 'sourced', total } } })
+        .update(patch)
+        .eq('org_id', org_id).eq('product_key', product_key).eq('step_name', 'source_leads');
+    }
+
+    // Mark step in_progress on the first invocation (min_id is the zero UUID)
+    if (min_id === '00000000-0000-0000-0000-000000000000') {
+      await supabase.from('mkt_onboarding_steps')
+        .update({ status: 'in_progress', attempts: 1, error: null })
         .eq('org_id', org_id).eq('product_key', product_key).eq('step_name', 'source_leads');
     }
 
     // 5. Self-chain to next page if: still below cap AND last page was full (more rows may exist)
     if (gapAfterNative > 0 && pageWasFull) {
-      await updateStepTotal(countAfterNative);
+      await updateStepTotal(countAfterNative, false);
       await productLogger.info('native-chaining', { product_key, last_id: lastId, gap: gapAfterNative });
       fetch(`${supabaseUrl}/functions/v1/mkt-source-leads`, {
         method: 'POST',
@@ -524,7 +566,7 @@ Deno.serve(async (req) => {
 
     // 7. Final count — update onboarding step with definitive total
     const finalCount = await countTaggedContacts(supabase, org_id, product_key);
-    await updateStepTotal(finalCount);
+    await updateStepTotal(finalCount, true);
 
     const result = {
       status: 'sourced',

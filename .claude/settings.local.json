@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(supabase:*)",
+      "Bash(npx supabase:*)",
+      "Bash(export:*)",
+      "Bash(PGPASSWORD='7vN$F9#2xP&z@qL1' npx supabase:*)",
+      "Bash(nslookup:*)",
+      "Bash(ping:*)",
+      "Bash(while read f)",
+      "Bash(do echo \"$f\")",
+      "Bash(done)",
+      "Bash(curl:*)",
+      "Bash(bash:*)",
+      "Bash(python3:*)",
+      "Bash(test:*)",
+      "Bash(grep:*)",
+      "Bash(mkdir:*)",
+      "Bash(pg_dump:*)",
+      "Bash(where:*)",
+      "Bash(choco install:*)",
+      "Bash(sort -k5 -n -r)",
+      "Bash(python:*)",
+      "Bash(cmdkey:*)",
+      "Bash(head:*)",
+      "Bash(tasklist:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(dir C:\\\\Users\\\\admin\\\\Pictures:*)",
+      "Bash(powershell:*)",
+      "Bash(npm run:*)",
+      "Bash(npx:*)",
+      "Bash(gh repo:*)",
+      "Bash(gh api:*)",
+      "Bash(gh auth:*)",
+      "Bash(gh secret:*)",
+      "Bash(gh run:*)",
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git clone:*)"
+    ]
+  }
+}

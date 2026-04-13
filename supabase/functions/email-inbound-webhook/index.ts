@@ -27,9 +27,10 @@ async function verifyWebhookSignature(
     // Construct the signed content: id.timestamp.body
     const signedContent = `${svixId}.${svixTimestamp}.${body}`;
     
-    // Convert secret to key
+    // Convert secret to key — secret after 'whsec_' is base64-encoded, must decode first
     const encoder = new TextEncoder();
-    const keyData = encoder.encode(secret.replace('whsec_', ''));
+    const base64Secret = secret.replace('whsec_', '');
+    const keyData = Uint8Array.from(atob(base64Secret), c => c.charCodeAt(0));
     const key = await crypto.subtle.importKey(
       'raw',
       keyData,
@@ -169,65 +170,80 @@ Deno.serve(async (req) => {
           .eq('resend_email_id', emailId)
           .single();
         
+        const now = new Date().toISOString();
+
+        // --- Marketing sequence action update ---
+        const { data: mktAction } = await supabaseClient
+          .from('mkt_sequence_actions')
+          .select('id, status')
+          .eq('external_id', emailId)
+          .maybeSingle();
+
+        if (mktAction) {
+          const mktUpdates: any = {};
+          switch (payload.type) {
+            case 'email.delivered':
+              mktUpdates.delivered_at = now;
+              break;
+            case 'email.bounced':
+              mktUpdates.status = 'bounced';
+              mktUpdates.failed_at = now;
+              mktUpdates.failure_reason = `Bounced: ${eventData.bounce?.type || 'unknown'}`;
+              break;
+            case 'email.opened':
+              mktUpdates.opened_at = now;
+              break;
+            case 'email.clicked':
+              mktUpdates.clicked_at = now;
+              break;
+          }
+          if (Object.keys(mktUpdates).length > 0) {
+            await supabaseClient.from('mkt_sequence_actions').update(mktUpdates).eq('id', mktAction.id);
+            console.log(`mkt_sequence_actions ${mktAction.id} updated for ${payload.type}`);
+          }
+        }
+
+        // --- Bulk campaign recipient update ---
         if (recipientError || !recipient) {
           console.log('Recipient not found for email ID:', emailId);
-          // Still acknowledge the webhook
           return new Response(
             JSON.stringify({ success: true, message: 'Webhook acknowledged (recipient not found)' }),
             { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         }
-        
+
         const updates: any = {};
-        const now = new Date().toISOString();
-        
+
         // Handle different event types
         switch (payload.type) {
           case 'email.delivered':
             updates.delivered_at = now;
-            console.log(`Email ${emailId} delivered to recipient ${recipient.id}`);
             break;
-            
           case 'email.bounced':
             updates.status = 'bounced';
             updates.bounced_at = now;
             updates.bounce_reason = eventData.bounce?.message || 'Unknown bounce reason';
-            console.log(`Email ${emailId} bounced for recipient ${recipient.id}: ${updates.bounce_reason}`);
             break;
-            
           case 'email.opened':
             updates.open_count = (recipient.open_count || 0) + 1;
-            if (!updates.opened_at) {
-              updates.opened_at = now;
-            }
-            console.log(`Email ${emailId} opened by recipient ${recipient.id}`);
+            updates.opened_at = now;
             break;
-            
           case 'email.clicked':
             updates.click_count = (recipient.click_count || 0) + 1;
-            if (!updates.first_clicked_at) {
-              updates.first_clicked_at = now;
-            }
-            console.log(`Link clicked in email ${emailId} by recipient ${recipient.id}`);
+            updates.first_clicked_at = now;
             break;
-            
           case 'email.complained':
             updates.complained_at = now;
-            console.log(`Email ${emailId} marked as spam by recipient ${recipient.id}`);
             break;
         }
-        
-        // Update recipient if we have changes
+
         if (Object.keys(updates).length > 0) {
           const { error: updateError } = await supabaseClient
             .from('email_campaign_recipients')
             .update(updates)
             .eq('id', recipient.id);
-          
           if (updateError) {
             console.error('Error updating recipient:', updateError);
-          } else {
-            console.log(`Recipient ${recipient.id} updated successfully`);
           }
         }
       }
@@ -242,6 +258,39 @@ Deno.serve(async (req) => {
     // If no 'type' field, this is an inbound email forwarding event
     const inboundEmail: ResendInboundPayload = payload;
     console.log('Processing inbound email from:', inboundEmail.from);
+
+    // --- Marketing Reply Detection ---
+    // All emails to @reply.in-sync.co.in are marketing replies — attribute via In-Reply-To header
+    const isMktReply = inboundEmail.to?.includes('@reply.in-sync.co.in');
+    if (isMktReply) {
+      console.log(`[inbound-webhook] Marketing reply detected from: ${inboundEmail.from}`);
+      try {
+        const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
+        const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+        const mktReplyResponse = await fetch(`${supabaseUrl}/functions/v1/mkt-handle-email-reply`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${serviceKey}` },
+          body: JSON.stringify({
+            from_email: inboundEmail.from,
+            from_name: inboundEmail.fromName,
+            subject: inboundEmail.subject,
+            text: inboundEmail.text,
+            html: inboundEmail.html,
+            message_id: inboundEmail.messageId,
+            in_reply_to: inboundEmail.inReplyTo,
+          }),
+        });
+        const mktReplyResult = await mktReplyResponse.json();
+        console.log('[inbound-webhook] mkt-handle-email-reply response:', mktReplyResult);
+        return new Response(
+          JSON.stringify({ success: true, message: 'Marketing reply handled', result: mktReplyResult }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } catch (mktErr) {
+        console.error('[inbound-webhook] Error forwarding to mkt-handle-email-reply:', mktErr);
+        // Fall through to generic inbound processing
+      }
+    }
 
     // --- Support Ticket Reply Detection ---
     // Check if this email is a reply to a support ticket by looking for TKT-XXXXX pattern

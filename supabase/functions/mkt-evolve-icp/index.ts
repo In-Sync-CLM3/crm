@@ -301,9 +301,22 @@ async function handleEvolve(
     new_version: number | null;
   }> = [];
 
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+  const serviceKey  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+
   for (const { org_id, product_key } of pairs) {
     const newVersion = await evolveProductICP(supabase, org_id, product_key, logger);
     results.push({ org_id, product_key, new_version: newVersion });
+
+    // If evolution produced a new ICP version, refresh all content automatically
+    if (newVersion !== null) {
+      fetch(`${supabaseUrl}/functions/v1/mkt-product-manager`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'refresh_content', org_id, product_key }),
+      }).catch(() => {});
+      await logger.info('icp-templates-regeneration-triggered', { org_id, product_key, version: newVersion });
+    }
   }
 
   const evolved = results.filter((r) => r.new_version !== null).length;
@@ -373,6 +386,19 @@ async function handleManualOverride(
     geographies:   merged.geographies,
     languages:     merged.languages,
   }, logger);
+
+  // Wipe stale templates + scripts and regenerate from the new ICP — fire-and-forget.
+  // A single refresh_content call handles all 3 steps sequentially (avoids the race
+  // condition that 3 parallel reset_step calls would create).
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+  fetch(`${supabaseUrl}/functions/v1/mkt-product-manager`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: 'refresh_content', org_id, product_key }),
+  }).catch(() => {});
+
+  await logger.info('icp-templates-regeneration-triggered', { org_id, product_key, version: nextVersion });
 
   return {
     org_id,

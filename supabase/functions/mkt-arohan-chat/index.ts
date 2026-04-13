@@ -19,11 +19,12 @@ interface ConversationMessage {
 }
 
 interface SuggestionPayload {
-  type: 'icp_update' | 'campaign_pause' | 'campaign_resume' | 'regenerate_step' | 'none';
+  type: 'icp_update' | 'campaign_launch' | 'campaign_pause' | 'campaign_resume' | 'regenerate_step' | 'none';
   product_key?: string;
   step_name?: string;
   field?: string;
   value?: unknown;
+  icp_patch?: Record<string, unknown>; // full multi-field patch for icp_update
   reason?: string;
 }
 
@@ -44,6 +45,34 @@ interface ICPRow {
   budget_range: { min_paise: number; max_paise: number; currency: string };
   confidence_score: number;
   version: number;
+}
+
+// ---------------------------------------------------------------------------
+// Landing page crawler (strips HTML → plain text, max 6000 chars)
+// ---------------------------------------------------------------------------
+
+async function crawlPageContent(url: string): Promise<string> {
+  if (!url) return '';
+  try {
+    const resp = await fetch(url, {
+      signal: AbortSignal.timeout(10_000),
+      headers: { 'User-Agent': 'Arohan-Revenue-Engine/1.0 (chat-context)' },
+    });
+    if (!resp.ok) return '';
+    const html = await resp.text();
+    return html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 6000);
+  } catch { return ''; }
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +148,7 @@ async function loadContext(
   const [productsRes, icpsRes, campaignsRes, pendingRes, historyRes, waTemplatesRes] = await Promise.all([
     supabase
       .from('mkt_products')
-      .select('product_key, product_name, active, onboarding_status')
+      .select('product_key, product_name, active, onboarding_status, product_url, schema_map, trial_days')
       .eq('org_id', orgId)
       .order('created_at', { ascending: false })
       .limit(20),
@@ -159,13 +188,28 @@ async function loadContext(
       .limit(20),
   ]);
 
+  const products = (productsRes.data || []) as Array<{
+    product_key: string; product_name: string; active: boolean;
+    onboarding_status: string; product_url: string | null;
+    schema_map: Record<string, string> | null; trial_days: number | null;
+  }>;
+
+  // Crawl landing pages in parallel (best-effort; timeouts silently return '')
+  const landingPages: Array<{ product_key: string; content: string }> = await Promise.all(
+    products.map(async (p) => ({
+      product_key: p.product_key,
+      content: p.product_url ? await crawlPageContent(p.product_url) : '',
+    }))
+  );
+
   return {
-    products: productsRes.data || [],
+    products,
     icps: (icpsRes.data || []) as ICPRow[],
     campaigns: campaignsRes.data || [],
     pendingSuggestions: pendingRes.data || [],
     threadHistory: (historyRes.data || []) as Array<{ role: string; message: string }>,
     waTemplates: (waTemplatesRes.data || []) as Array<{ name: string; template_name: string; approval_status: string; submission_error: string | null }>,
+    landingPages,
   };
 }
 
@@ -173,41 +217,58 @@ async function loadContext(
 // Suggestion Classifier (Haiku — cheap, fast)
 // ---------------------------------------------------------------------------
 
-async function classifySuggestion(message: string): Promise<SuggestionClassification> {
+async function classifySuggestion(
+  message: string,
+  lastArohanMessage?: string,
+): Promise<SuggestionClassification> {
+  const contextBlock = lastArohanMessage
+    ? `\nPrevious Arohan message (context for short confirmations like "Yes" / "Go ahead"):\n"${lastArohanMessage.slice(0, 1500)}"\n`
+    : '';
+
   const prompt = `You are classifying a message from a business founder to their AI revenue engine called Arohan.
+${contextBlock}
+Current message: "${message}"
 
-Message: "${message}"
-
-Is this message an actionable suggestion?
+Is this message (or a short confirmation of the previous Arohan proposal above) an actionable suggestion?
 
 Return JSON only:
 {
   "is_suggestion": true | false,
   "suggestion_payload": {
-    "type": "icp_update" | "campaign_pause" | "campaign_resume" | "regenerate_step" | "none",
+    "type": "icp_update" | "campaign_launch" | "campaign_pause" | "campaign_resume" | "regenerate_step" | "none",
     "product_key": "string or null",
     "step_name": "whatsapp_templates | email_templates | call_scripts | icp_infer | campaign_create | source_leads | null",
     "field": "industries | company_sizes | designations | geographies | languages | pain_points | null",
     "value": ["array", "of", "values"] | null,
+    "icp_patch": {
+      "industries": [...] | null,
+      "designations": [...] | null,
+      "company_sizes": [...] | null,
+      "geographies": [...] | null,
+      "pain_points": [...] | null
+    } | null,
     "reason": "brief reason string or null"
   } | null
 }
 
 Type guide:
-- "icp_update": user wants to change ICP targeting (industries, designations, etc.)
-- "campaign_pause": user wants to pause a campaign
-- "campaign_resume": user wants to resume a campaign
-- "regenerate_step": user wants to regenerate/redo/recreate a step output (templates, ICP, scripts, leads, campaign)
-  → set step_name to the matching step: whatsapp_templates, email_templates, call_scripts, icp_infer, campaign_create, source_leads
+- "icp_update": user wants to change ICP targeting. If the previous Arohan message proposed a FULL ICP update (multiple fields), populate icp_patch with ALL proposed fields extracted from that message. Set field/value only for single-field changes.
+- "campaign_launch": user wants to launch/start/activate/run a campaign for a product
+- "campaign_pause": user wants to pause/stop a campaign
+- "campaign_resume": user wants to resume/restart a paused campaign
+- "regenerate_step": user wants to regenerate/redo/recreate a step output
+  → set step_name to: whatsapp_templates, email_templates, call_scripts, icp_infer, campaign_create, source_leads
   → set product_key if mentioned
 - "none": informational question or general conversation
+
+IMPORTANT: If the current message is a short confirmation ("Yes", "Ok", "Sure", "Go ahead", "Do it") and the previous Arohan message proposed specific changes — treat this as confirmation of those changes and extract the full action from context.
 
 If not a suggestion, set is_suggestion to false and suggestion_payload to null.`;
 
   try {
     const { data } = await callLLMJson<SuggestionClassification>(prompt, {
       model: 'haiku',
-      max_tokens: 300,
+      max_tokens: 600,
     });
     return data;
   } catch {
@@ -249,6 +310,26 @@ function buildSystemPrompt(
       ).join('\n')
     : 'No WhatsApp templates yet.';
 
+  const landingPageLines = context.landingPages
+    .filter((lp) => lp.content.length > 0)
+    .map((lp) => `### ${lp.product_key}\n${lp.content}`)
+    .join('\n\n') || 'No landing page content available.';
+
+  const schemaLines = context.products
+    .map((p) => {
+      const map = p.schema_map as Record<string, unknown> | null;
+      if (!map || Object.keys(map).length === 0) return `• ${p.product_key}: schema not yet scanned`;
+      const allTables = Array.isArray(map.all_tables) ? (map.all_tables as string[]) : [];
+      const roleEntries = Object.entries(map)
+        .filter(([k]) => k.endsWith('_table'))
+        .map(([role, tbl]) => `${tbl} (${role.replace('_table', '')})`);
+      const roleStr = roleEntries.length > 0 ? `key tables: ${roleEntries.join(', ')}` : '';
+      const allStr = allTables.length > 0 ? `all tables: ${allTables.join(', ')}` : '';
+      const tableStr = [roleStr, allStr].filter(Boolean).join(' | ');
+      return `• ${p.product_key}: ${tableStr} — trial_days=${p.trial_days ?? 14}`;
+    })
+    .join('\n') || 'No schema data available.';
+
   return `You are Arohan — the autonomous revenue engine for In-Sync. You are a strategic AI advisor helping Amit (the founder/operator) understand performance, refine targeting strategy, and make data-driven decisions.
 
 ## Identity
@@ -257,15 +338,26 @@ function buildSystemPrompt(
 - Channels unlock by milestone: M3=Vapi calling, M4=Google Ads + Global Persona Intelligence, M5=Meta Ads, M6=LinkedIn
 - You are direct, data-driven, and proactively surface insights
 
+## CRITICAL: Your data access
+- The context sections below (Products, ICPs, Campaigns, Templates, Landing Pages) ARE your live view of Amit's database — fetched fresh for every message.
+- NEVER say you "can't see the database", "don't have visibility", or "can't verify" data. If a section says "No ICPs available yet" then there genuinely are none — say that directly.
+- NEVER suggest Amit check elsewhere to confirm what you can already see here. You ARE the system.
+
 ## Persona
 - Speak in clear business language — no tech jargon
-- Be honest about uncertainty; never invent data
+- When data is missing (e.g. no ICPs yet), say so plainly and explain what needs to happen to populate it
 - When Amit makes an ICP suggestion, evaluate it critically and say whether you will apply it
 - When applying a suggestion, state: "Applying this to [product_key] ICP now."
 - Keep responses focused: 2–4 short paragraphs or a tight bullet list
 
 ## Current Date
 ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}
+
+## Product Database Schemas
+${schemaLines}
+
+## Product Landing Pages
+${landingPageLines}
 
 ## Active Products & Current ICPs
 ${icpLines}
@@ -281,9 +373,18 @@ ${pendingLines}
 
 ## Actions you can take
 - Update an ICP field (industries, designations, company_sizes, geographies, pain_points)
-- Pause or resume a campaign
+- Launch a campaign: enroll all eligible leads and start sending immediately
+- Pause a campaign: halt all active enrollments
+- Resume a campaign: restart paused enrollments
 - Regenerate a step: whatsapp_templates, email_templates, call_scripts, icp_infer, campaign_create, source_leads
-  → When Amit asks to redo/recreate/regenerate any of these, you will trigger it automatically.`;
+  → When Amit asks to redo/recreate/regenerate any of these, you will trigger it automatically.
+
+## CRITICAL: How your actions work
+- You ARE wired to the database. When Amit confirms a change, the system executes it automatically — a green badge appears in the UI confirming it ran.
+- NEVER say you "can't write to the database" or "don't have write capability" — you do.
+- When Amit confirms a change, say: "Requesting the update now — a green badge will confirm when it's applied."
+- If no badge appears after confirmation, say: "The action may not have triggered — please try rephrasing your request."
+- Do NOT pre-emptively tell Amit to ask his tech team. You are the system.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,20 +397,31 @@ async function applyICPSuggestion(
   originalMessage: string,
   log: ReturnType<typeof createEngineLogger>,
 ): Promise<{ applied: boolean; new_version: number | null }> {
-  if (
-    !payload.product_key ||
-    !payload.field ||
-    !payload.value
-  ) {
+  if (!payload.product_key) {
+    return { applied: false, new_version: null };
+  }
+
+  // product_key is already normalised centrally in the main handler before this is called.
+
+  // Prefer full icp_patch; fall back to single field/value
+  let icpPatch: Record<string, unknown> | null = null;
+  if (payload.icp_patch && Object.keys(payload.icp_patch).length > 0) {
+    // Strip null entries
+    icpPatch = Object.fromEntries(
+      Object.entries(payload.icp_patch).filter(([, v]) => v != null)
+    );
+  } else if (payload.field && payload.value != null) {
+    icpPatch = {
+      [payload.field]: Array.isArray(payload.value) ? payload.value : [payload.value],
+    };
+  }
+
+  if (!icpPatch || Object.keys(icpPatch).length === 0) {
     return { applied: false, new_version: null };
   }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-
-  const icpPatch: Record<string, unknown> = {
-    [payload.field]: Array.isArray(payload.value) ? payload.value : [payload.value],
-  };
 
   try {
     const res = await fetch(`${supabaseUrl}/functions/v1/mkt-evolve-icp`, {
@@ -333,7 +445,8 @@ async function applyICPSuggestion(
       return { applied: true, new_version: json?.new_version ?? null };
     }
 
-    await res.body?.cancel();
+    const errText = await res.text().catch(() => res.status.toString());
+    await log.error('apply-icp-suggestion', new Error(`evolve-icp returned ${res.status}: ${errText}`));
     return { applied: false, new_version: null };
   } catch (err) {
     await log.error('apply-icp-suggestion', err instanceof Error ? err : new Error(String(err)));
@@ -386,6 +499,184 @@ async function applyRegenerateStep(
 }
 
 // ---------------------------------------------------------------------------
+// Campaign Launch Action
+// ---------------------------------------------------------------------------
+
+async function applyLaunchCampaign(
+  orgId: string,
+  payload: SuggestionPayload,
+  log: ReturnType<typeof createEngineLogger>,
+): Promise<{ applied: boolean; enrolled: number; campaign_id: string | null }> {
+  if (!payload.product_key) return { applied: false, enrolled: 0, campaign_id: null };
+
+  const supabase = getSupabaseClient();
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+
+  try {
+    // Find the campaign for this product
+    const { data: campaign } = await supabase
+      .from('mkt_campaigns')
+      .select('id, status')
+      .eq('org_id', orgId)
+      .contains('metadata', { product_key: payload.product_key })
+      .limit(1)
+      .maybeSingle();
+
+    if (!campaign) {
+      await log.error('launch-campaign', new Error(`No campaign found for product_key=${payload.product_key}`));
+      return { applied: false, enrolled: 0, campaign_id: null };
+    }
+
+    // Find eligible leads not already enrolled in this campaign
+    const { data: alreadyEnrolled } = await supabase
+      .from('mkt_sequence_enrollments')
+      .select('lead_id')
+      .eq('campaign_id', campaign.id);
+
+    const enrolledLeadIds = (alreadyEnrolled || []).map((e: any) => e.lead_id);
+
+    let leadsQuery = supabase
+      .from('mkt_leads')
+      .select('id')
+      .eq('org_id', orgId)
+      .not('status', 'in', '("unsubscribed","converted","disqualified")')
+      .not('email', 'is', null)
+      .limit(500);
+
+    if (enrolledLeadIds.length > 0) {
+      leadsQuery = leadsQuery.not('id', 'in', `(${enrolledLeadIds.map((id: string) => `"${id}"`).join(',')})`);
+    }
+
+    const { data: leads } = await leadsQuery;
+    if (!leads || leads.length === 0) {
+      return { applied: true, enrolled: 0, campaign_id: campaign.id };
+    }
+
+    const now = new Date().toISOString();
+    const enrollments = leads.map((lead: any) => ({
+      org_id: orgId,
+      lead_id: lead.id,
+      campaign_id: campaign.id,
+      status: 'active',
+      current_step: 1,
+      next_action_at: now,
+      enrolled_at: now,
+    }));
+
+    // Batch insert in chunks of 100
+    for (let i = 0; i < enrollments.length; i += 100) {
+      await supabase.from('mkt_sequence_enrollments').insert(enrollments.slice(i, i + 100));
+    }
+
+    // Update lead enrolled_at
+    const leadIds = leads.map((l: any) => l.id);
+    await supabase.from('mkt_leads').update({ enrolled_at: now }).in('id', leadIds);
+
+    // Set campaign active
+    await supabase.from('mkt_campaigns').update({ status: 'active' }).eq('id', campaign.id);
+
+    // Trigger sequence executor
+    fetch(`${supabaseUrl}/functions/v1/mkt-sequence-executor`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }).catch(() => {});
+
+    await log.info('campaign-launched', { product_key: payload.product_key, campaign_id: campaign.id, enrolled: leads.length });
+    return { applied: true, enrolled: leads.length, campaign_id: campaign.id };
+  } catch (err) {
+    await log.error('launch-campaign', err instanceof Error ? err : new Error(String(err)));
+    return { applied: false, enrolled: 0, campaign_id: null };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Campaign Pause / Resume Actions
+// ---------------------------------------------------------------------------
+
+async function applyCampaignPause(
+  orgId: string,
+  payload: SuggestionPayload,
+  log: ReturnType<typeof createEngineLogger>,
+): Promise<{ applied: boolean; paused: number }> {
+  if (!payload.product_key) return { applied: false, paused: 0 };
+
+  const supabase = getSupabaseClient();
+  try {
+    const { data: campaign } = await supabase
+      .from('mkt_campaigns')
+      .select('id')
+      .eq('org_id', orgId)
+      .contains('metadata', { product_key: payload.product_key })
+      .limit(1)
+      .maybeSingle();
+
+    if (!campaign) return { applied: false, paused: 0 };
+
+    const { count } = await supabase
+      .from('mkt_sequence_enrollments')
+      .update({ status: 'paused', cancel_reason: 'campaign_paused' })
+      .eq('campaign_id', campaign.id)
+      .eq('status', 'active')
+      .select('*', { count: 'exact', head: true });
+
+    await supabase.from('mkt_campaigns').update({ status: 'paused' }).eq('id', campaign.id);
+    await log.info('campaign-paused', { product_key: payload.product_key, campaign_id: campaign.id });
+    return { applied: true, paused: count ?? 0 };
+  } catch (err) {
+    await log.error('pause-campaign', err instanceof Error ? err : new Error(String(err)));
+    return { applied: false, paused: 0 };
+  }
+}
+
+async function applyCampaignResume(
+  orgId: string,
+  payload: SuggestionPayload,
+  log: ReturnType<typeof createEngineLogger>,
+): Promise<{ applied: boolean; resumed: number }> {
+  if (!payload.product_key) return { applied: false, resumed: 0 };
+
+  const supabase = getSupabaseClient();
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+
+  try {
+    const { data: campaign } = await supabase
+      .from('mkt_campaigns')
+      .select('id')
+      .eq('org_id', orgId)
+      .contains('metadata', { product_key: payload.product_key })
+      .limit(1)
+      .maybeSingle();
+
+    if (!campaign) return { applied: false, resumed: 0 };
+
+    const { count } = await supabase
+      .from('mkt_sequence_enrollments')
+      .update({ status: 'active', cancel_reason: null, next_action_at: new Date().toISOString() })
+      .eq('campaign_id', campaign.id)
+      .eq('status', 'paused')
+      .eq('cancel_reason', 'campaign_paused')
+      .select('*', { count: 'exact', head: true });
+
+    await supabase.from('mkt_campaigns').update({ status: 'active' }).eq('id', campaign.id);
+
+    fetch(`${supabaseUrl}/functions/v1/mkt-sequence-executor`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }).catch(() => {});
+
+    await log.info('campaign-resumed', { product_key: payload.product_key, campaign_id: campaign.id });
+    return { applied: true, resumed: count ?? 0 };
+  } catch (err) {
+    await log.error('resume-campaign', err instanceof Error ? err : new Error(String(err)));
+    return { applied: false, resumed: 0 };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main Handler
 // ---------------------------------------------------------------------------
 
@@ -412,8 +703,19 @@ Deno.serve(async (req: Request) => {
     const start = Date.now();
 
     // Step 1: Classify message + load context in parallel
+    // Pre-fetch last Arohan message for context-aware classification (e.g. "Yes" confirmations)
+    const { data: lastArohanRows } = await supabase
+      .from('mkt_arohan_conversations')
+      .select('message')
+      .eq('org_id', org_id)
+      .eq('thread_id', thread_id)
+      .eq('role', 'arohan')
+      .order('created_at', { ascending: false })
+      .limit(1);
+    const lastArohanMessage = lastArohanRows?.[0]?.message as string | undefined;
+
     const [classification, context] = await Promise.all([
-      classifySuggestion(trimmedMessage),
+      classifySuggestion(trimmedMessage, lastArohanMessage),
       loadContext(supabase, org_id, thread_id),
     ]);
 
@@ -456,12 +758,43 @@ Deno.serve(async (req: Request) => {
     if (classification.is_suggestion && classification.suggestion_payload) {
       const sp = classification.suggestion_payload;
 
+      // Normalise product_key centrally: lowercase + strip spaces/underscores/hyphens.
+      // Classifier may return "vendor_verification" or "WorkSync" but DB keys are
+      // compact lowercase strings like "vendorverification" / "worksync".
+      if (sp.product_key) {
+        sp.product_key = sp.product_key.toLowerCase().replace(/[\s_\-]+/g, '');
+      }
+
       if (sp.type === 'icp_update') {
         const { applied, new_version } = await applyICPSuggestion(org_id, sp, trimmedMessage, log);
         if (applied) {
           actionsTriggered.push({
             type: 'icp_update',
             details: { product_key: sp.product_key, field: sp.field, new_version },
+          });
+        }
+      } else if (sp.type === 'campaign_launch') {
+        const { applied, enrolled, campaign_id } = await applyLaunchCampaign(org_id, sp, log);
+        if (applied) {
+          actionsTriggered.push({
+            type: 'campaign_launch',
+            details: { product_key: sp.product_key, campaign_id, enrolled },
+          });
+        }
+      } else if (sp.type === 'campaign_pause') {
+        const { applied, paused } = await applyCampaignPause(org_id, sp, log);
+        if (applied) {
+          actionsTriggered.push({
+            type: 'campaign_pause',
+            details: { product_key: sp.product_key, paused },
+          });
+        }
+      } else if (sp.type === 'campaign_resume') {
+        const { applied, resumed } = await applyCampaignResume(org_id, sp, log);
+        if (applied) {
+          actionsTriggered.push({
+            type: 'campaign_resume',
+            details: { product_key: sp.product_key, resumed },
           });
         }
       } else if (sp.type === 'regenerate_step') {

@@ -21,7 +21,22 @@ Deno.serve(async (req) => {
     const supabase = getSupabaseClient();
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const now = new Date().toISOString();
+    const now = new Date();
+
+    // Sending window: 03:30–13:30 UTC (09:00–19:00 IST)
+    const utcHour = now.getUTCHours();
+    const utcMin  = now.getUTCMinutes();
+    const minuteOfDay = utcHour * 60 + utcMin;
+    const windowStart = 3 * 60 + 30;   // 03:30 UTC
+    const windowEnd   = 13 * 60 + 30;  // 13:30 UTC
+    if (minuteOfDay < windowStart || minuteOfDay >= windowEnd) {
+      return new Response(
+        JSON.stringify({ message: 'Outside sending window (03:30–13:30 UTC)', executed: 0 }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const nowIso = now.toISOString();
 
     // Fetch enrollments ready to execute
     const { data: enrollments, error: fetchError } = await supabase
@@ -35,7 +50,7 @@ Deno.serve(async (req) => {
         status
       `)
       .eq('status', 'active')
-      .lte('next_action_at', now)
+      .lte('next_action_at', nowIso)
       .order('next_action_at', { ascending: true })
       .limit(BATCH_SIZE);
 
@@ -56,7 +71,7 @@ Deno.serve(async (req) => {
 
     const [campaignsRes, leadsRes, stepsRes] = await Promise.all([
       supabase.from('mkt_campaigns').select('id, name, status, metadata').in('id', campaignIds),
-      supabase.from('mkt_leads').select('id, org_id, email, phone, first_name, last_name, company, status').in('id', leadIds),
+      supabase.from('contacts').select('id, org_id, email, phone, first_name, last_name, company, status').in('id', leadIds),
       supabase.from('mkt_campaign_steps').select('*').in('campaign_id', campaignIds).eq('is_active', true).order('step_number', { ascending: true }),
     ]);
 

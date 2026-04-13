@@ -35,7 +35,7 @@ Deno.serve(async (req) => {
 
     // Fetch lead data
     const { data: lead, error: leadError } = await supabase
-      .from('mkt_leads')
+      .from('contacts')
       .select('*')
       .eq('id', lead_id)
       .single();
@@ -165,9 +165,9 @@ Deno.serve(async (req) => {
     const resendApiKey = Deno.env.get('RESEND_API_KEY');
     if (!resendApiKey) throw new Error('RESEND_API_KEY not configured');
 
-    const fromName = (template.from_name as string) || 'In-Sync Team';
-    const replyTo = (template.reply_to as string) || 'hello@in-sync.co.in';
-    const fromEmail = `${fromName} <hello@in-sync.co.in>`;
+    const fromName = (template.from_name as string) || 'Arohan Shaw';
+    const replyTo = `Arohan Shaw <arohan@reply.in-sync.co.in>`;
+    const fromEmail = `${fromName} <arohan@in-sync.co.in>`;
 
     const sendResponse = await fetch('https://api.resend.com/emails', {
       method: 'POST',

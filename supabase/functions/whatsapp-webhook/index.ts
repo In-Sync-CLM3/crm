@@ -225,7 +225,23 @@ Deno.serve(async (req) => {
         } else {
           console.log('Stored inbound message from:', phoneNumber);
         }
-        
+
+        // --- Marketing reply attribution ---
+        try {
+          const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
+          const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
+          fetch(`${supabaseUrl}/functions/v1/mkt-handle-whatsapp-reply`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${serviceKey}` },
+            body: JSON.stringify({
+              phone: phoneNumber,
+              message_text: messageText,
+              profile_name: webhookData.profile_name,
+              exotel_sid: sid,
+            }),
+          }).catch(err => console.error('[whatsapp-webhook] mkt attribution error:', err));
+        } catch { /* non-blocking */ }
+
         continue;
       }
       

@@ -155,13 +155,11 @@ export function HybridBulkUploadDialog({
       setUploadProgress(10);
       setUploadStage("Creating import session...");
 
-      // Step 1: Create import session
-      const { data: sessionData, error: sessionError } = await supabase.functions.invoke('create-import-session', {
-        body: { 
-          tableName, 
-          fileName: file.name, 
-          totalRecords: recordCount 
-        }
+      // Step 1: Create import session (RPC — no edge function cold-start)
+      const { data: sessionData, error: sessionError } = await supabase.rpc('create_import_session', {
+        _table_name: tableName,
+        _file_name: file.name,
+        _total_records: recordCount,
       });
 
       if (sessionError || !sessionData?.importId) {
