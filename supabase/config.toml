@@ -1,7 +1,13 @@
 project_id = "knuewnenaswscgaldjej"
 
+[functions.mkt-product-manager]
+verify_jwt = false
+
+[functions.mkt-source-leads]
+verify_jwt = false
+
 [functions.mkt-arohan-chat]
-verify_jwt = true
+verify_jwt = false
 
 [functions.mkt-superflow-webhook]
 verify_jwt = false
@@ -67,6 +73,12 @@ verify_jwt = true
 verify_jwt = false
 
 [functions.email-inbound-webhook]
+verify_jwt = false
+
+[functions.mkt-handle-email-reply]
+verify_jwt = false
+
+[functions.mkt-handle-whatsapp-reply]
 verify_jwt = false
 
 [functions.exotel-make-call]
