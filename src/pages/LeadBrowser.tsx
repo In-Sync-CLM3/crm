@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import DashboardLayout from "@/components/Layout/DashboardLayout";
@@ -70,40 +70,21 @@ import { format } from "date-fns";
 interface Lead {
   id: string;
   org_id: string;
-  contact_id: string | null;
-  campaign_id: string | null;
-  source: string;
-  status: string;
-  first_name: string | null;
+  first_name: string;
   last_name: string | null;
   email: string | null;
   phone: string | null;
   company: string | null;
   job_title: string | null;
-  industry: string | null;
-  company_size: string | null;
+  status: string;
+  source: string | null;
+  industry_type: string | null;
+  headline: string | null;
   city: string | null;
   state: string | null;
   country: string | null;
   linkedin_url: string | null;
   website: string | null;
-  enrichment_data: any;
-  fit_score: number;
-  intent_score: number;
-  engagement_score: number;
-  total_score: number;
-  scored_at: string | null;
-  ga_client_id: string | null;
-  gclid: string | null;
-  utm_source: string | null;
-  utm_medium: string | null;
-  utm_campaign: string | null;
-  utm_term: string | null;
-  utm_content: string | null;
-  enrolled_at: string | null;
-  converted_at: string | null;
-  disqualified_at: string | null;
-  disqualified_reason: string | null;
   created_at: string;
   updated_at: string;
   // Joined data
@@ -167,11 +148,11 @@ interface CampaignOption {
   name: string;
 }
 
-type SortField = "name" | "email" | "company" | "source" | "status" | "total_score" | "created_at";
+type SortField = "name" | "email" | "company" | "source" | "status" | "created_at";
 type SortDir = "asc" | "desc";
 
 const LEAD_STATUSES = ["new", "enriched", "scored", "enrolled", "converted", "disqualified"] as const;
-const LEAD_SOURCES = ["apollo", "google_ads", "indiamart", "website", "referral", "manual", "import"] as const;
+const LEAD_SOURCES = ["apollo", "native", "google_ads", "indiamart", "website", "referral", "manual", "import"] as const;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -200,6 +181,8 @@ function sourceColor(source: string): string {
   switch (source) {
     case "apollo":
       return "bg-purple-100 text-purple-700 border-purple-200";
+    case "native":
+      return "bg-indigo-100 text-indigo-700 border-indigo-200";
     case "google_ads":
       return "bg-red-100 text-red-700 border-red-200";
     case "indiamart":
@@ -278,9 +261,7 @@ function leadDisplayName(lead: Lead): string {
 }
 
 function getLeadScore(lead: Lead): number | null {
-  // Prefer joined mkt_lead_scores, fall back to inline scores
   if (lead.mkt_lead_scores) return lead.mkt_lead_scores.total_score;
-  if (lead.total_score) return lead.total_score;
   return null;
 }
 
@@ -297,8 +278,6 @@ export default function LeadBrowser() {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
-  const [scoreMin, setScoreMin] = useState("");
-  const [scoreMax, setScoreMax] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [showFilters, setShowFilters] = useState(false);
@@ -308,8 +287,6 @@ export default function LeadBrowser() {
     searchTerm: "",
     statusFilter: "all",
     sourceFilter: "all",
-    scoreMin: "",
-    scoreMax: "",
     dateFrom: "",
     dateTo: "",
   });
@@ -343,7 +320,7 @@ export default function LeadBrowser() {
 
   const { data: leadsData, isLoading: leadsLoading } = useQuery({
     queryKey: [
-      "mkt_leads",
+      "contacts_marketing",
       effectiveOrgId,
       pagination.currentPage,
       pagination.pageSize,
@@ -354,12 +331,13 @@ export default function LeadBrowser() {
     queryFn: async () => {
       if (!effectiveOrgId) return { data: [], count: 0 };
 
-      // Build the Supabase query with left join on mkt_lead_scores
       let query = supabase
-        .from("mkt_leads")
+        .from("contacts")
         .select(
           `
-          *,
+          id, org_id, first_name, last_name, email, phone, company, job_title,
+          status, source, industry_type, headline, city, state, country,
+          linkedin_url, website, created_at, updated_at,
           mkt_lead_scores (
             id, fit_score, intent_score, engagement_score, total_score,
             scoring_model, scoring_details, scored_at
@@ -367,7 +345,8 @@ export default function LeadBrowser() {
         `,
           { count: "exact" }
         )
-        .eq("org_id", effectiveOrgId);
+        .eq("org_id", effectiveOrgId)
+        .not("source", "is", null);
 
       // Search filter
       if (appliedFilters.searchTerm) {
@@ -387,49 +366,17 @@ export default function LeadBrowser() {
         query = query.eq("source", appliedFilters.sourceFilter);
       }
 
-      // Score range filters (uses inline total_score on mkt_leads table)
-      if (appliedFilters.scoreMin) {
-        query = query.gte("total_score", parseInt(appliedFilters.scoreMin, 10));
-      }
-      if (appliedFilters.scoreMax) {
-        query = query.lte("total_score", parseInt(appliedFilters.scoreMax, 10));
-      }
-
       // Date range
       if (appliedFilters.dateFrom) {
         query = query.gte("created_at", appliedFilters.dateFrom);
       }
       if (appliedFilters.dateTo) {
-        // Add end of day to include the full day
         query = query.lte("created_at", appliedFilters.dateTo + "T23:59:59.999Z");
       }
 
-      // Sorting — map display field to DB column
-      let dbSortField: string;
-      switch (sortField) {
-        case "name":
-          dbSortField = "first_name";
-          break;
-        case "email":
-          dbSortField = "email";
-          break;
-        case "company":
-          dbSortField = "company";
-          break;
-        case "source":
-          dbSortField = "source";
-          break;
-        case "status":
-          dbSortField = "status";
-          break;
-        case "total_score":
-          dbSortField = "total_score";
-          break;
-        case "created_at":
-        default:
-          dbSortField = "created_at";
-          break;
-      }
+      // Sorting
+      const dbSortField: string =
+        sortField === "name" ? "first_name" : sortField;
 
       query = query.order(dbSortField, {
         ascending: sortDir === "asc",
@@ -443,7 +390,6 @@ export default function LeadBrowser() {
       const { data, error, count } = await query;
       if (error) throw error;
 
-      // Supabase returns mkt_lead_scores as an array due to select; take first
       const normalized = (data || []).map((row: any) => ({
         ...row,
         mkt_lead_scores: Array.isArray(row.mkt_lead_scores)
@@ -485,14 +431,6 @@ export default function LeadBrowser() {
     enabled: !!effectiveOrgId,
   });
 
-  // Build campaign lookup map
-  const campaignMap = useMemo(() => {
-    const map: Record<string, string> = {};
-    campaigns.forEach((c) => {
-      map[c.id] = c.name;
-    });
-    return map;
-  }, [campaigns]);
 
   // Lead detail queries (only when detail panel is open)
   const { data: enrollments = [], isLoading: enrollmentsLoading } = useQuery({
@@ -584,13 +522,13 @@ export default function LeadBrowser() {
       newStatus: string;
     }) => {
       const { error } = await supabase
-        .from("mkt_leads")
+        .from("contacts")
         .update({ status: newStatus, updated_at: new Date().toISOString() })
         .in("id", leadIds);
       if (error) throw error;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["mkt_leads"] });
+      queryClient.invalidateQueries({ queryKey: ["contacts_marketing"] });
       setSelectedLeads([]);
       setBulkStatusDialogOpen(false);
       notify.success("Leads updated", `Status updated for ${selectedLeads.length} leads`);
@@ -621,20 +559,15 @@ export default function LeadBrowser() {
         .insert(enrollments);
       if (error) throw error;
 
-      // Also update lead status to enrolled if they are currently "new" or "scored"
+      // Update contact status to enrolled for those currently in pre-enrolled states
       await supabase
-        .from("mkt_leads")
-        .update({
-          status: "enrolled",
-          enrolled_at: new Date().toISOString(),
-          campaign_id: campaignId,
-          updated_at: new Date().toISOString(),
-        })
+        .from("contacts")
+        .update({ status: "enrolled", updated_at: new Date().toISOString() })
         .in("id", leadIds)
         .in("status", ["new", "enriched", "scored"]);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["mkt_leads"] });
+      queryClient.invalidateQueries({ queryKey: ["contacts_marketing"] });
       setSelectedLeads([]);
       setBulkEnrollDialogOpen(false);
       notify.success("Leads enrolled", `${selectedLeads.length} leads enrolled in campaign`);
@@ -654,8 +587,6 @@ export default function LeadBrowser() {
       searchTerm,
       statusFilter,
       sourceFilter,
-      scoreMin,
-      scoreMax,
       dateFrom,
       dateTo,
     });
@@ -665,8 +596,6 @@ export default function LeadBrowser() {
     setSearchTerm("");
     setStatusFilter("all");
     setSourceFilter("all");
-    setScoreMin("");
-    setScoreMax("");
     setDateFrom("");
     setDateTo("");
     pagination.reset();
@@ -674,8 +603,6 @@ export default function LeadBrowser() {
       searchTerm: "",
       statusFilter: "all",
       sourceFilter: "all",
-      scoreMin: "",
-      scoreMax: "",
       dateFrom: "",
       dateTo: "",
     });
@@ -735,9 +662,10 @@ export default function LeadBrowser() {
 
         while (hasMore) {
           let query = supabase
-            .from("mkt_leads")
-            .select("*")
-            .eq("org_id", effectiveOrgId);
+            .from("contacts")
+            .select("id, org_id, first_name, last_name, email, phone, company, job_title, status, source, industry_type, headline, city, state, country, linkedin_url, website, created_at, updated_at")
+            .eq("org_id", effectiveOrgId)
+            .not("source", "is", null);
 
           if (appliedFilters.searchTerm) {
             const term = appliedFilters.searchTerm;
@@ -750,12 +678,6 @@ export default function LeadBrowser() {
           }
           if (appliedFilters.sourceFilter !== "all") {
             query = query.eq("source", appliedFilters.sourceFilter);
-          }
-          if (appliedFilters.scoreMin) {
-            query = query.gte("total_score", parseInt(appliedFilters.scoreMin, 10));
-          }
-          if (appliedFilters.scoreMax) {
-            query = query.lte("total_score", parseInt(appliedFilters.scoreMax, 10));
           }
           if (appliedFilters.dateFrom) {
             query = query.gte("created_at", appliedFilters.dateFrom);
@@ -792,22 +714,15 @@ export default function LeadBrowser() {
         { key: "phone", label: "Phone" },
         { key: "company", label: "Company" },
         { key: "job_title", label: "Job Title" },
-        { key: "industry", label: "Industry" },
-        { key: "company_size", label: "Company Size" },
+        { key: "industry_type", label: "Industry" },
+        { key: "headline", label: "Headline" },
         { key: "city", label: "City" },
         { key: "state", label: "State" },
         { key: "country", label: "Country" },
         { key: "source", label: "Source" },
         { key: "status", label: "Status" },
-        { key: "total_score", label: "Total Score" },
-        { key: "fit_score", label: "Fit Score" },
-        { key: "intent_score", label: "Intent Score" },
-        { key: "engagement_score", label: "Engagement Score" },
         { key: "linkedin_url", label: "LinkedIn URL" },
         { key: "website", label: "Website" },
-        { key: "utm_source", label: "UTM Source" },
-        { key: "utm_medium", label: "UTM Medium" },
-        { key: "utm_campaign", label: "UTM Campaign" },
         { key: "created_at", label: "Created At", format: formatDateForExport },
       ];
 
@@ -825,8 +740,6 @@ export default function LeadBrowser() {
     appliedFilters.searchTerm ||
     appliedFilters.statusFilter !== "all" ||
     appliedFilters.sourceFilter !== "all" ||
-    appliedFilters.scoreMin ||
-    appliedFilters.scoreMax ||
     appliedFilters.dateFrom ||
     appliedFilters.dateTo;
 
@@ -919,7 +832,7 @@ export default function LeadBrowser() {
 
             {/* Advanced filters */}
             {showFilters && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 pt-2 border-t">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2 border-t">
                 <div className="space-y-1">
                   <Label className="text-xs">Status</Label>
                   <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -956,32 +869,6 @@ export default function LeadBrowser() {
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
-
-                <div className="space-y-1">
-                  <Label className="text-xs">Score Min</Label>
-                  <Input
-                    type="number"
-                    placeholder="0"
-                    value={scoreMin}
-                    onChange={(e) => setScoreMin(e.target.value)}
-                    className="text-sm h-8"
-                    min={0}
-                    max={100}
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <Label className="text-xs">Score Max</Label>
-                  <Input
-                    type="number"
-                    placeholder="100"
-                    value={scoreMax}
-                    onChange={(e) => setScoreMax(e.target.value)}
-                    className="text-sm h-8"
-                    min={0}
-                    max={100}
-                  />
                 </div>
 
                 <div className="space-y-1">
@@ -1119,18 +1006,7 @@ export default function LeadBrowser() {
                           {sortIcon("status")}
                         </div>
                       </TableHead>
-                      <TableHead
-                        className="text-xs cursor-pointer select-none text-right"
-                        onClick={() => handleSort("total_score")}
-                      >
-                        <div className="flex items-center justify-end">
-                          Score
-                          {sortIcon("total_score")}
-                        </div>
-                      </TableHead>
-                      <TableHead className="text-xs hidden xl:table-cell">
-                        Campaign
-                      </TableHead>
+                      <TableHead className="text-xs text-right">Score</TableHead>
                       <TableHead
                         className="text-xs cursor-pointer select-none hidden lg:table-cell"
                         onClick={() => handleSort("created_at")}
@@ -1199,9 +1075,9 @@ export default function LeadBrowser() {
                           <TableCell className="py-1.5">
                             <Badge
                               variant="outline"
-                              className={`text-[10px] capitalize ${sourceColor(lead.source)}`}
+                              className={`text-[10px] capitalize ${sourceColor(lead.source || "")}`}
                             >
-                              {lead.source.replace("_", " ")}
+                              {(lead.source || "unknown").replace("_", " ")}
                             </Badge>
                           </TableCell>
                           <TableCell className="py-1.5">
@@ -1216,15 +1092,6 @@ export default function LeadBrowser() {
                             <span className={`text-xs ${scoreColor(score)}`}>
                               {score !== null && score !== undefined ? score : "-"}
                             </span>
-                          </TableCell>
-                          <TableCell className="py-1.5 text-xs hidden xl:table-cell">
-                            {lead.campaign_id && campaignMap[lead.campaign_id] ? (
-                              <span className="truncate max-w-[140px] block">
-                                {campaignMap[lead.campaign_id]}
-                              </span>
-                            ) : (
-                              <span className="text-muted-foreground">-</span>
-                            )}
                           </TableCell>
                           <TableCell className="py-1.5 text-xs hidden lg:table-cell">
                             {format(new Date(lead.created_at), "dd MMM yyyy")}
@@ -1319,16 +1186,16 @@ export default function LeadBrowser() {
                           <span className="text-xs">{selectedLead.job_title}</span>
                         </div>
                       )}
-                      {selectedLead.industry && (
+                      {selectedLead.industry_type && (
                         <div className="flex items-center gap-1.5">
                           <Building className="h-3 w-3 text-muted-foreground shrink-0" />
-                          <span className="text-xs">{selectedLead.industry}</span>
+                          <span className="text-xs">{selectedLead.industry_type}</span>
                         </div>
                       )}
-                      {selectedLead.company_size && (
+                      {selectedLead.headline && (
                         <div className="flex items-center gap-1.5">
                           <Users className="h-3 w-3 text-muted-foreground shrink-0" />
-                          <span className="text-xs">{selectedLead.company_size}</span>
+                          <span className="text-xs">{selectedLead.headline}</span>
                         </div>
                       )}
                       {(selectedLead.city || selectedLead.state || selectedLead.country) && (
@@ -1379,43 +1246,6 @@ export default function LeadBrowser() {
                       </div>
                     </div>
 
-                    {/* UTM data if present */}
-                    {(selectedLead.utm_source ||
-                      selectedLead.utm_medium ||
-                      selectedLead.utm_campaign) && (
-                      <div className="mt-3 pt-2 border-t">
-                        <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-1">
-                          Attribution
-                        </p>
-                        <div className="flex flex-wrap gap-1">
-                          {selectedLead.utm_source && (
-                            <Badge variant="outline" className="text-[10px]">
-                              src: {selectedLead.utm_source}
-                            </Badge>
-                          )}
-                          {selectedLead.utm_medium && (
-                            <Badge variant="outline" className="text-[10px]">
-                              med: {selectedLead.utm_medium}
-                            </Badge>
-                          )}
-                          {selectedLead.utm_campaign && (
-                            <Badge variant="outline" className="text-[10px]">
-                              cmp: {selectedLead.utm_campaign}
-                            </Badge>
-                          )}
-                          {selectedLead.utm_term && (
-                            <Badge variant="outline" className="text-[10px]">
-                              term: {selectedLead.utm_term}
-                            </Badge>
-                          )}
-                          {selectedLead.gclid && (
-                            <Badge variant="outline" className="text-[10px]">
-                              gclid
-                            </Badge>
-                          )}
-                        </div>
-                      </div>
-                    )}
                   </CardContent>
                 </Card>
 
@@ -1429,11 +1259,10 @@ export default function LeadBrowser() {
                   <CardContent className="px-3 pb-3">
                     {(() => {
                       const scoreData = selectedLead.mkt_lead_scores;
-                      const fit = scoreData?.fit_score ?? selectedLead.fit_score ?? 0;
-                      const intent = scoreData?.intent_score ?? selectedLead.intent_score ?? 0;
-                      const engagement =
-                        scoreData?.engagement_score ?? selectedLead.engagement_score ?? 0;
-                      const total = scoreData?.total_score ?? selectedLead.total_score ?? 0;
+                      const fit = scoreData?.fit_score ?? 0;
+                      const intent = scoreData?.intent_score ?? 0;
+                      const engagement = scoreData?.engagement_score ?? 0;
+                      const total = scoreData?.total_score ?? 0;
 
                       return (
                         <div className="space-y-2">
