@@ -45,32 +45,21 @@ export function useArohanChat() {
       setIsSending(true);
 
       try {
-        // Get a fresh JWT for the request
-        const { data: { session } } = await supabase.auth.getSession();
-        const token = session?.access_token;
-        if (!token) throw new Error("Not authenticated");
+        // Use functions.invoke() — it auto-refreshes the session token before calling,
+        // preventing 401 "Invalid JWT" errors when the cached token has expired.
+        const { data: result, error: fnError } = await supabase.functions.invoke<SendResult>(
+          "mkt-arohan-chat",
+          {
+            body: {
+              org_id: effectiveOrgId,
+              thread_id: threadIdRef.current,
+              message: text.trim(),
+            },
+          }
+        );
 
-        const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
-
-        const res = await fetch(`${supabaseUrl}/functions/v1/mkt-arohan-chat`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            org_id: effectiveOrgId,
-            thread_id: threadIdRef.current,
-            message: text.trim(),
-          }),
-        });
-
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(errText || "Arohan is unavailable. Please try again.");
-        }
-
-        const result: SendResult = await res.json();
+        if (fnError) throw new Error(fnError.message || "Arohan is unavailable. Please try again.");
+        if (!result) throw new Error("Empty response from Arohan");
 
         // Replace loading placeholder with real response
         setMessages((prev) =>
