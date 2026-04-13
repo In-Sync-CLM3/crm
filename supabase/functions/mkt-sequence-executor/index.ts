@@ -7,8 +7,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const BATCH_SIZE = 50; // Enrollments per run
-const PARALLEL_SIZE = 5; // Concurrent dispatches
+const BATCH_SIZE = 20;  // Enrollments per run (20 × ~2s = ~40s, well within timeout)
+const PARALLEL_SIZE = 1; // Sequential dispatches — prevents Supabase edge fn rate limiting
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {

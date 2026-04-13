@@ -82,16 +82,18 @@ export async function callLLM(
       if (!response.ok) {
         const errorBody = await response.text();
 
-        // Rate limit — wait and retry
+        // Rate limit — wait and retry (cap at 8s to avoid function timeout)
         if (response.status === 429 && attempt < MAX_RETRIES) {
-          const retryAfter = parseInt(response.headers.get('retry-after') || '5', 10);
-          await new Promise((r) => setTimeout(r, retryAfter * 1000));
+          const retryAfter = parseInt(response.headers.get('retry-after') || '2', 10);
+          const waitMs = Math.min(retryAfter * 1000, 8000);
+          await new Promise((r) => setTimeout(r, waitMs));
           continue;
         }
 
-        // Overloaded — retry with backoff
+        // Overloaded — retry with backoff (cap at 8s)
         if (response.status === 529 && attempt < MAX_RETRIES) {
-          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
+          const waitMs = Math.min(RETRY_DELAY_MS * attempt * 2, 8000);
+          await new Promise((r) => setTimeout(r, waitMs));
           continue;
         }
 
