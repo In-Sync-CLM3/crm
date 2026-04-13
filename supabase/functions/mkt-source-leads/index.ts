@@ -9,6 +9,7 @@ import { createEngineLogger } from '../_shared/engineLogger.ts';
 
 const LEAD_CAP = 3000;
 const BATCH_SIZE = 100;
+const NATIVE_PAGE_SIZE = 500;   // contacts fetched from native dataset per invocation
 const APOLLO_MAX_PAGES = 5;
 const APOLLO_PAGE_SIZE = 100; // max per Apollo request
 
@@ -19,6 +20,8 @@ const APOLLO_PAGE_SIZE = 100; // max per Apollo request
 interface RequestBody {
   product_key: string;
   org_id: string;
+  native_offset?: number;        // legacy, ignored
+  min_id?: string;               // cursor: fetch contacts with id > min_id
 }
 
 interface ICPRow {
@@ -157,25 +160,26 @@ async function sourceFromNative(
   icp: ICPRow,
   limit: number,
   logger: ReturnType<typeof createEngineLogger>,
-): Promise<number> {
-  // Use RPC that does TRIM()-based matching so dirty whitespace in the dataset
-  // doesn't break ICP filter lookups. Empty arrays mean "no filter".
-  const poolSize = Math.min(limit * 2, 2000);
+  minId = '00000000-0000-0000-0000-000000000000',
+): Promise<{ inserted: number; pageWasFull: boolean; lastId: string }> {
   const { data: candidates, error: fetchError } = await supabase.rpc(
     'get_icp_native_contacts',
     {
-      p_industries:   icp.industries ?? [],
-      p_designations: icp.designations ?? [],
+      p_industries:    icp.industries ?? [],
+      p_designations:  icp.designations ?? [],
       p_company_sizes: icp.company_sizes ?? [],
-      p_limit: poolSize,
+      p_limit:         NATIVE_PAGE_SIZE,
+      p_min_id:        minId,
     },
   );
 
   if (fetchError) throw new Error(`Failed to query mkt_native_contacts via RPC: ${fetchError.message}`);
   if (!candidates || candidates.length === 0) {
-    await logger.info('native-no-candidates', { org_id: orgId, product_key: productKey });
-    return 0;
+    await logger.info('native-no-candidates', { org_id: orgId, product_key: productKey, min_id: minId });
+    return { inserted: 0, pageWasFull: false, lastId: minId };
   }
+
+  const lastId = (candidates as NativeContact[]).at(-1)?.id ?? minId;
 
   // Collect all phones and emails to check for duplicates
   const phones = (candidates as NativeContact[])
@@ -220,9 +224,11 @@ async function sourceFromNative(
     return true;
   }).slice(0, limit);
 
+  const pageWasFull = (candidates as NativeContact[]).length === NATIVE_PAGE_SIZE;
+
   if (fresh.length === 0) {
-    await logger.info('native-all-duplicates', { org_id: orgId, product_key: productKey, candidates: candidates.length });
-    return 0;
+    await logger.info('native-all-duplicates', { org_id: orgId, product_key: productKey, candidates: candidates.length, min_id: minId });
+    return { inserted: 0, pageWasFull, lastId };
   }
 
   // Map to contacts rows
@@ -277,12 +283,14 @@ async function sourceFromNative(
   await logger.info('native-sourced', {
     org_id: orgId,
     product_key: productKey,
+    min_id: minId,
+    last_id: lastId,
     candidates: candidates.length,
     fresh: fresh.length,
     inserted,
   });
 
-  return inserted;
+  return { inserted, pageWasFull, lastId };
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +431,7 @@ Deno.serve(async (req) => {
 
   try {
     const body: RequestBody = await req.json();
-    const { product_key, org_id } = body;
+    const { product_key, org_id, min_id = '00000000-0000-0000-0000-000000000000' } = body;
 
     if (!product_key || !org_id) {
       return new Response(
@@ -449,9 +457,9 @@ Deno.serve(async (req) => {
     await productLogger.info('icp-loaded', {
       product_key,
       version: icp.version,
+      min_id,
       industries: icp.industries,
       designations: icp.designations,
-      company_sizes: icp.company_sizes,
     });
 
     // 2. Count already-tagged contacts this month
@@ -465,63 +473,68 @@ Deno.serve(async (req) => {
       );
     }
 
-    const initialGap = LEAD_CAP - existingCount;
-
-    // 3 & 4. Source from native contacts
-    const nativeInserted = await sourceFromNative(
-      supabase,
-      org_id,
-      product_key,
-      icp,
-      initialGap,
+    // 3. Source one page from native contacts starting after min_id cursor
+    const { inserted: nativeInserted, pageWasFull, lastId } = await sourceFromNative(
+      supabase, org_id, product_key, icp,
+      LEAD_CAP - existingCount,
       productLogger,
+      min_id,
     );
 
-    // 5. Recount after native inserts
+    // 4. Recount
     const countAfterNative = await countTaggedContacts(supabase, org_id, product_key);
     const gapAfterNative = LEAD_CAP - countAfterNative;
 
-    let apolloInserted = 0;
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const serviceRoleKey2 = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-    // 6. If still below cap, fill with Apollo
+    /** Write current total back to the onboarding step so the UI always reflects live progress. */
+    async function updateStepTotal(total: number) {
+      await supabase.from('mkt_onboarding_steps')
+        .update({ details: { sourced: { status: 'sourced', total } } })
+        .eq('org_id', org_id).eq('product_key', product_key).eq('step_name', 'source_leads');
+    }
+
+    // 5. Self-chain to next page if: still below cap AND last page was full (more rows may exist)
+    if (gapAfterNative > 0 && pageWasFull) {
+      await updateStepTotal(countAfterNative);
+      await productLogger.info('native-chaining', { product_key, last_id: lastId, gap: gapAfterNative });
+      fetch(`${supabaseUrl}/functions/v1/mkt-source-leads`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${serviceRoleKey2}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ org_id, product_key, min_id: lastId }),
+      }).catch(() => {});
+
+      return new Response(
+        JSON.stringify({ status: 'chaining', min_id, last_id: lastId, inserted_this_page: nativeInserted, total_so_far: countAfterNative }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // 6. Dataset exhausted or cap reached — try Apollo for remaining gap
+    let apolloInserted = 0;
     if (gapAfterNative > 0) {
       const apolloApiKey = Deno.env.get('APOLLO_API_KEY');
-
       if (!apolloApiKey) {
-        await productLogger.warn('apollo-key-missing', {
-          org_id,
-          product_key,
-          message: 'APOLLO_API_KEY not set — skipping Apollo sourcing',
-        });
+        await productLogger.warn('apollo-key-missing', { org_id, product_key, message: 'APOLLO_API_KEY not set' });
       } else {
-        apolloInserted = await sourceFromApollo(
-          supabase,
-          org_id,
-          product_key,
-          icp,
-          gapAfterNative,
-          apolloApiKey,
-          productLogger,
-        );
+        apolloInserted = await sourceFromApollo(supabase, org_id, product_key, icp, gapAfterNative, apolloApiKey, productLogger);
       }
     }
 
-    // 7. Final recount for accurate gap_remaining
+    // 7. Final count — update onboarding step with definitive total
     const finalCount = await countTaggedContacts(supabase, org_id, product_key);
-    const gapRemaining = Math.max(0, LEAD_CAP - finalCount);
+    await updateStepTotal(finalCount);
 
     const result = {
       status: 'sourced',
       native_count: nativeInserted,
       apollo_count: apolloInserted,
       total: finalCount,
-      gap_remaining: gapRemaining,
+      gap_remaining: Math.max(0, LEAD_CAP - finalCount),
     };
 
-    await productLogger.info('sourcing-complete', {
-      product_key,
-      ...result,
-    });
+    await productLogger.info('sourcing-complete', { product_key, ...result });
 
     return new Response(
       JSON.stringify(result),

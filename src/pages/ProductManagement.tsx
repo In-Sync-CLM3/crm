@@ -155,7 +155,8 @@ function getStepSummary(step: OnboardingStep): string | null {
     case "campaign_create":    return d.already_existed ? "existing" : d.steps_created != null ? `${d.steps_created} steps` : null;
     case "source_leads": {
       const s = d.sourced as Record<string, unknown> | null;
-      return s?.total != null ? `${s.total} contacts` : null;
+      const count = s?.total ?? s?.total_so_far;
+      return count != null ? `${count} contacts` : null;
     }
     case "vapi_assistants":    return d.assistants_created != null ? `${d.assistants_created} assistants` : null;
     default:                   return null;
