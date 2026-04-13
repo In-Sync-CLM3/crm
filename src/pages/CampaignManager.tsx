@@ -119,6 +119,23 @@ interface CampaignAnalytics {
   last_sent_at: string | null;
 }
 
+interface StepAnalytics {
+  step_id: string;
+  step_number: number;
+  channel: string;
+  delay_hours: number;
+  template_id: string | null;
+  in_queue: number;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  replied: number;
+  failed: number;
+  bounced: number;
+  skipped: number;
+}
+
 interface AllCampaignAnalytics {
   campaign_id: string;
   campaign_name: string;
@@ -153,6 +170,11 @@ function formatPaiseToCurrency(paise: number | null): string {
   if (paise === null || paise === undefined) return "\u20B90";
   const rupees = paise / 100;
   return "\u20B9" + rupees.toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
+function pct(num: number, denom: number): string {
+  if (!denom || !num) return "";
+  return `${Math.round((num / denom) * 100)}%`;
 }
 
 function statusBadgeVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
@@ -325,6 +347,20 @@ export default function CampaignManager() {
         .single();
       if (error) throw error;
       return data as CampaignAnalytics | null;
+    },
+    enabled: !!selectedCampaign,
+    refetchInterval: 60_000,
+  });
+
+  // Per-step funnel analytics
+  const { data: stepAnalytics = [], isLoading: stepAnalyticsLoading } = useQuery({
+    queryKey: ["campaign_step_analytics", selectedCampaign?.id],
+    queryFn: async () => {
+      if (!selectedCampaign) return [];
+      const { data, error } = await supabase
+        .rpc("get_campaign_step_analytics", { p_campaign_id: selectedCampaign.id });
+      if (error) throw error;
+      return (data || []) as StepAnalytics[];
     },
     enabled: !!selectedCampaign,
     refetchInterval: 60_000,
@@ -629,119 +665,140 @@ export default function CampaignManager() {
             </TooltipProvider>
           </div>
 
-          {/* Analytics section */}
-          {analyticsLoading ? (
-            <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
-              {Array.from({ length: 8 }).map((_, i) => (
-                <Card key={i} className="p-3 animate-pulse">
-                  <div className="h-3 bg-muted rounded w-3/4 mb-2" />
-                  <div className="h-5 bg-muted rounded w-1/2" />
-                </Card>
-              ))}
-            </div>
-          ) : campaignAnalytics ? (
-            <div className="space-y-3">
-              {/* Enrollment + timing row */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                <Card className="p-3">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Users className="h-3.5 w-3.5 text-muted-foreground" />
-                    <p className="text-xs text-muted-foreground">Enrolled</p>
-                  </div>
-                  <p className="text-lg font-bold">{(campaignAnalytics.enrolled ?? 0).toLocaleString("en-IN")}</p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">
-                    {(campaignAnalytics.active_enrollments ?? 0).toLocaleString("en-IN")} active · {(campaignAnalytics.completed_enrollments ?? 0).toLocaleString("en-IN")} done
-                  </p>
-                </Card>
-                <Card className="p-3">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-                    <p className="text-xs text-muted-foreground">Next Fire</p>
-                  </div>
-                  {campaignAnalytics.next_fire_at ? (
-                    <>
-                      <p className="text-sm font-semibold">
-                        {isPast(new Date(campaignAnalytics.next_fire_at))
-                          ? "Now (pending)"
-                          : formatDistanceToNow(new Date(campaignAnalytics.next_fire_at), { addSuffix: true })}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        {format(new Date(campaignAnalytics.next_fire_at), "dd MMM, HH:mm 'UTC'")}
-                      </p>
-                    </>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">No pending sends</p>
-                  )}
-                </Card>
-                <Card className="p-3">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <Send className="h-3.5 w-3.5 text-muted-foreground" />
-                    <p className="text-xs text-muted-foreground">Last Sent</p>
-                  </div>
-                  {campaignAnalytics.last_sent_at ? (
-                    <>
-                      <p className="text-sm font-semibold">
-                        {formatDistanceToNow(new Date(campaignAnalytics.last_sent_at), { addSuffix: true })}
-                      </p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        {format(new Date(campaignAnalytics.last_sent_at), "dd MMM, HH:mm")}
-                      </p>
-                    </>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">Not sent yet</p>
-                  )}
-                </Card>
-                <Card className="p-3">
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <TrendingUp className="h-3.5 w-3.5 text-muted-foreground" />
-                    <p className="text-xs text-muted-foreground">Open Rate</p>
-                  </div>
-                  <p className="text-lg font-bold">
-                    {campaignAnalytics.sent > 0
-                      ? `${Math.round((campaignAnalytics.opened / campaignAnalytics.sent) * 100)}%`
-                      : "—"}
-                  </p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">
-                    Click: {campaignAnalytics.sent > 0 ? `${Math.round((campaignAnalytics.clicked / campaignAnalytics.sent) * 100)}%` : "—"}
-                  </p>
-                </Card>
-              </div>
-
-              {/* Email funnel row */}
-              <Card>
-                <CardHeader className="py-2 px-4">
-                  <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Email Funnel</CardTitle>
-                </CardHeader>
-                <CardContent className="p-0">
-                  <div className="grid grid-cols-4 md:grid-cols-8 divide-x">
-                    {[
-                      { label: "Sent", value: campaignAnalytics.sent, color: "text-blue-600", icon: <Mail className="h-3.5 w-3.5" /> },
-                      { label: "Delivered", value: campaignAnalytics.delivered, color: "text-emerald-600", icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
-                      { label: "Opened", value: campaignAnalytics.opened, color: "text-violet-600", icon: <TrendingUp className="h-3.5 w-3.5" /> },
-                      { label: "Clicked", value: campaignAnalytics.clicked, color: "text-sky-600", icon: <MousePointerClick className="h-3.5 w-3.5" /> },
-                      { label: "Replied", value: campaignAnalytics.replied, color: "text-green-600", icon: <Reply className="h-3.5 w-3.5" /> },
-                      { label: "Failed", value: campaignAnalytics.failed, color: "text-red-500", icon: <AlertTriangle className="h-3.5 w-3.5" /> },
-                      { label: "Bounced", value: campaignAnalytics.bounced, color: "text-orange-500", icon: <AlertTriangle className="h-3.5 w-3.5" /> },
-                      { label: "Complained", value: campaignAnalytics.complained, color: "text-rose-600", icon: <AlertTriangle className="h-3.5 w-3.5" /> },
-                    ].map(({ label, value, color, icon }) => (
-                      <div key={label} className="px-3 py-3 text-center">
-                        <div className={`flex items-center justify-center gap-1 mb-1 ${color}`}>
-                          {icon}
-                          <span className="text-[10px] font-medium uppercase tracking-wide">{label}</span>
-                        </div>
-                        <p className={`text-lg font-bold ${color}`}>{(value ?? 0).toLocaleString("en-IN")}</p>
-                        {campaignAnalytics.sent > 0 && value > 0 && label !== "Sent" && (
-                          <p className="text-[10px] text-muted-foreground">
-                            {Math.round((value / campaignAnalytics.sent) * 100)}%
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
+          {/* Top summary row */}
+          {campaignAnalytics && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <Card className="p-3">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                  <p className="text-xs text-muted-foreground">Enrolled</p>
+                </div>
+                <p className="text-lg font-bold">{(campaignAnalytics.enrolled ?? 0).toLocaleString("en-IN")}</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  {(campaignAnalytics.active_enrollments ?? 0).toLocaleString("en-IN")} active · {(campaignAnalytics.completed_enrollments ?? 0).toLocaleString("en-IN")} completed
+                </p>
+              </Card>
+              <Card className="p-3">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                  <p className="text-xs text-muted-foreground">Next Send</p>
+                </div>
+                {campaignAnalytics.next_fire_at ? (
+                  <>
+                    <p className="text-sm font-semibold">
+                      {isPast(new Date(campaignAnalytics.next_fire_at))
+                        ? "Now (pending)"
+                        : formatDistanceToNow(new Date(campaignAnalytics.next_fire_at), { addSuffix: true })}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      {format(new Date(campaignAnalytics.next_fire_at), "dd MMM, HH:mm 'UTC'")}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No pending sends</p>
+                )}
+              </Card>
+              <Card className="p-3">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Send className="h-3.5 w-3.5 text-muted-foreground" />
+                  <p className="text-xs text-muted-foreground">Last Sent</p>
+                </div>
+                {campaignAnalytics.last_sent_at ? (
+                  <>
+                    <p className="text-sm font-semibold">
+                      {formatDistanceToNow(new Date(campaignAnalytics.last_sent_at), { addSuffix: true })}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5">
+                      {format(new Date(campaignAnalytics.last_sent_at), "dd MMM, HH:mm")}
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Not sent yet</p>
+                )}
+              </Card>
+              <Card className="p-3">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <TrendingUp className="h-3.5 w-3.5 text-muted-foreground" />
+                  <p className="text-xs text-muted-foreground">Overall Reply Rate</p>
+                </div>
+                <p className="text-lg font-bold">
+                  {campaignAnalytics.sent > 0
+                    ? `${Math.round(((campaignAnalytics.replied ?? 0) / campaignAnalytics.sent) * 100)}%`
+                    : "—"}
+                </p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  {(campaignAnalytics.replied ?? 0).toLocaleString("en-IN")} of {(campaignAnalytics.sent ?? 0).toLocaleString("en-IN")} sent
+                </p>
               </Card>
             </div>
-          ) : null}
+          )}
+
+          {/* Sequence funnel — step by step */}
+          <Card>
+            <CardHeader className="py-3 px-4">
+              <CardTitle className="text-sm font-semibold">Sequence Funnel</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              {(analyticsLoading || stepAnalyticsLoading) ? (
+                <div className="p-4 space-y-3">
+                  {[1,2,3].map(i => <div key={i} className="h-16 bg-muted rounded animate-pulse" />)}
+                </div>
+              ) : stepAnalytics.length === 0 ? (
+                <div className="py-6 text-center text-sm text-muted-foreground">No steps configured yet.</div>
+              ) : (
+                <div className="divide-y">
+                  {stepAnalytics.map((step, idx) => (
+                    <StepFunnelRow
+                      key={step.step_id}
+                      step={step}
+                      isLast={idx === stepAnalytics.length - 1}
+                      totalEnrolled={campaignAnalytics?.enrolled ?? 0}
+                    />
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Outcomes summary */}
+          {campaignAnalytics && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <Card className="p-3">
+                <p className="text-xs text-muted-foreground mb-0.5">Sequence Completed</p>
+                <p className="text-lg font-bold text-green-700">
+                  {(campaignAnalytics.completed_enrollments ?? 0).toLocaleString("en-IN")}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  {pct(campaignAnalytics.completed_enrollments ?? 0, campaignAnalytics.enrolled ?? 0)} of enrolled
+                </p>
+              </Card>
+              <Card className="p-3">
+                <p className="text-xs text-muted-foreground mb-0.5">Replied (All Steps)</p>
+                <p className="text-lg font-bold text-blue-600">
+                  {(campaignAnalytics.replied ?? 0).toLocaleString("en-IN")}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  {pct(campaignAnalytics.replied ?? 0, campaignAnalytics.sent ?? 0)} of sent
+                </p>
+              </Card>
+              <Card className="p-3">
+                <p className="text-xs text-muted-foreground mb-0.5">Bounced / Complained</p>
+                <p className="text-lg font-bold text-red-500">
+                  {(campaignAnalytics.bounced ?? 0).toLocaleString("en-IN")}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  {(campaignAnalytics.complained ?? 0)} spam reports
+                </p>
+              </Card>
+              <Card className="p-3 bg-muted/30">
+                <p className="text-xs text-muted-foreground mb-0.5">Trial → Paid</p>
+                <p className="text-sm text-muted-foreground">Tracked in pipeline</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  See CRM → Pipeline stages
+                </p>
+              </Card>
+            </div>
+          )}
 
           {/* Campaign meta row */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -1042,6 +1099,160 @@ export default function CampaignManager() {
         editing={!!editingCampaign}
       />
     </DashboardLayout>
+  );
+}
+
+// ===========================================================================
+// StepFunnelRow sub-component
+// ===========================================================================
+
+function MetricPill({
+  label,
+  value,
+  rate,
+  color,
+}: {
+  label: string;
+  value: number;
+  rate?: string;
+  color?: string;
+}) {
+  return (
+    <div className="flex flex-col items-center min-w-[52px] text-center">
+      <span className={`text-sm font-semibold leading-tight ${color || "text-foreground"}`}>
+        {value.toLocaleString("en-IN")}
+        {rate && (
+          <span className="text-[10px] font-normal text-muted-foreground ml-0.5">
+            ({rate})
+          </span>
+        )}
+      </span>
+      <span className="text-[10px] text-muted-foreground leading-tight">{label}</span>
+    </div>
+  );
+}
+
+function StepFunnelRow({
+  step,
+  isLast,
+}: {
+  step: StepAnalytics;
+  isLast: boolean;
+}) {
+  const sent = step.sent ?? 0;
+  const noData = sent === 0 && (step.in_queue ?? 0) === 0;
+
+  return (
+    <div>
+      <div className="px-4 py-3">
+        {/* Header: step badge + channel + delay + in-queue */}
+        <div className="flex items-center gap-2 mb-2.5 flex-wrap">
+          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary/10 text-primary text-[10px] font-bold shrink-0">
+            {step.step_number}
+          </span>
+          <span className="flex items-center gap-1 text-sm font-medium capitalize">
+            {channelIcon(step.channel)}
+            {step.channel}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {step.delay_hours === 0 ? "Immediate" : `+${step.delay_hours}h after previous`}
+          </span>
+          {(step.in_queue ?? 0) > 0 && (
+            <Badge variant="outline" className="ml-auto text-[10px] px-1.5 py-0 font-normal">
+              {step.in_queue} in queue
+            </Badge>
+          )}
+        </div>
+
+        {/* Metrics */}
+        <div className="pl-7 flex flex-wrap gap-x-5 gap-y-2 items-end">
+          {noData && (
+            <span className="text-xs text-muted-foreground italic">No actions sent yet</span>
+          )}
+
+          {!noData && step.channel === "email" && (
+            <>
+              <MetricPill label="Sent" value={sent} />
+              <MetricPill label="Delivered" value={step.delivered ?? 0} rate={pct(step.delivered ?? 0, sent)} />
+              <MetricPill label="Opened" value={step.opened ?? 0} rate={pct(step.opened ?? 0, sent)} color="text-blue-600" />
+              <MetricPill label="Clicked" value={step.clicked ?? 0} rate={pct(step.clicked ?? 0, sent)} color="text-violet-600" />
+              <MetricPill label="Replied" value={step.replied ?? 0} rate={pct(step.replied ?? 0, sent)} color="text-green-600" />
+              {(step.failed ?? 0) > 0 && (
+                <MetricPill label="Failed" value={step.failed ?? 0} color="text-red-500" />
+              )}
+              {(step.bounced ?? 0) > 0 && (
+                <MetricPill label="Bounced" value={step.bounced ?? 0} color="text-red-400" />
+              )}
+              {(step.skipped ?? 0) > 0 && (
+                <MetricPill label="Skipped" value={step.skipped ?? 0} color="text-muted-foreground" />
+              )}
+            </>
+          )}
+
+          {!noData && step.channel === "whatsapp" && (
+            <>
+              <MetricPill label="Sent" value={sent} />
+              <MetricPill label="Delivered" value={step.delivered ?? 0} rate={pct(step.delivered ?? 0, sent)} />
+              <MetricPill label="Replied" value={step.replied ?? 0} rate={pct(step.replied ?? 0, sent)} color="text-green-600" />
+              {(step.failed ?? 0) > 0 && (
+                <MetricPill label="Failed" value={step.failed ?? 0} color="text-red-500" />
+              )}
+              {(step.skipped ?? 0) > 0 && (
+                <MetricPill label="Skipped" value={step.skipped ?? 0} color="text-muted-foreground" />
+              )}
+            </>
+          )}
+
+          {!noData && step.channel === "call" && (
+            <>
+              <MetricPill label="Dialed" value={sent} />
+              <MetricPill label="Connected" value={step.replied ?? 0} rate={pct(step.replied ?? 0, sent)} color="text-green-600" />
+              {(step.failed ?? 0) > 0 && (
+                <MetricPill label="Failed" value={step.failed ?? 0} color="text-red-500" />
+              )}
+              {(step.skipped ?? 0) > 0 && (
+                <MetricPill label="Skipped" value={step.skipped ?? 0} color="text-muted-foreground" />
+              )}
+            </>
+          )}
+
+          {!noData && step.channel === "sms" && (
+            <>
+              <MetricPill label="Sent" value={sent} />
+              <MetricPill label="Delivered" value={step.delivered ?? 0} rate={pct(step.delivered ?? 0, sent)} />
+              <MetricPill label="Replied" value={step.replied ?? 0} rate={pct(step.replied ?? 0, sent)} color="text-green-600" />
+              {(step.failed ?? 0) > 0 && (
+                <MetricPill label="Failed" value={step.failed ?? 0} color="text-red-500" />
+              )}
+            </>
+          )}
+
+          {!noData && !["email", "whatsapp", "call", "sms"].includes(step.channel) && (
+            <>
+              <MetricPill label="Sent" value={sent} />
+              <MetricPill label="Replied" value={step.replied ?? 0} rate={pct(step.replied ?? 0, sent)} color="text-green-600" />
+              {(step.failed ?? 0) > 0 && (
+                <MetricPill label="Failed" value={step.failed ?? 0} color="text-red-500" />
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Step connector */}
+      {!isLast && (
+        <div className="flex items-center gap-2 px-4 py-0.5">
+          <div className="w-5 flex justify-center">
+            <div className="h-4 w-px border-l-2 border-dashed border-muted-foreground/25" />
+          </div>
+          {(step.replied ?? 0) > 0 && (
+            <span className="text-[10px] text-muted-foreground">
+              {step.replied} engaged → next step
+            </span>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
