@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { useOrgContext } from "@/hooks/useOrgContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState } from "@/components/common/LoadingState";
 import {
@@ -56,23 +57,67 @@ const tooltipStyle = {
 };
 
 export function MarketingOverview({ days }: MarketingOverviewProps) {
+  const { effectiveOrgId } = useOrgContext();
+
   const { data, isLoading } = useQuery({
-    queryKey: ["mkt-dashboard-overview", days],
+    queryKey: ["mkt-dashboard-overview", effectiveOrgId, days],
     queryFn: async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      if (!token) throw new Error("Not authenticated");
+      if (!effectiveOrgId) return null;
 
-      const { data: result, error } = await supabase.functions.invoke(
-        "mkt-dashboard-stats",
-        {
-          body: { days, section: "overview" },
-        }
-      );
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
-      if (error) throw error;
-      return result as OverviewStats;
+      const [campaignsRes, actionsRes, enrollmentsRes] = await Promise.all([
+        supabase
+          .from("mkt_campaigns")
+          .select("id", { count: "exact", head: true })
+          .eq("org_id", effectiveOrgId)
+          .eq("status", "active"),
+        supabase
+          .from("mkt_sequence_actions")
+          .select("channel, status, opened_at, clicked_at, replied_at")
+          .eq("org_id", effectiveOrgId)
+          .gte("created_at", since),
+        supabase
+          .from("mkt_sequence_enrollments")
+          .select("status")
+          .eq("org_id", effectiveOrgId)
+          .gte("created_at", since),
+      ]);
+
+      const enrollments = enrollmentsRes.data ?? [];
+      const total = enrollments.length;
+      const completed = enrollments.filter((e) => e.status === "completed").length;
+      const active = enrollments.filter((e) => e.status === "active").length;
+
+      // Channel performance from actions
+      const channelMap: Record<string, { sent: number; opened: number; clicked: number; replied: number }> = {};
+      for (const a of actionsRes.data ?? []) {
+        const ch = a.channel as string;
+        if (!channelMap[ch]) channelMap[ch] = { sent: 0, opened: 0, clicked: 0, replied: 0 };
+        if (["sent", "delivered", "bounced"].includes(a.status as string)) channelMap[ch].sent++;
+        if (a.opened_at) channelMap[ch].opened++;
+        if (a.clicked_at) channelMap[ch].clicked++;
+        if (a.replied_at) channelMap[ch].replied++;
+      }
+
+      return {
+        active_campaigns: campaignsRes.count ?? 0,
+        leads_sourced: total,
+        leads_converted: completed,
+        total_actions: actionsRes.data?.length ?? 0,
+        active_enrollments: active,
+        conversion_rate: total > 0 ? (completed / total) * 100 : 0,
+        funnel: {
+          sourced: total,
+          enriched: total,
+          scored: total,
+          enrolled: active + completed,
+          converted: completed,
+        },
+        channel_performance: Object.entries(channelMap).map(([channel, s]) => ({ channel, ...s })),
+      } as OverviewStats;
     },
+    enabled: !!effectiveOrgId,
   });
 
   if (isLoading) return <LoadingState message="Loading overview..." />;

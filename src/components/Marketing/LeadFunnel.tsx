@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { useOrgContext } from "@/hooks/useOrgContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState } from "@/components/common/LoadingState";
 import { Users, Target, TrendingUp } from "lucide-react";
@@ -54,19 +55,53 @@ const tooltipStyle = {
 };
 
 export function LeadFunnel({ days }: LeadFunnelProps) {
+  const { effectiveOrgId } = useOrgContext();
+
   const { data, isLoading } = useQuery({
-    queryKey: ["mkt-dashboard-leads-funnel", days],
+    queryKey: ["mkt-dashboard-leads-funnel", effectiveOrgId, days],
     queryFn: async () => {
-      const { data: result, error } = await supabase.functions.invoke(
-        "mkt-dashboard-stats",
-        {
-          body: { days, section: "leads,funnel" },
-        }
-      );
+      if (!effectiveOrgId) return null;
+
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+      const { data: enrollments, error } = await supabase
+        .from("mkt_sequence_enrollments")
+        .select("status, campaign_id")
+        .eq("org_id", effectiveOrgId)
+        .gte("created_at", since);
 
       if (error) throw error;
-      return result as FunnelData;
+      if (!enrollments) return null;
+
+      const total = enrollments.length;
+      const byStatus: Record<string, number> = {};
+      const byCampaign: Record<string, number> = {};
+
+      for (const e of enrollments) {
+        byStatus[e.status] = (byStatus[e.status] || 0) + 1;
+        byCampaign[e.campaign_id] = (byCampaign[e.campaign_id] || 0) + 1;
+      }
+
+      const active = byStatus["active"] || 0;
+      const completed = byStatus["completed"] || 0;
+      const cancelled = byStatus["cancelled"] || 0;
+
+      return {
+        funnel: [
+          { stage: "Sourced", count: total, conversion_rate: 100 },
+          { stage: "Enrolled", count: active + completed, conversion_rate: total > 0 ? ((active + completed) / total) * 100 : 0 },
+          { stage: "Completed", count: completed, conversion_rate: total > 0 ? (completed / total) * 100 : 0 },
+          { stage: "Cancelled", count: cancelled, conversion_rate: total > 0 ? (cancelled / total) * 100 : 0 },
+        ],
+        by_status: Object.entries(byStatus).map(([name, value]) => ({ name, value })),
+        by_source: Object.entries(byCampaign).map(([name, value]) => ({ name, value })),
+        score_distribution: [],
+        total_leads: total,
+        avg_score: 0,
+        conversion_rate: total > 0 ? (completed / total) * 100 : 0,
+      } as FunnelData;
     },
+    enabled: !!effectiveOrgId,
   });
 
   if (isLoading) return <LoadingState message="Loading lead funnel..." />;

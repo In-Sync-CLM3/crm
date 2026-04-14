@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { useOrgContext } from "@/hooks/useOrgContext";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -27,7 +28,6 @@ interface Campaign {
   actions: number;
   budget: number;
   spent: number;
-  created_at: string;
 }
 
 function formatRupees(paise: number): string {
@@ -56,21 +56,44 @@ function statusBadge(status: string) {
 }
 
 export function CampaignPerformance({ days }: CampaignPerformanceProps) {
+  const { effectiveOrgId } = useOrgContext();
+
   const { data: campaigns = [], isLoading } = useQuery({
-    queryKey: ["mkt-dashboard-campaigns", days],
+    queryKey: ["mkt-dashboard-campaigns", effectiveOrgId, days],
     queryFn: async () => {
-      const { data: result, error } = await supabase.functions.invoke(
-        "mkt-dashboard-stats",
-        {
-          body: { days, section: "campaigns" },
-        }
+      if (!effectiveOrgId) return [];
+
+      const [analyticsRes, metaRes] = await Promise.all([
+        supabase.rpc("get_all_campaigns_analytics", { p_org_id: effectiveOrgId }),
+        supabase
+          .from("mkt_campaigns")
+          .select("id, campaign_type, budget, budget_spent")
+          .eq("org_id", effectiveOrgId),
+      ]);
+
+      if (analyticsRes.error) throw analyticsRes.error;
+
+      const analytics = (analyticsRes.data ?? []) as Array<Record<string, unknown>>;
+      const metaMap = new Map(
+        ((metaRes.data ?? []) as Array<Record<string, unknown>>).map((c) => [c.id, c])
       );
 
-      if (error) throw error;
-
-      const list = result?.campaigns ?? result ?? [];
-      return (Array.isArray(list) ? list : []) as Campaign[];
+      return analytics.map((row) => {
+        const meta = metaMap.get(row.campaign_id as string) as Record<string, unknown> | undefined;
+        return {
+          id: row.campaign_id as string,
+          name: row.campaign_name as string,
+          type: (meta?.campaign_type as string) ?? "",
+          status: row.campaign_status as string,
+          budget: (meta?.budget as number) ?? 0,
+          spent: (meta?.budget_spent as number) ?? 0,
+          leads: (row.enrolled as number) ?? 0,
+          enrollments: (row.active_enrollments as number) ?? 0,
+          actions: ((row.sent as number) ?? 0) + ((row.failed as number) ?? 0),
+        } as Campaign;
+      });
     },
+    enabled: !!effectiveOrgId,
   });
 
   if (isLoading) return <LoadingState message="Loading campaigns..." />;

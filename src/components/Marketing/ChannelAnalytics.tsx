@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { useOrgContext } from "@/hooks/useOrgContext";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { LoadingState } from "@/components/common/LoadingState";
@@ -38,21 +39,43 @@ function safePct(numerator: number, denominator: number): number {
 }
 
 export function ChannelAnalytics({ days }: ChannelAnalyticsProps) {
+  const { effectiveOrgId } = useOrgContext();
+
   const { data: channels = [], isLoading } = useQuery({
-    queryKey: ["mkt-dashboard-channels", days],
+    queryKey: ["mkt-dashboard-channels", effectiveOrgId, days],
     queryFn: async () => {
-      const { data: result, error } = await supabase.functions.invoke(
-        "mkt-dashboard-stats",
-        {
-          body: { days, section: "channels" },
-        }
-      );
+      if (!effectiveOrgId) return [];
+
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+      const { data: actions, error } = await supabase
+        .from("mkt_sequence_actions")
+        .select("channel, status, delivered_at, opened_at, clicked_at, replied_at")
+        .eq("org_id", effectiveOrgId)
+        .gte("created_at", since);
 
       if (error) throw error;
+      if (!actions) return [];
 
-      const list = result?.channels ?? result ?? [];
-      return (Array.isArray(list) ? list : []) as ChannelData[];
+      const channelMap: Record<string, ChannelData> = {};
+
+      for (const action of actions) {
+        const ch = action.channel as string;
+        if (!channelMap[ch]) {
+          channelMap[ch] = { channel: ch, sent: 0, delivered: 0, opened: 0, clicked: 0, replied: 0, bounced: 0, failed: 0 };
+        }
+        if (["sent", "delivered", "bounced"].includes(action.status as string)) channelMap[ch].sent++;
+        if (action.delivered_at) channelMap[ch].delivered++;
+        if (action.opened_at) channelMap[ch].opened++;
+        if (action.clicked_at) channelMap[ch].clicked++;
+        if (action.replied_at) channelMap[ch].replied++;
+        if (action.status === "bounced") channelMap[ch].bounced++;
+        if (action.status === "failed") channelMap[ch].failed++;
+      }
+
+      return Object.values(channelMap) as ChannelData[];
     },
+    enabled: !!effectiveOrgId,
   });
 
   if (isLoading) return <LoadingState message="Loading channel data..." />;
@@ -78,11 +101,9 @@ export function ChannelAnalytics({ days }: ChannelAnalyticsProps) {
         const color = channelColors[ch.channel.toLowerCase()] ?? "text-muted-foreground";
 
         const deliveryRate = safePct(ch.delivered, ch.sent);
-        // Click rate based on delivered (not opened — open pixel is unreliable)
         const clickRate = safePct(ch.clicked, ch.delivered);
         const openRate = safePct(ch.opened, ch.delivered);
         const replyRate = safePct(ch.replied, ch.sent);
-
         const bounceRate = safePct(ch.bounced, ch.sent);
 
         const metrics = [
@@ -95,7 +116,6 @@ export function ChannelAnalytics({ days }: ChannelAnalyticsProps) {
           { label: "Failed", value: ch.failed, warn: true },
         ];
 
-        // Funnel: shows how far emails progress through each stage
         const funnelSteps = [
           { label: "Sent", value: ch.sent, pct: 100 },
           { label: "Delivered", value: ch.delivered, pct: deliveryRate },
