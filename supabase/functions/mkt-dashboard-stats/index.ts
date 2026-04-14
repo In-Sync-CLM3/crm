@@ -5,6 +5,18 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+/** Decode JWT payload to extract sub (user ID). Returns null if not a valid JWT. */
+function decodeJwtSub(token: string): string | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return typeof payload.sub === 'string' ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * API endpoint for the CRM frontend Revenue Engine dashboard.
  * Returns aggregated stats: campaigns, leads, channels, funnel, recent actions.
@@ -36,13 +48,15 @@ Deno.serve(async (req) => {
     const token = authHeader.replace('Bearer ', '');
     let orgId: string | null = null;
 
-    // Try user JWT auth first
-    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-    if (!userError && user) {
+    // Supabase gateway validates JWTs before functions run, so we can safely
+    // decode the payload to get sub (user ID) without a round-trip to auth API.
+    // Service role key is not a JWT, so decode will return null — handled below.
+    const jwtUserId = decodeJwtSub(token);
+    if (jwtUserId) {
       const { data: profile } = await supabase
         .from('profiles')
         .select('org_id')
-        .eq('id', user.id)
+        .eq('id', jwtUserId)
         .single();
       orgId = profile?.org_id || null;
     }
