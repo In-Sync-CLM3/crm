@@ -188,6 +188,7 @@ async function processEnrollment(
     return 'skipped';
   }
 
+
   // Get the current step
   const steps = stepsByCampaign.get(enrollment.campaign_id as string) || [];
   const currentStepNum = enrollment.current_step as number;
@@ -368,7 +369,7 @@ async function checkStepConditions(
   // Get previous actions for this enrollment
   const { data: prevActions } = await supabase
     .from('mkt_sequence_actions')
-    .select('step_number, opened_at, clicked_at, replied_at')
+    .select('step_number, clicked_at, replied_at')
     .eq('enrollment_id', enrollment.id as string)
     .lt('step_number', currentStepNum)
     .order('step_number', { ascending: false })
@@ -378,7 +379,7 @@ async function checkStepConditions(
 
   const lastAction = prevActions[0];
 
-  if (conditions.require_previous_opened && !lastAction.opened_at) {
+  if (conditions.require_previous_opened && !lastAction.clicked_at) {
     return 'skip';
   }
 

@@ -18,6 +18,12 @@ Deno.serve(async (req) => {
   try {
     const supabase = getSupabaseClient();
 
+    // Parse body once (POST requests send params in body, not URL)
+    let reqBody: Record<string, unknown> = {};
+    try {
+      reqBody = await req.clone().json();
+    } catch { /* ignore — GET requests have no body */ }
+
     // Authenticate user — supports user JWT or service role key with org_id in body/params
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) {
@@ -43,10 +49,8 @@ Deno.serve(async (req) => {
 
     // Fall back to org_id from request body/params (for service role / cron calls)
     if (!orgId) {
-      try {
-        const body = await req.clone().json();
-        orgId = body.org_id || null;
-      } catch {
+      orgId = (reqBody.org_id as string | undefined) || null;
+      if (!orgId) {
         const url = new URL(req.url);
         orgId = url.searchParams.get('org_id');
       }
@@ -59,40 +63,45 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Parse query params
+    // Parse query params — body takes precedence over URL params (POST requests)
     const url = new URL(req.url);
-    const daysBack = parseInt(url.searchParams.get('days') || '30', 10);
-    const section = url.searchParams.get('section') || 'all'; // all | overview | campaigns | leads | channels | funnel | actions
+    const daysBack = parseInt(
+      String(reqBody.days ?? url.searchParams.get('days') ?? '30'),
+      10
+    );
+    const sectionParam = String(
+      reqBody.section ?? url.searchParams.get('section') ?? 'all'
+    );
 
     const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
 
     const stats: Record<string, unknown> = {};
 
-    // Fetch sections in parallel based on request
-    const sections = section === 'all'
+    // Support comma-separated sections e.g. "leads,funnel"
+    const sections = sectionParam === 'all'
       ? ['overview', 'campaigns', 'leads', 'channels', 'funnel', 'actions']
-      : [section];
+      : sectionParam.split(',').map((s) => s.trim());
 
     await Promise.all(
       sections.map(async (s) => {
         switch (s) {
           case 'overview':
-            stats.overview = await getOverviewStats(supabase, orgId, since);
+            stats.overview = await getOverviewStats(supabase, orgId!, since);
             break;
           case 'campaigns':
-            stats.campaigns = await getCampaignStats(supabase, orgId);
+            stats.campaigns = await getCampaignStats(supabase, orgId!);
             break;
           case 'leads':
-            stats.leads = await getLeadStats(supabase, orgId, since);
+            stats.leads = await getLeadStats(supabase, orgId!, since);
             break;
           case 'channels':
-            stats.channels = await getChannelStats(supabase, orgId, since);
+            stats.channels = await getChannelStats(supabase, orgId!, since);
             break;
           case 'funnel':
-            stats.funnel = await getFunnelStats(supabase, orgId, since);
+            stats.funnel = await getFunnelStats(supabase, orgId!, since);
             break;
           case 'actions':
-            stats.actions = await getRecentActions(supabase, orgId);
+            stats.actions = await getRecentActions(supabase, orgId!);
             break;
         }
       })
@@ -115,24 +124,16 @@ async function getOverviewStats(
   orgId: string,
   since: string
 ): Promise<Record<string, unknown>> {
-  const [
-    campaignsRes,
-    leadsRes,
-    convertedRes,
-    actionsRes,
-    enrollmentsRes,
-  ] = await Promise.all([
+  const [campaignsRes, actionsRes, enrollmentsRes] = await Promise.all([
     supabase.from('mkt_campaigns').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('status', 'active'),
-    supabase.from('mkt_leads').select('id', { count: 'exact', head: true }).eq('org_id', orgId).gte('created_at', since),
-    supabase.from('mkt_leads').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('status', 'converted').gte('converted_at', since),
     supabase.from('mkt_sequence_actions').select('id', { count: 'exact', head: true }).eq('org_id', orgId).gte('created_at', since),
-    supabase.from('mkt_sequence_enrollments').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('status', 'active'),
+    supabase.from('mkt_sequence_enrollments').select('id', { count: 'exact', head: true }).eq('org_id', orgId).in('status', ['active']),
   ]);
 
   return {
     active_campaigns: campaignsRes.count || 0,
-    leads_sourced: leadsRes.count || 0,
-    leads_converted: convertedRes.count || 0,
+    leads_sourced: enrollmentsRes.count || 0,
+    leads_converted: 0,
     total_actions: actionsRes.count || 0,
     active_enrollments: enrollmentsRes.count || 0,
   };
@@ -142,37 +143,34 @@ async function getCampaignStats(
   supabase: ReturnType<typeof getSupabaseClient>,
   orgId: string
 ): Promise<Array<Record<string, unknown>>> {
-  const { data: campaigns } = await supabase
-    .from('mkt_campaigns')
-    .select('id, name, campaign_type, status, start_date, budget, budget_spent, max_enrollments, created_at')
-    .eq('org_id', orgId)
-    .order('created_at', { ascending: false })
-    .limit(20);
+  // 2 parallel queries instead of N×3 per-campaign queries
+  const [analyticsRes, metaRes] = await Promise.all([
+    supabase.rpc('get_all_campaigns_analytics', { p_org_id: orgId }),
+    supabase
+      .from('mkt_campaigns')
+      .select('id, campaign_type, budget, budget_spent')
+      .eq('org_id', orgId),
+  ]);
 
-  if (!campaigns) return [];
-
-  // Enrich with counts
-  const enriched = await Promise.all(
-    campaigns.map(async (campaign) => {
-      const [leadCount, enrollCount, actionCount] = await Promise.all([
-        supabase.from('mkt_leads').select('id', { count: 'exact', head: true }).eq('campaign_id', campaign.id),
-        supabase.from('mkt_sequence_enrollments').select('id', { count: 'exact', head: true }).eq('campaign_id', campaign.id),
-        supabase.from('mkt_sequence_actions').select('id', { count: 'exact', head: true })
-          .in('enrollment_id',
-            (await supabase.from('mkt_sequence_enrollments').select('id').eq('campaign_id', campaign.id)).data?.map((e) => e.id) || ['__none__']
-          ),
-      ]);
-
-      return {
-        ...campaign,
-        leads_count: leadCount.count || 0,
-        enrollments_count: enrollCount.count || 0,
-        actions_count: actionCount.count || 0,
-      };
-    })
+  const analytics = analyticsRes.data ?? [];
+  const metaMap = new Map(
+    (metaRes.data ?? []).map((c: Record<string, unknown>) => [c.id, c])
   );
 
-  return enriched;
+  return analytics.map((row: Record<string, unknown>) => {
+    const meta = metaMap.get(row.campaign_id) as Record<string, unknown> | undefined;
+    return {
+      id: row.campaign_id,
+      name: row.campaign_name,
+      type: meta?.campaign_type ?? null,
+      status: row.campaign_status,
+      budget: meta?.budget ?? null,
+      spent: meta?.budget_spent ?? 0,
+      leads: row.enrolled ?? 0,
+      enrollments: row.active_enrollments ?? 0,
+      actions: (row.sent as number ?? 0) + (row.failed as number ?? 0),
+    };
+  });
 }
 
 async function getLeadStats(
@@ -180,38 +178,28 @@ async function getLeadStats(
   orgId: string,
   since: string
 ): Promise<Record<string, unknown>> {
-  const { data: leads } = await supabase
-    .from('mkt_leads')
-    .select('status, source, total_score')
+  const { data: enrollments } = await supabase
+    .from('mkt_sequence_enrollments')
+    .select('status, campaign_id')
     .eq('org_id', orgId)
     .gte('created_at', since);
 
-  if (!leads) return { by_status: {}, by_source: {}, score_distribution: {} };
+  if (!enrollments) return { total: 0, by_status: {}, by_source: {}, score_distribution: {}, avg_score: 0 };
 
   const byStatus: Record<string, number> = {};
-  const bySource: Record<string, number> = {};
-  const scoreRanges = { '0-20': 0, '21-40': 0, '41-60': 0, '61-80': 0, '81-100': 0 };
+  const byCampaign: Record<string, number> = {};
 
-  for (const lead of leads) {
-    byStatus[lead.status] = (byStatus[lead.status] || 0) + 1;
-    bySource[lead.source] = (bySource[lead.source] || 0) + 1;
-
-    const score = lead.total_score || 0;
-    if (score <= 20) scoreRanges['0-20']++;
-    else if (score <= 40) scoreRanges['21-40']++;
-    else if (score <= 60) scoreRanges['41-60']++;
-    else if (score <= 80) scoreRanges['61-80']++;
-    else scoreRanges['81-100']++;
+  for (const e of enrollments) {
+    byStatus[e.status] = (byStatus[e.status] || 0) + 1;
+    byCampaign[e.campaign_id] = (byCampaign[e.campaign_id] || 0) + 1;
   }
 
   return {
-    total: leads.length,
+    total: enrollments.length,
     by_status: byStatus,
-    by_source: bySource,
-    score_distribution: scoreRanges,
-    avg_score: leads.length > 0
-      ? Math.round(leads.reduce((s, l) => s + (l.total_score || 0), 0) / leads.length)
-      : 0,
+    by_source: byCampaign,
+    score_distribution: {},
+    avg_score: 0,
   };
 }
 
@@ -219,41 +207,41 @@ async function getChannelStats(
   supabase: ReturnType<typeof getSupabaseClient>,
   orgId: string,
   since: string
-): Promise<Record<string, unknown>> {
+): Promise<Array<Record<string, unknown>>> {
   const { data: actions } = await supabase
     .from('mkt_sequence_actions')
-    .select('channel, status, opened_at, clicked_at, replied_at')
+    .select('channel, status, delivered_at, opened_at, clicked_at, replied_at')
     .eq('org_id', orgId)
     .gte('created_at', since);
 
-  if (!actions) return {};
+  if (!actions) return [];
 
-  const channels: Record<string, { sent: number; delivered: number; opened: number; clicked: number; replied: number; failed: number }> = {};
+  const channels: Record<string, { sent: number; delivered: number; opened: number; clicked: number; replied: number; bounced: number; failed: number }> = {};
 
   for (const action of actions) {
     const ch = action.channel;
-    if (!channels[ch]) channels[ch] = { sent: 0, delivered: 0, opened: 0, clicked: 0, replied: 0, failed: 0 };
+    if (!channels[ch]) channels[ch] = { sent: 0, delivered: 0, opened: 0, clicked: 0, replied: 0, bounced: 0, failed: 0 };
 
-    if (['sent', 'delivered', 'pending'].includes(action.status)) channels[ch].sent++;
-    if (action.status === 'delivered') channels[ch].delivered++;
+    // sent = anything that left our system (excludes pending/skipped)
+    if (['sent', 'delivered', 'bounced'].includes(action.status)) channels[ch].sent++;
+    // delivered = confirmed by provider webhook
+    if (action.delivered_at) channels[ch].delivered++;
     if (action.opened_at) channels[ch].opened++;
     if (action.clicked_at) channels[ch].clicked++;
     if (action.replied_at) channels[ch].replied++;
-    if (['failed', 'bounced'].includes(action.status)) channels[ch].failed++;
+    if (action.status === 'bounced') channels[ch].bounced++;
+    if (action.status === 'failed') channels[ch].failed++;
   }
 
-  // Calculate rates
-  const withRates: Record<string, unknown> = {};
-  for (const [ch, stats] of Object.entries(channels)) {
-    withRates[ch] = {
-      ...stats,
-      open_rate: stats.sent > 0 ? (stats.opened / stats.sent * 100).toFixed(1) + '%' : '0%',
-      click_rate: stats.sent > 0 ? (stats.clicked / stats.sent * 100).toFixed(1) + '%' : '0%',
-      reply_rate: stats.sent > 0 ? (stats.replied / stats.sent * 100).toFixed(1) + '%' : '0%',
-    };
-  }
-
-  return withRates;
+  // Return as array (component expects Array<ChannelData>)
+  return Object.entries(channels).map(([channel, stats]) => ({
+    channel,
+    ...stats,
+    open_rate: stats.delivered > 0 ? (stats.opened / stats.delivered * 100).toFixed(1) + '%' : '0%',
+    click_rate: stats.delivered > 0 ? (stats.clicked / stats.delivered * 100).toFixed(1) + '%' : '0%',
+    reply_rate: stats.sent > 0 ? (stats.replied / stats.sent * 100).toFixed(1) + '%' : '0%',
+    bounce_rate: stats.sent > 0 ? (stats.bounced / stats.sent * 100).toFixed(1) + '%' : '0%',
+  }));
 }
 
 async function getFunnelStats(
@@ -261,24 +249,27 @@ async function getFunnelStats(
   orgId: string,
   since: string
 ): Promise<Record<string, unknown>> {
-  const [sourced, enriched, scored, enrolled, converted, disqualified] = await Promise.all([
-    supabase.from('mkt_leads').select('id', { count: 'exact', head: true }).eq('org_id', orgId).gte('created_at', since),
-    supabase.from('mkt_leads').select('id', { count: 'exact', head: true }).eq('org_id', orgId).in('status', ['enriched', 'scored', 'enrolled', 'converted']).gte('created_at', since),
-    supabase.from('mkt_leads').select('id', { count: 'exact', head: true }).eq('org_id', orgId).in('status', ['scored', 'enrolled', 'converted']).gte('created_at', since),
-    supabase.from('mkt_leads').select('id', { count: 'exact', head: true }).eq('org_id', orgId).in('status', ['enrolled', 'converted']).gte('created_at', since),
-    supabase.from('mkt_leads').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('status', 'converted').gte('created_at', since),
-    supabase.from('mkt_leads').select('id', { count: 'exact', head: true }).eq('org_id', orgId).eq('status', 'disqualified').gte('created_at', since),
-  ]);
+  const { data: enrollments } = await supabase
+    .from('mkt_sequence_enrollments')
+    .select('status')
+    .eq('org_id', orgId)
+    .gte('created_at', since);
 
-  const s = sourced.count || 0;
+  if (!enrollments) return { sourced: 0, enriched: 0, scored: 0, enrolled: 0, converted: 0, disqualified: 0, conversion_rate: '0%' };
+
+  const total = enrollments.length;
+  const active = enrollments.filter((e) => e.status === 'active').length;
+  const completed = enrollments.filter((e) => e.status === 'completed').length;
+  const cancelled = enrollments.filter((e) => e.status === 'cancelled').length;
+
   return {
-    sourced: s,
-    enriched: enriched.count || 0,
-    scored: scored.count || 0,
-    enrolled: enrolled.count || 0,
-    converted: converted.count || 0,
-    disqualified: disqualified.count || 0,
-    conversion_rate: s > 0 ? ((converted.count || 0) / s * 100).toFixed(1) + '%' : '0%',
+    sourced: total,
+    enriched: total,
+    scored: total,
+    enrolled: active + completed,
+    converted: completed,
+    disqualified: cancelled,
+    conversion_rate: total > 0 ? ((completed / total) * 100).toFixed(1) + '%' : '0%',
   };
 }
 
@@ -294,7 +285,7 @@ async function getRecentActions(
       metadata,
       mkt_sequence_enrollments!inner(
         lead_id,
-        mkt_leads(first_name, last_name, email, company),
+        contacts(first_name, last_name, email, company),
         mkt_campaigns(name)
       )
     `)
@@ -312,7 +303,7 @@ async function getRecentActions(
     opened_at: a.opened_at,
     clicked_at: a.clicked_at,
     replied_at: a.replied_at,
-    lead: a.mkt_sequence_enrollments?.mkt_leads,
+    lead: a.mkt_sequence_enrollments?.contacts,
     campaign: a.mkt_sequence_enrollments?.mkt_campaigns?.name,
   }));
 }
