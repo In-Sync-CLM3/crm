@@ -66,55 +66,49 @@ export function MarketingOverview({ days }: MarketingOverviewProps) {
 
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
-      const [campaignsRes, actionsRes, enrollmentsRes] = await Promise.all([
-        supabase
-          .from("mkt_campaigns")
-          .select("id", { count: "exact", head: true })
-          .eq("org_id", effectiveOrgId)
-          .eq("status", "active"),
-        supabase
-          .from("mkt_sequence_actions")
-          .select("channel, status, opened_at, clicked_at, replied_at")
-          .eq("org_id", effectiveOrgId)
-          .gte("created_at", since),
-        supabase
-          .from("mkt_sequence_enrollments")
-          .select("status")
-          .eq("org_id", effectiveOrgId)
-          .gte("created_at", since),
-      ]);
+      const { data, error } = await supabase.rpc("get_marketing_overview", {
+        p_org_id: effectiveOrgId,
+        p_since: since,
+      });
 
-      const enrollments = enrollmentsRes.data ?? [];
-      const total = enrollments.length;
-      const completed = enrollments.filter((e) => e.status === "completed").length;
-      const active = enrollments.filter((e) => e.status === "active").length;
+      if (error) throw error;
 
-      // Channel performance from actions
-      const channelMap: Record<string, { sent: number; opened: number; clicked: number; replied: number }> = {};
-      for (const a of actionsRes.data ?? []) {
-        const ch = a.channel as string;
-        if (!channelMap[ch]) channelMap[ch] = { sent: 0, opened: 0, clicked: 0, replied: 0 };
-        if (["sent", "delivered", "bounced"].includes(a.status as string)) channelMap[ch].sent++;
-        if (a.opened_at) channelMap[ch].opened++;
-        if (a.clicked_at) channelMap[ch].clicked++;
-        if (a.replied_at) channelMap[ch].replied++;
-      }
+      const rows = (data ?? []) as Array<Record<string, unknown>>;
+      if (rows.length === 0) return null;
+
+      // First row carries the org-level counts; all rows carry per-channel data
+      const first = rows[0];
+      const activeCampaigns    = Number(first.active_campaigns    ?? 0);
+      const totalEnrollments   = Number(first.total_enrollments   ?? 0);
+      const activeEnrollments  = Number(first.active_enrollments  ?? 0);
+      const completedEnroll    = Number(first.completed_enrollments ?? 0);
+      const totalActions       = rows.reduce((s, r) => s + Number(r.total_actions ?? 0), 0);
+
+      const channelPerf = rows
+        .filter((r) => r.channel)
+        .map((r) => ({
+          channel: r.channel as string,
+          sent:    Number(r.ch_sent    ?? 0),
+          opened:  Number(r.ch_opened  ?? 0),
+          clicked: Number(r.ch_clicked ?? 0),
+          replied: Number(r.ch_replied ?? 0),
+        }));
 
       return {
-        active_campaigns: campaignsRes.count ?? 0,
-        leads_sourced: total,
-        leads_converted: completed,
-        total_actions: actionsRes.data?.length ?? 0,
-        active_enrollments: active,
-        conversion_rate: total > 0 ? (completed / total) * 100 : 0,
+        active_campaigns:    activeCampaigns,
+        leads_sourced:       totalEnrollments,
+        leads_converted:     completedEnroll,
+        total_actions:       totalActions,
+        active_enrollments:  activeEnrollments,
+        conversion_rate:     totalEnrollments > 0 ? (completedEnroll / totalEnrollments) * 100 : 0,
         funnel: {
-          sourced: total,
-          enriched: total,
-          scored: total,
-          enrolled: active + completed,
-          converted: completed,
+          sourced:  totalEnrollments,
+          enriched: totalEnrollments,
+          scored:   totalEnrollments,
+          enrolled: activeEnrollments + completedEnroll,
+          converted: completedEnroll,
         },
-        channel_performance: Object.entries(channelMap).map(([channel, s]) => ({ channel, ...s })),
+        channel_performance: channelPerf,
       } as OverviewStats;
     },
     enabled: !!effectiveOrgId,

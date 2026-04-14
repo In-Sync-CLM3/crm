@@ -64,37 +64,31 @@ export function LeadFunnel({ days }: LeadFunnelProps) {
 
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
-      const { data: enrollments, error } = await supabase
-        .from("mkt_sequence_enrollments")
-        .select("status, campaign_id")
-        .eq("org_id", effectiveOrgId)
-        .gte("created_at", since);
+      const { data, error } = await supabase.rpc("get_lead_funnel_stats", {
+        p_org_id: effectiveOrgId,
+        p_since: since,
+      });
 
       if (error) throw error;
-      if (!enrollments) return null;
 
-      const total = enrollments.length;
+      const rows = (data ?? []) as Array<{ status: string; cnt: number }>;
       const byStatus: Record<string, number> = {};
-      const byCampaign: Record<string, number> = {};
+      for (const r of rows) byStatus[r.status] = Number(r.cnt);
 
-      for (const e of enrollments) {
-        byStatus[e.status] = (byStatus[e.status] || 0) + 1;
-        byCampaign[e.campaign_id] = (byCampaign[e.campaign_id] || 0) + 1;
-      }
-
+      const total = rows.reduce((s, r) => s + Number(r.cnt), 0);
       const active = byStatus["active"] || 0;
       const completed = byStatus["completed"] || 0;
       const cancelled = byStatus["cancelled"] || 0;
 
       return {
         funnel: [
-          { stage: "Sourced", count: total, conversion_rate: 100 },
-          { stage: "Enrolled", count: active + completed, conversion_rate: total > 0 ? ((active + completed) / total) * 100 : 0 },
-          { stage: "Completed", count: completed, conversion_rate: total > 0 ? (completed / total) * 100 : 0 },
-          { stage: "Cancelled", count: cancelled, conversion_rate: total > 0 ? (cancelled / total) * 100 : 0 },
+          { stage: "Sourced",   count: total,              conversion_rate: 100 },
+          { stage: "Enrolled",  count: active + completed, conversion_rate: total > 0 ? ((active + completed) / total) * 100 : 0 },
+          { stage: "Completed", count: completed,          conversion_rate: total > 0 ? (completed / total) * 100 : 0 },
+          { stage: "Cancelled", count: cancelled,          conversion_rate: total > 0 ? (cancelled / total) * 100 : 0 },
         ],
         by_status: Object.entries(byStatus).map(([name, value]) => ({ name, value })),
-        by_source: Object.entries(byCampaign).map(([name, value]) => ({ name, value })),
+        by_source: [],
         score_distribution: [],
         total_leads: total,
         avg_score: 0,

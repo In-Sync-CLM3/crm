@@ -48,32 +48,13 @@ export function ChannelAnalytics({ days }: ChannelAnalyticsProps) {
 
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
-      const { data: actions, error } = await supabase
-        .from("mkt_sequence_actions")
-        .select("channel, status, delivered_at, opened_at, clicked_at, replied_at")
-        .eq("org_id", effectiveOrgId)
-        .gte("created_at", since);
+      const { data, error } = await supabase.rpc("get_channel_stats", {
+        p_org_id: effectiveOrgId,
+        p_since: since,
+      });
 
       if (error) throw error;
-      if (!actions) return [];
-
-      const channelMap: Record<string, ChannelData> = {};
-
-      for (const action of actions) {
-        const ch = action.channel as string;
-        if (!channelMap[ch]) {
-          channelMap[ch] = { channel: ch, sent: 0, delivered: 0, opened: 0, clicked: 0, replied: 0, bounced: 0, failed: 0 };
-        }
-        if (["sent", "delivered", "bounced"].includes(action.status as string)) channelMap[ch].sent++;
-        if (action.delivered_at) channelMap[ch].delivered++;
-        if (action.opened_at) channelMap[ch].opened++;
-        if (action.clicked_at) channelMap[ch].clicked++;
-        if (action.replied_at) channelMap[ch].replied++;
-        if (action.status === "bounced") channelMap[ch].bounced++;
-        if (action.status === "failed") channelMap[ch].failed++;
-      }
-
-      return Object.values(channelMap) as ChannelData[];
+      return (data ?? []) as ChannelData[];
     },
     enabled: !!effectiveOrgId,
   });
