@@ -16,6 +16,7 @@ interface ChannelData {
   opened: number;
   clicked: number;
   replied: number;
+  bounced: number;
   failed: number;
 }
 
@@ -76,24 +77,36 @@ export function ChannelAnalytics({ days }: ChannelAnalyticsProps) {
         const Icon = channelIcons[ch.channel.toLowerCase()] ?? Mail;
         const color = channelColors[ch.channel.toLowerCase()] ?? "text-muted-foreground";
 
-        const openRate = safePct(ch.opened, ch.delivered);
-        const clickRate = safePct(ch.clicked, ch.opened);
-        const replyRate = safePct(ch.replied, ch.sent);
         const deliveryRate = safePct(ch.delivered, ch.sent);
+        // Click rate based on delivered (not opened — open pixel is unreliable)
+        const clickRate = safePct(ch.clicked, ch.delivered);
+        const openRate = safePct(ch.opened, ch.delivered);
+        const replyRate = safePct(ch.replied, ch.sent);
+
+        const bounceRate = safePct(ch.bounced, ch.sent);
 
         const metrics = [
           { label: "Sent", value: ch.sent },
           { label: "Delivered", value: ch.delivered },
-          { label: "Opened", value: ch.opened },
           { label: "Clicked", value: ch.clicked },
+          { label: "Opened", value: ch.opened, dim: true },
           { label: "Replied", value: ch.replied },
-          { label: "Failed", value: ch.failed },
+          { label: "Bounced", value: ch.bounced, warn: true },
+          { label: "Failed", value: ch.failed, warn: true },
+        ];
+
+        // Funnel: shows how far emails progress through each stage
+        const funnelSteps = [
+          { label: "Sent", value: ch.sent, pct: 100 },
+          { label: "Delivered", value: ch.delivered, pct: deliveryRate },
+          { label: "Clicked", value: ch.clicked, pct: clickRate },
         ];
 
         const rates = [
           { label: "Delivery Rate", value: deliveryRate },
-          { label: "Open Rate", value: openRate },
           { label: "Click Rate", value: clickRate },
+          { label: "Bounce Rate", value: bounceRate, warn: bounceRate > 5 },
+          { label: "Open Rate (pixel)", value: openRate, dim: true },
           { label: "Reply Rate", value: replyRate },
         ];
 
@@ -106,12 +119,38 @@ export function ChannelAnalytics({ days }: ChannelAnalyticsProps) {
               </div>
             </CardHeader>
             <CardContent className="p-0 space-y-3">
+              {/* Funnel Progress */}
+              <div className="space-y-1.5">
+                {funnelSteps.map((step, i) => (
+                  <div key={step.label}>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-[10px] text-muted-foreground">
+                        {i > 0 && <span className="mr-1 opacity-40">↳</span>}
+                        {step.label}
+                      </span>
+                      <span className="text-[10px] font-medium">
+                        {(step.value ?? 0).toLocaleString()}
+                        {i > 0 && <span className="text-muted-foreground ml-1">({step.pct}%)</span>}
+                      </span>
+                    </div>
+                    <Progress
+                      value={step.pct}
+                      className={`h-2 ${i === 2 ? "bg-blue-100 [&>div]:bg-blue-500" : i === 1 ? "bg-emerald-100 [&>div]:bg-emerald-500" : ""}`}
+                    />
+                  </div>
+                ))}
+              </div>
+
               {/* Counts Grid */}
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-4 gap-2 pt-2 border-t">
                 {metrics.map((m) => (
                   <div key={m.label} className="text-center">
-                    <div className="text-lg font-bold">{(m.value ?? 0).toLocaleString()}</div>
-                    <div className="text-[10px] text-muted-foreground">{m.label}</div>
+                    <div className={`text-base font-bold ${m.warn ? "text-red-500" : m.dim ? "text-muted-foreground" : ""}`}>
+                      {(m.value ?? 0).toLocaleString()}
+                    </div>
+                    <div className={`text-[10px] ${m.warn ? "text-red-400" : m.dim ? "text-muted-foreground/60" : "text-muted-foreground"}`}>
+                      {m.label}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -121,12 +160,16 @@ export function ChannelAnalytics({ days }: ChannelAnalyticsProps) {
                 {rates.map((rate) => (
                   <div key={rate.label}>
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] text-muted-foreground">{rate.label}</span>
-                      <span className="text-[10px] font-medium">{rate.value}%</span>
+                      <span className={`text-[10px] ${rate.dim ? "text-muted-foreground/60" : rate.warn ? "text-red-400" : "text-muted-foreground"}`}>
+                        {rate.label}
+                      </span>
+                      <span className={`text-[10px] font-medium ${rate.dim ? "text-muted-foreground/60" : rate.warn ? "text-red-500" : ""}`}>
+                        {rate.value}%
+                      </span>
                     </div>
                     <Progress
                       value={rate.value}
-                      className="h-1.5"
+                      className={`h-1.5 ${rate.dim ? "opacity-40" : rate.warn ? "[&>div]:bg-red-500" : ""}`}
                     />
                   </div>
                 ))}
