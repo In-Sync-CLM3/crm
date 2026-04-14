@@ -20,6 +20,7 @@ interface ManualOverrideBody {
   icp_patch: Partial<ICPFields>;
   reason: string;
   evolved_by?: 'manual' | 'amit_suggestion'; // defaults to 'manual'; pass 'amit_suggestion' from Arohan chat
+  confidence_score?: number; // 0.0-1.0; if omitted, current value is preserved
 }
 
 interface ICPFields {
@@ -132,19 +133,27 @@ async function evolveProductICP(
     }
   }
 
-  // 3. Get campaign IDs for this product (mkt_leads links to campaigns, not products)
+  // 3. Get campaign IDs for this product
   const campaignIds = await getCampaignIdsForProduct(supabase, orgId, productKey);
 
-  // 4. Fetch converted leads attributed to this product's campaigns
+  // 4. Fetch converted contacts attributed to this product's campaigns
+  // contacts is now the source of truth; mkt_sequence_enrollments.lead_id → contacts.id
   let convertedLeads: Record<string, unknown>[] = [];
   if (campaignIds.length > 0) {
-    const { data } = await supabase
-      .from('mkt_leads')
-      .select('industry, company_size, job_title, source, total_score')
-      .eq('org_id', orgId)
-      .eq('status', 'converted')
+    const { data: enrollments } = await supabase
+      .from('mkt_sequence_enrollments')
+      .select('lead_id')
       .in('campaign_id', campaignIds);
-    convertedLeads = (data as Record<string, unknown>[] | null) || [];
+    const contactIds = (enrollments || []).map((e: any) => e.lead_id).filter(Boolean);
+    if (contactIds.length > 0) {
+      const { data } = await supabase
+        .from('contacts')
+        .select('industry_type, headline, job_title, source')
+        .eq('org_id', orgId)
+        .eq('status', 'converted')
+        .in('id', contactIds);
+      convertedLeads = (data as Record<string, unknown>[] | null) || [];
+    }
   }
 
   // 5. Guard: minimum 5 conversions required for a meaningful signal
@@ -158,10 +167,10 @@ async function evolveProductICP(
   }
 
   // 6. Build new ICP fields from conversion data
-  // Note: mkt_leads uses job_title (not designation) — we store it under designations in the ICP.
-  const industryFreq    = buildFreqMap(convertedLeads, 'industry');
+  // contacts uses industry_type (not industry), headline (not company_size)
+  const industryFreq    = buildFreqMap(convertedLeads, 'industry_type');
   const designationFreq = buildFreqMap(convertedLeads, 'job_title');
-  const companySizeFreq = buildFreqMap(convertedLeads, 'company_size');
+  const companySizeFreq = buildFreqMap(convertedLeads, 'headline');
 
   const newIndustries   = topKeys(industryFreq);
   const newDesignations = topKeys(designationFreq);
@@ -330,7 +339,7 @@ async function handleManualOverride(
   body: ManualOverrideBody,
   logger: ReturnType<typeof createEngineLogger>,
 ): Promise<Record<string, unknown>> {
-  const { org_id, product_key, icp_patch, reason, evolved_by = 'manual' } = body;
+  const { org_id, product_key, icp_patch, reason, evolved_by = 'manual', confidence_score: requestedConfidence } = body;
 
   if (!reason || reason.trim().length === 0) {
     throw new Error('reason is required for manual_override');
@@ -360,7 +369,7 @@ async function handleManualOverride(
     product_key,
     ...merged,
     version:          nextVersion,
-    confidence_score: currentICP?.confidence_score ?? 0.300,
+    confidence_score: requestedConfidence ?? currentICP?.confidence_score ?? 0.300,
     evolved_by,
     evolution_reason: reason,
     last_evolved_at:  new Date().toISOString(),

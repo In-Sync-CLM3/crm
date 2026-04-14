@@ -274,7 +274,7 @@ export default function EnrollmentBrowser() {
           completed_at,
           cancelled_at,
           cancel_reason,
-          mkt_leads!inner (
+          contacts!lead_id (
             first_name,
             last_name,
             email,
@@ -341,7 +341,7 @@ export default function EnrollmentBrowser() {
 
       // Map to flat rows
       const rows: EnrollmentRow[] = (data || []).map((d: any) => {
-        const lead = d.mkt_leads;
+        const lead = d.contacts;
         const campaign = d.mkt_campaigns;
         const currentChannel =
           stepChannels[d.campaign_id]?.[d.current_step] || null;

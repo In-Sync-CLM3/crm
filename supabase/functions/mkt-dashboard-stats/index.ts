@@ -1,4 +1,5 @@
 import { getSupabaseClient } from '../_shared/supabaseClient.ts';
+import { logEngine } from '../_shared/engineLogger.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -48,17 +49,40 @@ Deno.serve(async (req) => {
     const token = authHeader.replace('Bearer ', '');
     let orgId: string | null = null;
 
-    // Supabase gateway validates JWTs before functions run, so we can safely
-    // decode the payload to get sub (user ID) without a round-trip to auth API.
-    // Service role key is not a JWT, so decode will return null — handled below.
     const jwtUserId = decodeJwtSub(token);
+    const tokenPreview = token.length > 20 ? token.substring(0, 20) + '…' : token;
+
+    await logEngine({
+      function_name: 'mkt-dashboard-stats',
+      action: 'auth-start',
+      level: 'info',
+      details: {
+        jwtUserId,
+        tokenPreview,
+        bodyKeys: Object.keys(reqBody),
+        method: req.method,
+      },
+    });
+
     if (jwtUserId) {
-      const { data: profile } = await supabase
+      const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('org_id')
         .eq('id', jwtUserId)
         .single();
       orgId = profile?.org_id || null;
+
+      await logEngine({
+        function_name: 'mkt-dashboard-stats',
+        action: 'auth-profile-lookup',
+        level: profileError ? 'warn' : 'info',
+        details: {
+          jwtUserId,
+          orgId,
+          profileFound: !!profile,
+          profileError: profileError?.message ?? null,
+        },
+      });
     }
 
     // Fall back to org_id from request body/params (for service role / cron calls)
@@ -69,6 +93,17 @@ Deno.serve(async (req) => {
         orgId = url.searchParams.get('org_id');
       }
     }
+
+    await logEngine({
+      function_name: 'mkt-dashboard-stats',
+      action: 'auth-complete',
+      level: orgId ? 'info' : 'warn',
+      org_id: orgId ?? undefined,
+      details: {
+        orgId,
+        resolvedVia: jwtUserId ? 'jwt' : 'body-or-param',
+      },
+    });
 
     if (!orgId) {
       return new Response(JSON.stringify({ error: 'No organization' }), {

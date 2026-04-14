@@ -245,14 +245,15 @@ Return JSON only:
       "designations": [...] | null,
       "company_sizes": [...] | null,
       "geographies": [...] | null,
-      "pain_points": [...] | null
+      "pain_points": [...] | null,
+      "confidence_score": 0.0-1.0 number | null
     } | null,
     "reason": "brief reason string or null"
   } | null
 }
 
 Type guide:
-- "icp_update": user wants to change ICP targeting. If the previous Arohan message proposed a FULL ICP update (multiple fields), populate icp_patch with ALL proposed fields extracted from that message. Set field/value only for single-field changes.
+- "icp_update": user wants to change ICP targeting. If the previous Arohan message proposed a FULL ICP update (multiple fields), populate icp_patch with ALL proposed fields extracted from that message. Set field/value only for single-field changes. For confidence: "50%" or "v2 / 50%" → confidence_score: 0.5; "70%" → 0.7; etc.
 - "campaign_launch": user wants to launch/start/activate/run a campaign for a product
 - "campaign_pause": user wants to pause/stop a campaign
 - "campaign_resume": user wants to resume/restart a paused campaign
@@ -405,10 +406,17 @@ async function applyICPSuggestion(
 
   // Prefer full icp_patch; fall back to single field/value
   let icpPatch: Record<string, unknown> | null = null;
+  let confidenceScore: number | undefined;
+
   if (payload.icp_patch && Object.keys(payload.icp_patch).length > 0) {
+    // Extract confidence_score separately (it's not part of ICPFields in evolve-icp)
+    const { confidence_score: cs, ...fieldPatch } = payload.icp_patch as Record<string, unknown>;
+    if (typeof cs === 'number' && cs >= 0 && cs <= 1) {
+      confidenceScore = cs;
+    }
     // Strip null entries
     icpPatch = Object.fromEntries(
-      Object.entries(payload.icp_patch).filter(([, v]) => v != null)
+      Object.entries(fieldPatch).filter(([, v]) => v != null)
     );
   } else if (payload.field && payload.value != null) {
     icpPatch = {
@@ -416,9 +424,11 @@ async function applyICPSuggestion(
     };
   }
 
-  if (!icpPatch || Object.keys(icpPatch).length === 0) {
+  // Allow confidence-only updates (no other field changes needed)
+  if ((!icpPatch || Object.keys(icpPatch).length === 0) && confidenceScore === undefined) {
     return { applied: false, new_version: null };
   }
+  if (!icpPatch) icpPatch = {};
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -435,6 +445,7 @@ async function applyICPSuggestion(
         org_id: orgId,
         product_key: payload.product_key,
         icp_patch: icpPatch,
+        ...(confidenceScore !== undefined ? { confidence_score: confidenceScore } : {}),
         reason: payload.reason || originalMessage,
         evolved_by: 'amit_suggestion',
       }),
@@ -537,7 +548,7 @@ async function applyLaunchCampaign(
     const enrolledLeadIds = (alreadyEnrolled || []).map((e: any) => e.lead_id);
 
     let leadsQuery = supabase
-      .from('mkt_leads')
+      .from('contacts')
       .select('id')
       .eq('org_id', orgId)
       .not('status', 'in', '("unsubscribed","converted","disqualified")')
@@ -569,9 +580,10 @@ async function applyLaunchCampaign(
       await supabase.from('mkt_sequence_enrollments').insert(enrollments.slice(i, i + 100));
     }
 
-    // Update lead enrolled_at
+    // Mark contacts as enrolled
     const leadIds = leads.map((l: any) => l.id);
-    await supabase.from('mkt_leads').update({ enrolled_at: now }).in('id', leadIds);
+    await supabase.from('contacts').update({ status: 'enrolled', updated_at: now }).in('id', leadIds)
+      .in('status', ['new', 'enriched', 'scored']);
 
     // Set campaign active
     await supabase.from('mkt_campaigns').update({ status: 'active' }).eq('id', campaign.id);
@@ -758,11 +770,12 @@ Deno.serve(async (req: Request) => {
     if (classification.is_suggestion && classification.suggestion_payload) {
       const sp = classification.suggestion_payload;
 
-      // Normalise product_key centrally: lowercase + strip spaces/underscores/hyphens.
-      // Classifier may return "vendor_verification" or "WorkSync" but DB keys are
-      // compact lowercase strings like "vendorverification" / "worksync".
+      // Normalise product_key centrally: lowercase, spaces/underscores → hyphens.
+      // DB keys are created by deriveProductKey() which produces "global-crm" style
+      // (hyphens for spaces, no underscores). Stripping hyphens was wrong and caused
+      // "global-crm" to become "globalcrm" which never matched in the DB.
       if (sp.product_key) {
-        sp.product_key = sp.product_key.toLowerCase().replace(/[\s_\-]+/g, '');
+        sp.product_key = sp.product_key.toLowerCase().replace(/[\s_]+/g, '-').replace(/[^a-z0-9\-]/g, '');
       }
 
       if (sp.type === 'icp_update') {
@@ -770,7 +783,7 @@ Deno.serve(async (req: Request) => {
         if (applied) {
           actionsTriggered.push({
             type: 'icp_update',
-            details: { product_key: sp.product_key, field: sp.field, new_version },
+            details: { product_key: sp.product_key, field: sp.field, new_version, confidence_score: (sp.icp_patch as Record<string, unknown>)?.confidence_score },
           });
         }
       } else if (sp.type === 'campaign_launch') {

@@ -77,6 +77,7 @@ export async function callLLM(
           'content-type': 'application/json',
         },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30_000),
       });
 
       if (!response.ok) {
@@ -114,7 +115,8 @@ export async function callLLM(
       lastError = error instanceof Error ? error : new Error(String(error));
 
       if (attempt < MAX_RETRIES) {
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * attempt));
+        const backoff = Math.min(RETRY_DELAY_MS * Math.pow(2, attempt - 1), 8000);
+        await new Promise((r) => setTimeout(r, backoff));
         continue;
       }
     }
