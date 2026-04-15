@@ -810,7 +810,9 @@ export default function ProductManagement() {
 
   const toggleMutation = useMutation({
     mutationFn: async ({ id, active }: { id: string; active: boolean }) => {
-      const { error } = await supabase.rpc("toggle_product_active", { _product_id: id, _active: active });
+      const { error } = await supabase.functions.invoke("mkt-product-manager", {
+        body: { mode: "toggle", product_id: id, active },
+      });
       if (error) throw error;
     },
     onSuccess: () => {
