@@ -986,6 +986,7 @@ export default function CampaignManager() {
                     <TableHead className="text-xs text-right">Enrolled</TableHead>
                     <TableHead className="text-xs text-right">Sent</TableHead>
                     <TableHead className="text-xs text-right">Opened</TableHead>
+                    <TableHead className="text-xs text-right">Clicked</TableHead>
                     <TableHead className="text-xs text-right">Replied</TableHead>
                     <TableHead className="text-xs">Next Fire</TableHead>
                     <TableHead className="text-xs w-24">Actions</TableHead>
@@ -1020,6 +1021,11 @@ export default function CampaignManager() {
                       <TableCell className="text-xs text-right">
                         {stats && stats.sent > 0
                           ? `${(stats.opened ?? 0).toLocaleString("en-IN")} (${Math.round(((stats.opened ?? 0) / stats.sent) * 100)}%)`
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-right">
+                        {stats && stats.sent > 0
+                          ? `${(stats.clicked ?? 0).toLocaleString("en-IN")} (${Math.round(((stats.clicked ?? 0) / stats.sent) * 100)}%)`
                           : "—"}
                       </TableCell>
                       <TableCell className="text-xs text-right">
