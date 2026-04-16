@@ -7,8 +7,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const BATCH_SIZE = 20;  // Enrollments per run (20 × ~2s = ~40s, well within timeout)
-const PARALLEL_SIZE = 1; // Sequential dispatches — prevents Supabase edge fn rate limiting
+const BATCH_SIZE = 50;  // Enrollments per run (50 × ~2s sequential = ~100s, within timeout)
+const PARALLEL_SIZE = 1; // Sequential — prevents email provider rate limiting
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -73,7 +73,7 @@ Deno.serve(async (req) => {
 
     const [campaignsRes, leadsRes, stepsRes] = await Promise.all([
       supabase.from('mkt_campaigns').select('id, name, status, metadata').in('id', campaignIds),
-      supabase.from('contacts').select('id, org_id, email, phone, first_name, last_name, company, status').in('id', leadIds),
+      supabase.from('contacts').select('id, org_id, email, phone, first_name, last_name, company, status, email_verification_status').in('id', leadIds),
       supabase.from('mkt_campaign_steps').select('*').in('campaign_id', campaignIds).eq('is_active', true).order('step_number', { ascending: true }),
     ]);
 
@@ -124,6 +124,17 @@ Deno.serve(async (req) => {
     }
 
     await logger.info('executor-complete', { executed, skipped, completed, failed });
+
+    // Self-chain: if batch was full there are likely more pending — fire next run immediately
+    // rather than waiting for the 5-minute cron tick.
+    const totalProcessed = executed + skipped + completed;
+    if (totalProcessed >= BATCH_SIZE) {
+      fetch(`${supabaseUrl}/functions/v1/mkt-sequence-executor`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json' },
+        body: '{}',
+      }).catch(() => {});
+    }
 
     return new Response(
       JSON.stringify({ message: 'Sequence execution complete', executed, skipped, completed, failed }),
@@ -291,6 +302,8 @@ async function processEnrollment(
         enrollment_id: enrollment.id,
         lead_id: enrollment.lead_id,
         step_id: step.id,
+        campaign_id: enrollment.campaign_id,
+        campaign_name: (campaign as Record<string, unknown>).name as string | undefined,
         template_id: step.template_id,
         ab_test_id: step.ab_test_id,
         channel: channelResult.channel,

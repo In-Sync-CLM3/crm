@@ -86,6 +86,7 @@ const WhatsAppSettings = lazy(() => import("./pages/WhatsAppSettings"));
 const ExotelSettings = lazy(() => import("./pages/ExotelSettings"));
 const ApolloSettings = lazy(() => import("./pages/ApolloSettings"));
 const EmailSettings = lazy(() => import("./pages/EmailSettings"));
+const EmailVerification = lazy(() => import("./pages/EmailVerification"));
 
 // Lazy loaded pages - Other
 const DataExport = lazy(() => import("./pages/admin/DataExport"));
@@ -249,6 +250,12 @@ const App = () => (
             </ProtectedRoute>
           } />
           
+          <Route path="/email-verification" element={
+            <ProtectedRoute>
+              <EmailVerification />
+            </ProtectedRoute>
+          } />
+
           <Route path="/email-campaigns" element={
             <ProtectedRoute>
               <EmailCampaigns />

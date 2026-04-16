@@ -5,6 +5,7 @@ interface Lead {
   org_id: string;
   email?: string | null;
   phone?: string | null;
+  email_verification_status?: string | null;
 }
 
 interface StepConfig {
@@ -111,6 +112,8 @@ async function isOptedOut(
 function hasContactInfo(lead: Lead, channel: string): boolean {
   switch (channel) {
     case 'email':
+      // Suppress verified-invalid emails to prevent hard bounces
+      if (lead.email_verification_status === 'invalid') return false;
       return !!lead.email;
     case 'whatsapp':
     case 'call':
@@ -174,7 +177,9 @@ async function getChannelLimits(orgId: string): Promise<ChannelLimits> {
     .select('config_value')
     .eq('org_id', orgId)
     .eq('config_key', 'channel_limits')
-    .single();
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   if (data?.config_value) {
     return { ...DEFAULT_LIMITS, ...(data.config_value as Partial<ChannelLimits>) };
