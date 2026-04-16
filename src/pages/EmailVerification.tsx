@@ -186,7 +186,7 @@ const EmailVerification = () => {
               <ShieldCheck className="h-4 w-4 shrink-0" />
               <span>
                 SMTP verifier running at <strong>verify.crm.in-sync.co.in:3000</strong> (204.168.237.119) ·
-                Verifies up to 50 emails per run · Invalid emails are auto-suppressed from campaigns
+                Verifies up to 200 emails per run (10 parallel) · Invalid emails are auto-suppressed from campaigns
               </span>
             </div>
           </CardContent>
