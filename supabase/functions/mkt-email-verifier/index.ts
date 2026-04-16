@@ -23,8 +23,10 @@ Deno.serve(async (req) => {
   const supabase = getSupabaseClient();
 
   try {
-    // Always attempt SMTP probe — verifier handles timeout gracefully (returns dns_ok).
-    // When port 25 opens on the Hetzner server, SMTP probing activates automatically.
+    const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
+    // Optional limit override for test runs. Default: BATCH_SIZE.
+    const limit: number = typeof body.limit === 'number' ? Math.min(body.limit, BATCH_SIZE) : BATCH_SIZE;
+    // Always attempt SMTP probe — port 25 is now open on the Hetzner server.
     const verifyUrl = `${VERIFIER_URL}/verify?smtp=1`;
 
     // Fetch unverified contacts:
@@ -39,7 +41,7 @@ Deno.serve(async (req) => {
       .is('email_bounce_type', null)
       .or(`email_verification_status.is.null,and(email_verification_status.eq.dns_ok,email_verified_at.lt.${retryBefore})`)
       .order('created_at', { ascending: true })
-      .limit(BATCH_SIZE);
+      .limit(limit);
 
     if (error) throw error;
 
