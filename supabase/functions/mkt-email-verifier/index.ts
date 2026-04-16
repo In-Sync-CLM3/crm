@@ -8,8 +8,26 @@ const corsHeaders = {
 const VERIFIER_URL = 'http://204.168.237.119:3000';
 const BATCH_SIZE = 50;
 const DELAY_MS = 100;
-// Retry dns_ok contacts every 7 days (will get SMTP probed once port 25 opens)
+// Retry dns_ok contacts every 7 days
 const DNS_OK_RETRY_DAYS = 7;
+
+// Consumer / free email providers — mark as 'hosted' immediately, skip SMTP probe.
+// These domains are not probeable and have no value in B2B campaigns.
+const CONSUMER_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com',
+  'yahoo.com', 'yahoo.co.in', 'yahoo.co.uk', 'yahoo.in', 'yahoo.fr', 'yahoo.de',
+  'ymail.com', 'rocketmail.com',
+  'outlook.com', 'hotmail.com', 'hotmail.co.in', 'hotmail.in', 'live.com',
+  'live.in', 'msn.com', 'windowslive.com',
+  'rediffmail.com', 'rediff.com',
+  'aol.com',
+  'icloud.com', 'me.com', 'mac.com',
+  'protonmail.com', 'pm.me', 'proton.me',
+  'mail.com', 'email.com', 'inbox.com',
+  'yandex.com', 'yandex.ru',
+  'gmx.com', 'gmx.net', 'gmx.de',
+  'fastmail.com', 'fastmail.fm',
+]);
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -57,6 +75,23 @@ Deno.serve(async (req) => {
 
     for (const contact of contacts) {
       try {
+        const domain = (contact.email as string).split('@')[1]?.toLowerCase() || '';
+
+        // Skip consumer domains — mark as hosted without calling the verifier
+        if (CONSUMER_DOMAINS.has(domain)) {
+          await supabase
+            .from('contacts')
+            .update({
+              email_verification_status: 'hosted',
+              email_verification_provider: 'smtp-self-hosted',
+              email_verified_at: new Date().toISOString(),
+            })
+            .eq('id', contact.id);
+          results['hosted'] = (results['hosted'] || 0) + 1;
+          processed++;
+          continue;
+        }
+
         const res = await fetch(verifyUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
