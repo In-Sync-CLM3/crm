@@ -25,7 +25,7 @@ Deno.serve(async (req) => {
 
   // Handle click tracking (GET request)
   if (action === 'click') {
-    return handleClickTracking(url);
+    return handleClickTracking(url, req);
   }
 
   // Handle unsubscribe (GET request)
@@ -83,10 +83,42 @@ async function handleOpenTracking(url: URL): Promise<Response> {
   });
 }
 
+// Known email security scanner User-Agent patterns.
+// These fetch links before delivery to check for malware — not real human clicks.
+const SCANNER_UA_PATTERNS = [
+  /proofpoint/i,
+  /mimecast/i,
+  /barracuda/i,
+  /ironport/i,
+  /symantec.*mail/i,
+  /microsoft.*exchange/i,
+  /office365/i,
+  /defender/i,
+  /cloudmark/i,
+  /messagelabs/i,
+  /trend.*micro/i,
+  /forcepoint/i,
+  /zscaler/i,
+  // Generic bot/scanner patterns
+  /^python-requests/i,
+  /^libwww/i,
+  /^curl\//i,
+  /^wget\//i,
+  /^java\//i,
+  /^apache-httpclient/i,
+];
+
+function isSecurityScanner(req: Request): boolean {
+  const ua = req.headers.get('user-agent') || '';
+  if (!ua) return true; // No UA = almost certainly a scanner
+  return SCANNER_UA_PATTERNS.some((p) => p.test(ua));
+}
+
 /**
  * Handle click tracking — redirect to original URL.
+ * Skips recording if the request looks like an email security scanner.
  */
-async function handleClickTracking(url: URL): Promise<Response> {
+async function handleClickTracking(url: URL, req: Request): Promise<Response> {
   const trackingId = url.searchParams.get('id');
   const targetUrl = url.searchParams.get('url');
 
@@ -96,7 +128,7 @@ async function handleClickTracking(url: URL): Promise<Response> {
 
   const decodedUrl = decodeURIComponent(targetUrl);
 
-  if (trackingId) {
+  if (trackingId && !isSecurityScanner(req)) {
     const actionId = extractActionId(trackingId);
 
     if (actionId) {
@@ -200,6 +232,21 @@ async function handleResendWebhook(req: Request): Promise<Response> {
     const tagNames = Array.isArray(tags)
       ? tags.map((t: Record<string, unknown>) => typeof t === 'string' ? t : t.name)
       : [];
+
+    // Handle verification emails (tagged mkt_verification) — only care about hard bounces
+    if (tagNames.includes('mkt_verification')) {
+      if (eventType === 'email.bounced') {
+        const bounceType = (data.bounce_type as string || '').toLowerCase();
+        const isHard = bounceType === 'hard' || bounceType === '' || bounceType === 'unknown';
+        if (isHard) {
+          const toEmail = Array.isArray(data.to) ? data.to[0] : data.to;
+          if (toEmail) await suppressContactByEmail(supabase, toEmail as string, logger);
+        }
+      }
+      return new Response(JSON.stringify({ received: true, processed: 'mkt_verification' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
 
     // Only process mkt-engine emails (support both mkt-engine and mkt_engine tag names)
     if (!tagNames.includes('mkt-engine') && !tagNames.includes('mkt_engine')) {
@@ -309,7 +356,7 @@ async function handleResendWebhook(req: Request): Promise<Response> {
 }
 
 /**
- * Update engagement score delta for a lead.
+ * Atomically update engagement score via RPC (prevents race conditions on concurrent events).
  */
 async function updateEngagementScore(
   supabase: ReturnType<typeof getSupabaseClient>,
@@ -318,63 +365,10 @@ async function updateEngagementScore(
   scoreDelta: number
 ): Promise<void> {
   try {
-    // Get the lead_id from enrollment
-    const { data: action } = await supabase
-      .from('mkt_sequence_actions')
-      .select('enrollment_id, org_id')
-      .eq('id', actionId)
-      .single();
-
-    if (!action) return;
-
-    const { data: enrollment } = await supabase
-      .from('mkt_sequence_enrollments')
-      .select('lead_id')
-      .eq('id', action.enrollment_id)
-      .single();
-
-    if (!enrollment) return;
-
-    // Get current scores
-    const { data: currentScores } = await supabase
-      .from('mkt_lead_scores')
-      .select('engagement_score, total_score')
-      .eq('lead_id', enrollment.lead_id)
-      .single();
-
-    if (!currentScores) return;
-
-    const newEngagement = Math.min(30, (currentScores.engagement_score || 0) + scoreDelta);
-    const newTotal = (currentScores.total_score || 0) - (currentScores.engagement_score || 0) + newEngagement;
-
-    // Update scores
-    await supabase
-      .from('mkt_lead_scores')
-      .update({
-        engagement_score: newEngagement,
-        total_score: newTotal,
-        scored_at: new Date().toISOString(),
-      })
-      .eq('lead_id', enrollment.lead_id);
-
-    // Update lead record too
-    await supabase
-      .from('mkt_leads')
-      .update({
-        engagement_score: newEngagement,
-        total_score: newTotal,
-      })
-      .eq('id', enrollment.lead_id);
-
-    // Log history
-    await supabase.from('mkt_lead_score_history').insert({
-      org_id: action.org_id,
-      lead_id: enrollment.lead_id,
-      previous_total: currentScores.total_score,
-      new_total: newTotal,
-      engagement_delta: scoreDelta,
-      reason: eventType,
-      triggered_by: eventType,
+    await supabase.rpc('increment_engagement_score', {
+      p_action_id:   actionId,
+      p_event_type:  eventType,
+      p_score_delta: scoreDelta,
     });
   } catch (error) {
     console.error('[mkt-email-webhook] Score update failed:', error);
@@ -437,6 +431,57 @@ async function updateABTestMetrics(
 }
 
 const SOFT_BOUNCE_HARD_THRESHOLD = 3;
+
+/**
+ * Suppress a contact looked up by email address.
+ * Used for verification bounce events where there is no action_id.
+ */
+async function suppressContactByEmail(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  email: string,
+  logger: ReturnType<typeof createEngineLogger>
+): Promise<void> {
+  try {
+    const { data: contact } = await supabase
+      .from('contacts')
+      .select('id, org_id')
+      .eq('email', email)
+      .is('email_bounce_type', null)
+      .maybeSingle();
+
+    if (!contact) return;
+
+    // Mark invalid + hard-bounced
+    await supabase
+      .from('contacts')
+      .update({
+        email_verification_status: 'invalid',
+        email_bounce_type: 'hard',
+        email_bounced_at: new Date().toISOString(),
+      })
+      .eq('id', contact.id);
+
+    // Cancel any active enrollments
+    const { count } = await supabase
+      .from('mkt_sequence_enrollments')
+      .update({
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+        cancel_reason: 'Hard bounce — email invalid (verification send)',
+      })
+      .eq('lead_id', contact.id)
+      .eq('status', 'active')
+      .select('id', { count: 'exact', head: true });
+
+    await logger.info('verification-bounce-suppressed', {
+      email,
+      contact_id: contact.id,
+      enrollments_cancelled: count || 0,
+    });
+  } catch (err) {
+    console.error('[mkt-email-webhook] suppressContactByEmail failed:', err);
+  }
+}
 
 /**
  * Permanently suppress a contact from email sending.
@@ -567,16 +612,14 @@ async function handleSoftBounce(
 }
 
 /**
- * Extract action_id from tracking pixel ID (format: mkt_{action_id}_{timestamp}).
+ * Extract action_id from tracking pixel ID (format: mkt_{uuid}_{timestamp}).
  */
 function extractActionId(trackingId: string): string | null {
   if (!trackingId.startsWith('mkt_')) return null;
-  const parts = trackingId.split('_');
-  // action_id is a UUID, so parts[1] through parts[5] form the UUID
-  if (parts.length >= 7) {
-    return parts.slice(1, 6).join('-');
-  }
-  return null;
+  const match = trackingId.match(
+    /^mkt_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_\d+$/
+  );
+  return match?.[1] ?? null;
 }
 
 /**

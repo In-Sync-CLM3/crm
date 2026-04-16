@@ -200,9 +200,9 @@ Deno.serve(async (req) => {
 
     await logger.info('executor-complete', { executed, skipped, completed, failed });
 
-    // Self-chain: if the pool was full, there are likely more enrollments pending.
-    const totalProcessed = executed + skipped + completed;
-    if (pool.length >= POOL_SIZE) {
+    // Self-chain: only when pool was full AND we actually executed a meaningful number.
+    // Fewer than 10 executed = mostly skipped/completed enrollments; let cron handle it.
+    if (pool.length >= POOL_SIZE && executed >= 10) {
       fetch(`${supabaseUrl}/functions/v1/mkt-sequence-executor`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json' },
@@ -413,40 +413,19 @@ async function processEnrollment(
 }
 
 /**
- * Advance enrollment to the next step or mark as completed.
+ * Advance enrollment to the next step via atomic RPC.
+ * The RPC looks up the next step and updates the enrollment in a single DB round-trip.
  */
 async function advanceToNextStep(
   supabase: ReturnType<typeof getSupabaseClient>,
   enrollment: Record<string, unknown>,
-  steps: Array<Record<string, unknown>>,
+  _steps: Array<Record<string, unknown>>,
   currentStepNum: number
 ): Promise<void> {
-  const nextStep = steps.find((s) => (s.step_number as number) > currentStepNum);
-
-  if (!nextStep) {
-    // No more steps — mark as completed
-    await supabase
-      .from('mkt_sequence_enrollments')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        current_step: currentStepNum,
-      })
-      .eq('id', enrollment.id as string);
-    return;
-  }
-
-  // Schedule the next step
-  const delayHours = (nextStep.delay_hours as number) || 0;
-  const nextActionAt = new Date(Date.now() + delayHours * 60 * 60 * 1000);
-
-  await supabase
-    .from('mkt_sequence_enrollments')
-    .update({
-      current_step: nextStep.step_number as number,
-      next_action_at: nextActionAt.toISOString(),
-    })
-    .eq('id', enrollment.id as string);
+  await supabase.rpc('advance_enrollment_step', {
+    p_enrollment_id: enrollment.id as string,
+    p_current_step:  currentStepNum,
+  });
 }
 
 /**
@@ -461,7 +440,7 @@ async function checkStepConditions(
   // Get previous actions for this enrollment
   const { data: prevActions } = await supabase
     .from('mkt_sequence_actions')
-    .select('step_number, clicked_at, replied_at')
+    .select('step_number, opened_at, clicked_at, replied_at')
     .eq('enrollment_id', enrollment.id as string)
     .lt('step_number', currentStepNum)
     .order('step_number', { ascending: false })
@@ -471,7 +450,7 @@ async function checkStepConditions(
 
   const lastAction = prevActions[0];
 
-  if (conditions.require_previous_opened && !lastAction.clicked_at) {
+  if (conditions.require_previous_opened && !lastAction.opened_at) {
     return 'skip';
   }
 

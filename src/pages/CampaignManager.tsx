@@ -981,7 +981,6 @@ export default function CampaignManager() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="text-xs">Name</TableHead>
-                    <TableHead className="text-xs">Type</TableHead>
                     <TableHead className="text-xs">Status</TableHead>
                     <TableHead className="text-xs text-right">Enrolled</TableHead>
                     <TableHead className="text-xs text-right">Sent</TableHead>
@@ -1002,11 +1001,6 @@ export default function CampaignManager() {
                       onClick={() => setSelectedCampaign(c)}
                     >
                       <TableCell className="text-sm font-medium">{c.name}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className={`text-xs capitalize ${typeColor(c.campaign_type)}`}>
-                          {c.campaign_type}
-                        </Badge>
-                      </TableCell>
                       <TableCell>
                         <Badge variant="secondary" className={`text-xs capitalize ${statusColor(c.status)}`}>
                           {c.status}

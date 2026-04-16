@@ -188,16 +188,7 @@ async function handleInboundMessage(
     return;
   }
 
-  // Update the latest WhatsApp action as replied
-  const { data: latestAction } = await supabase
-    .from('mkt_sequence_actions')
-    .select('id, enrollment_id')
-    .eq('channel', 'whatsapp')
-    .in('status', ['sent', 'delivered'])
-    .order('sent_at', { ascending: false })
-    .limit(1);
-
-  // Find via enrollment
+  // Find active enrollment for this lead, then mark the latest action as replied
   const { data: enrollment } = await supabase
     .from('mkt_sequence_enrollments')
     .select('id')
@@ -206,11 +197,23 @@ async function handleInboundMessage(
     .limit(1)
     .single();
 
-  if (enrollment && latestAction?.[0]) {
-    await supabase
+  if (enrollment) {
+    const { data: latestAction } = await supabase
       .from('mkt_sequence_actions')
-      .update({ replied_at: new Date().toISOString() })
-      .eq('id', latestAction[0].id);
+      .select('id')
+      .eq('enrollment_id', enrollment.id)
+      .eq('channel', 'whatsapp')
+      .in('status', ['sent', 'delivered'])
+      .order('sent_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (latestAction) {
+      await supabase
+        .from('mkt_sequence_actions')
+        .update({ replied_at: new Date().toISOString() })
+        .eq('id', latestAction.id);
+    }
   }
 
   // Update conversation memory

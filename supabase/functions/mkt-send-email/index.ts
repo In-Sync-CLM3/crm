@@ -13,6 +13,8 @@ interface SendEmailRequest {
   enrollment_id: string;
   lead_id: string;
   step_id: string;
+  campaign_id?: string;
+  campaign_name?: string;
   template_id?: string;
   ab_test_id?: string;
   channel: string;
@@ -31,7 +33,7 @@ Deno.serve(async (req) => {
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
     const body: SendEmailRequest = await req.json();
-    const { action_id, enrollment_id, lead_id, step_id, template_id, ab_test_id } = body;
+    const { action_id, enrollment_id, lead_id, step_id, campaign_name, template_id, ab_test_id } = body;
 
     // Fetch lead data
     const { data: lead, error: leadError } = await supabase
@@ -160,7 +162,7 @@ Deno.serve(async (req) => {
     }
 
     // Wrap links with click tracking and append UTM parameters
-    const campaignName = (template.name as string)?.replace(/\s+/g, '_').toLowerCase() || 'mkt_outbound';
+    const campaignName = (campaign_name || (template.name as string) || 'mkt_outbound').replace(/\s+/g, '_').toLowerCase();
     finalHtml = finalHtml.replace(
       /<a\s+([^>]*href=["']([^"']+)["'][^>]*)>/gi,
       (match, attrs, url) => {
@@ -261,17 +263,6 @@ Deno.serve(async (req) => {
 
     // If A/B test, record the send
     if (ab_test_id && variant) {
-      await supabase.rpc('increment_ab_test_sends', {
-        _ab_test_id: ab_test_id,
-        _variant: variant,
-      }).catch(() => {
-        // If RPC doesn't exist yet, update manually
-        supabase
-          .from('mkt_ab_test_results')
-          .update({ sends: supabase.rpc('') }) // handled via direct increment below
-      });
-
-      // Direct increment as fallback
       const { data: abResult } = await supabase
         .from('mkt_ab_test_results')
         .select('sends')

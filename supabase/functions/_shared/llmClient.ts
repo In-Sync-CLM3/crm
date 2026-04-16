@@ -22,12 +22,79 @@ const MODEL_MAP: Record<LLMModel, string> = {
   sonnet: 'claude-sonnet-4-6',
 };
 
+// Groq equivalents — used as fallback when Anthropic credits are exhausted
+const GROQ_MODEL_MAP: Record<LLMModel, string> = {
+  haiku: 'llama-3.1-8b-instant',
+  sonnet: 'llama-3.3-70b-versatile',
+};
+
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
 
 /**
+ * Call Groq (OpenAI-compatible API) as a fallback when Anthropic is unavailable.
+ */
+async function callGroq(
+  prompt: string,
+  model: LLMModel,
+  options: { max_tokens: number; temperature: number; system?: string; json_mode: boolean }
+): Promise<LLMResponse> {
+  const apiKey = Deno.env.get('GROQ_API_KEY');
+  if (!apiKey) throw new Error('Missing GROQ_API_KEY — cannot fall back to Groq');
+
+  const groqModel = GROQ_MODEL_MAP[model];
+
+  const messages: Array<{ role: string; content: string }> = [];
+  if (options.system) {
+    messages.push({ role: 'system', content: options.system });
+  }
+
+  let userContent = prompt;
+  if (options.json_mode && !prompt.includes('Return JSON')) {
+    userContent = prompt + '\n\nReturn your response as valid JSON only, with no additional text.';
+  }
+  messages.push({ role: 'user', content: userContent });
+
+  const body: Record<string, unknown> = {
+    model: groqModel,
+    messages,
+    max_tokens: options.max_tokens,
+    temperature: options.temperature,
+  };
+
+  if (options.json_mode) {
+    body.response_format = { type: 'json_object' };
+  }
+
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Groq API error ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || '';
+
+  return {
+    content,
+    model: groqModel,
+    input_tokens: data.usage?.prompt_tokens || 0,
+    output_tokens: data.usage?.completion_tokens || 0,
+  };
+}
+
+/**
  * Unified LLM caller for Claude Haiku and Sonnet.
- * Routes to the correct model, handles retries, tracks tokens.
+ * Falls back to Groq automatically if Anthropic credits are exhausted.
  */
 export async function callLLM(
   prompt: string,
@@ -43,7 +110,7 @@ export async function callLLM(
 
   const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
   if (!apiKey) {
-    throw new Error('Missing ANTHROPIC_API_KEY environment variable');
+    return callGroq(prompt, model, { max_tokens, temperature, system, json_mode });
   }
 
   const modelId = MODEL_MAP[model];
@@ -82,6 +149,11 @@ export async function callLLM(
 
       if (!response.ok) {
         const errorBody = await response.text();
+
+        // Credit exhausted — fall back to Groq immediately (no retry)
+        if (response.status === 400 && errorBody.includes('credit balance is too low')) {
+          return callGroq(prompt, model, { max_tokens, temperature, system, json_mode });
+        }
 
         // Rate limit — wait and retry (cap at 8s to avoid function timeout)
         if (response.status === 429 && attempt < MAX_RETRIES) {

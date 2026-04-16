@@ -36,6 +36,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Package,
   Plus,
@@ -50,6 +51,8 @@ import {
   RotateCcw,
   Globe,
   ExternalLink,
+  Sparkles,
+  Users,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -65,6 +68,7 @@ interface Product {
   supabase_url: string | null;
   active: boolean;
   onboarding_status: string;
+  icp_finalized: boolean;
   trial_days: number;
   price_starter_monthly_paise: number | null;
   price_growth_monthly_paise: number | null;
@@ -439,6 +443,50 @@ function DeleteProductButton({ product, effectiveOrgId }: { product: Product; ef
 }
 
 // ---------------------------------------------------------------------------
+// FinalizeIcpButton — shown after icp_infer completes, before content generation
+// ---------------------------------------------------------------------------
+
+function FinalizeIcpButton({ product, effectiveOrgId }: { product: Product; effectiveOrgId: string }) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [loading, setLoading] = useState(false);
+
+  const handleFinalize = async () => {
+    setLoading(true);
+    try {
+      const token = await getToken();
+      const res = await callProductManager(token, {
+        mode: "finalize_icp",
+        org_id: effectiveOrgId,
+        product_key: product.product_key,
+      });
+      if (!res.ok) throw new Error(await res.text());
+      toast({ title: "ICP finalized", description: "Content generation has started" });
+      queryClient.invalidateQueries({ queryKey: ["mkt-onboarding-steps", product.product_key] });
+      queryClient.invalidateQueries({ queryKey: ["mkt-products"] });
+    } catch (err) {
+      toast({ title: "Finalize failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Button
+      size="sm"
+      className="h-8 text-xs gap-1.5 flex-1 bg-violet-600 hover:bg-violet-700 text-white"
+      disabled={loading}
+      onClick={handleFinalize}
+    >
+      {loading
+        ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+        : <Sparkles className="h-3.5 w-3.5" />}
+      Finalize ICP
+    </Button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // ProductCard
 // ---------------------------------------------------------------------------
 
@@ -513,6 +561,7 @@ function ProductCard({
     sent: number; opened: number; replied: number; failed: number;
     email_sent: number; wa_sent: number;
     active_enrollments: number; completed_enrollments: number;
+    trials: number; converted: number;
   }>({
     queryKey: ["campaign-stats", p.product_key, effectiveOrgId],
     queryFn: async () => {
@@ -531,6 +580,8 @@ function ProductCard({
         wa_sent: Number(r.wa_sent) || 0,
         active_enrollments: Number(r.active_enrollments) || 0,
         completed_enrollments: Number(r.completed_enrollments) || 0,
+        trials: Number(r.trials) || 0,
+        converted: Number(r.converted) || 0,
       } : null;
     },
     enabled: !!effectiveOrgId && campaignActive,
@@ -708,10 +759,30 @@ function ProductCard({
           </div>
         )}
         {/* ── Campaign stats ── */}
-        {campaignActive && campaignStats && (campaignStats.sent > 0 || campaignStats.active_enrollments > 0) && (
-          <div className="mt-1 pt-2 border-t px-2">
+        {campaignActive && campaignStats && (campaignStats.sent > 0 || campaignStats.active_enrollments > 0 || campaignStats.trials > 0) && (
+          <div className="mt-1 pt-2 border-t px-2 space-y-1.5">
+            {/* Signups row */}
+            {(campaignStats.trials > 0 || campaignStats.converted > 0) && (
+              <div className="text-[11px] flex items-center gap-3 flex-wrap">
+                <span className="font-medium text-foreground flex items-center gap-1">
+                  <Users className="h-3 w-3" /> Signups
+                </span>
+                {campaignStats.trials > 0 && (
+                  <span className="text-violet-600 font-medium">
+                    {campaignStats.trials.toLocaleString()} trials
+                  </span>
+                )}
+                {campaignStats.converted > 0 && (
+                  <span className="text-green-600 font-medium">
+                    {campaignStats.converted.toLocaleString()} paying
+                    {campaignStats.trials > 0 && ` (${Math.round(campaignStats.converted / campaignStats.trials * 100)}% conv)`}
+                  </span>
+                )}
+              </div>
+            )}
+            {/* Outreach row */}
             <div className="text-[11px] text-muted-foreground flex items-center gap-3 flex-wrap">
-              <span className="font-medium text-foreground">Campaign</span>
+              <span className="font-medium text-foreground">Outreach</span>
               {campaignStats.active_enrollments > 0 && (
                 <span>{campaignStats.active_enrollments.toLocaleString()} in queue</span>
               )}
@@ -719,11 +790,11 @@ function ProductCard({
                 <span className="text-blue-600">✉ {campaignStats.email_sent.toLocaleString()} sent</span>
               )}
               {campaignStats.wa_sent > 0 && (
-                <span className="text-green-600">💬 {campaignStats.wa_sent.toLocaleString()} WA sent</span>
+                <span className="text-green-600">💬 {campaignStats.wa_sent.toLocaleString()} WA</span>
               )}
               {campaignStats.opened > 0 && (
                 <span className="text-indigo-600">
-                  👁 {campaignStats.opened.toLocaleString()} opened
+                  👁 {campaignStats.opened.toLocaleString()}
                   {campaignStats.email_sent > 0 && ` (${Math.round(campaignStats.opened / campaignStats.email_sent * 100)}%)`}
                 </span>
               )}
@@ -732,9 +803,6 @@ function ProductCard({
                   ↩ {campaignStats.replied.toLocaleString()} replied
                 </span>
               )}
-              {campaignStats.completed_enrollments > 0 && (
-                <span className="text-gray-500">{campaignStats.completed_enrollments.toLocaleString()} completed</span>
-              )}
             </div>
           </div>
         )}
@@ -742,7 +810,22 @@ function ProductCard({
 
       {/* ── Footer ── */}
       <div className="px-4 pb-4 pt-2 border-t flex items-center gap-2 flex-wrap">
-        {p.onboarding_status === "complete" && (
+        {/* ICP finalization gate: icp_infer done, not yet finalized, content not started */}
+        {steps?.find((s) => s.step_name === "icp_infer")?.status === "complete" &&
+         !p.icp_finalized && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs gap-1.5 flex-1"
+              onClick={() => navigate(`/marketing/products/${p.product_key}/icp`)}
+            >
+              <Target className="h-3.5 w-3.5" /> Review ICP
+            </Button>
+            <FinalizeIcpButton product={p} effectiveOrgId={effectiveOrgId} />
+          </>
+        )}
+        {p.icp_finalized && (p.onboarding_status === "complete") && (
           <Button
             variant="outline"
             size="sm"
@@ -785,6 +868,7 @@ export default function ProductManagement() {
     product_name: "",
     product_url: "",
     git_repo_url: "",
+    product_notes: "",
     supabase_url: "",
     supabase_service_role_key: "",
   });
@@ -835,7 +919,7 @@ export default function ProductManagement() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["mkt-products"] });
       setDialogOpen(false);
-      setFormData({ product_name: "", product_url: "", git_repo_url: "", supabase_url: "", supabase_service_role_key: "" });
+      setFormData({ product_name: "", product_url: "", git_repo_url: "", product_notes: "", supabase_url: "", supabase_service_role_key: "" });
       toast({ title: "Onboarding started" });
     },
     onError: (err: Error) => {
@@ -894,6 +978,19 @@ export default function ProductManagement() {
                   />
                   <p className="text-[10px] text-muted-foreground mt-1">
                     Optional — Arohan reads the README for additional ICP context
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-xs">Product Notes</Label>
+                  <Textarea
+                    placeholder="Describe who this product is for, the key pain points it solves, and what makes it different. Arohan uses this as the highest-confidence signal when building the ICP."
+                    className="text-sm resize-none"
+                    rows={4}
+                    value={formData.product_notes}
+                    onChange={(e) => setFormData({ ...formData, product_notes: e.target.value })}
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Optional but recommended — overrides landing page when building ICP
                   </p>
                 </div>
                 <div className="border-t pt-3">

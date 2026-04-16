@@ -502,18 +502,17 @@ async function handleDunning(
       else if (daysSinceChurn >= 17) emailStage = 2;
       else emailStage = 1; // Already sent email 1, skip until day 17
 
-      // Check if this stage email was already sent
+      // Check if this stage email was already sent for this specific lead
       const { data: stageLogs } = await supabase
         .from('mkt_engine_logs')
-        .select('id')
+        .select('details')
         .eq('org_id', orgId)
         .eq('action', `dunning-email-${emailStage}-sent`)
-        .gte('created_at', thirtyDaysAgo)
-        .limit(1);
+        .gte('created_at', thirtyDaysAgo);
 
-      const stageAlreadySent = (stageLogs || []).some((log) => {
-        return true; // If any log for this stage exists, check lead_id in details
-      });
+      const stageAlreadySent = (stageLogs || []).some((log) =>
+        (log.details as Record<string, unknown>)?.lead_id === lead.id
+      );
 
       if (emailStage <= 1 || stageAlreadySent) { skipped++; continue; }
     }

@@ -89,6 +89,12 @@ const EmailVerification = () => {
   const handleRunNow = async () => {
     setRunning(true);
     try {
+      // Refresh session before invoking — edge function gateway requires a valid JWT
+      const { data: { session }, error: sessionError } = await supabase.auth.refreshSession();
+      if (sessionError || !session) {
+        notify.error("Session expired — please reload the page and try again.");
+        return;
+      }
       const { error } = await supabase.functions.invoke("mkt-email-verifier");
       if (error) throw error;
       notify.success("Verification batch started — refresh in a minute to see results.");

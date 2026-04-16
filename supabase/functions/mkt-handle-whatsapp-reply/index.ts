@@ -181,11 +181,18 @@ Deno.serve(async (req) => {
         .update({ status: 'unsubscribed', unsubscribed_at: new Date().toISOString() })
         .eq('id', lead_id);
 
-      // Add to unsubscribes table
-      await supabase.from('mkt_unsubscribes').upsert(
-        { org_id, lead_id, email: lead.email, channel: 'whatsapp', reason: 'Replied STOP on WhatsApp' },
-        { onConflict: 'org_id,email,channel' }
-      );
+      // Add to unsubscribes table — use email conflict key only when email is present
+      if (lead.email) {
+        await supabase.from('mkt_unsubscribes').upsert(
+          { org_id, lead_id, email: lead.email, channel: 'whatsapp', reason: 'Replied STOP on WhatsApp' },
+          { onConflict: 'org_id,email,channel' }
+        );
+      } else {
+        await supabase.from('mkt_unsubscribes').upsert(
+          { org_id, lead_id, channel: 'whatsapp', reason: 'Replied STOP on WhatsApp' },
+          { onConflict: 'org_id,lead_id,channel' }
+        );
+      }
     } else if (classification.intent !== 'out_of_office') {
       // Pause enrollment for interested/objection/other
       await supabase

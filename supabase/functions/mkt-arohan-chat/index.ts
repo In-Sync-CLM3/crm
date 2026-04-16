@@ -79,12 +79,52 @@ async function crawlPageContent(url: string): Promise<string> {
 // Multi-turn Anthropic call (Arohan needs full conversation history)
 // ---------------------------------------------------------------------------
 
+async function callArohanGroq(
+  messages: ConversationMessage[],
+  systemPrompt: string,
+): Promise<{ content: string; input_tokens: number; output_tokens: number }> {
+  const apiKey = Deno.env.get('GROQ_API_KEY');
+  if (!apiKey) throw new Error('Missing GROQ_API_KEY for Groq fallback');
+
+  const groqMessages = [
+    { role: 'system', content: systemPrompt },
+    ...messages,
+  ];
+
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: groqMessages,
+      max_tokens: 1024,
+      temperature: 0.4,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Groq fallback error ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  return {
+    content: data.choices?.[0]?.message?.content || '',
+    input_tokens: data.usage?.prompt_tokens || 0,
+    output_tokens: data.usage?.completion_tokens || 0,
+  };
+}
+
 async function callArohan(
   messages: ConversationMessage[],
   systemPrompt: string,
 ): Promise<{ content: string; input_tokens: number; output_tokens: number }> {
   const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
-  if (!apiKey) throw new Error('Missing ANTHROPIC_API_KEY');
+  if (!apiKey) return callArohanGroq(messages, systemPrompt);
 
   const body = {
     model: 'claude-sonnet-4-6',
@@ -109,6 +149,12 @@ async function callArohan(
 
       if (!response.ok) {
         const errorBody = await response.text();
+
+        // Credit exhausted — fall back to Groq immediately
+        if (response.status === 400 && errorBody.includes('credit balance is too low')) {
+          return callArohanGroq(messages, systemPrompt);
+        }
+
         if ((response.status === 429 || response.status === 529) && attempt < 3) {
           const wait = response.status === 429
             ? parseInt(response.headers.get('retry-after') || '5', 10) * 1000
@@ -253,7 +299,7 @@ Return JSON only:
 }
 
 Type guide:
-- "icp_update": user wants to change ICP targeting. If the previous Arohan message proposed a FULL ICP update (multiple fields), populate icp_patch with ALL proposed fields extracted from that message. Set field/value only for single-field changes. For confidence: "50%" or "v2 / 50%" → confidence_score: 0.5; "70%" → 0.7; etc.
+- "icp_update": user wants to change ICP targeting. If the previous Arohan message contains a "PROPOSED ICP UPDATE" block, extract ALL fields from that block into icp_patch. If it's a single-field change, use field/value. For confidence: "50%" or "v2 / 50%" → confidence_score: 0.5; "70%" → 0.7; etc. IMPORTANT: short confirmations like "Yes", "Go ahead", "Do it", "Sure" from the user ALWAYS mean they are confirming the PROPOSED ICP UPDATE in the previous Arohan message — classify these as icp_update and extract the full icp_patch from that block.
 - "campaign_launch": user wants to launch/start/activate/run a campaign for a product
 - "campaign_pause": user wants to pause/stop a campaign
 - "campaign_resume": user wants to resume/restart a paused campaign
@@ -385,7 +431,20 @@ ${pendingLines}
 - NEVER say you "can't write to the database" or "don't have write capability" — you do.
 - When Amit confirms a change, say: "Requesting the update now — a green badge will confirm when it's applied."
 - If no badge appears after confirmation, say: "The action may not have triggered — please try rephrasing your request."
-- Do NOT pre-emptively tell Amit to ask his tech team. You are the system.`;
+- Do NOT pre-emptively tell Amit to ask his tech team. You are the system.
+
+## CRITICAL: ICP update format
+When proposing an ICP update, you MUST end your message with a structured block so the system can apply it automatically. Use EXACTLY this format:
+
+PROPOSED ICP UPDATE — <product_key>
+- industries: [value1, value2, ...]
+- designations: [value1, value2, ...]
+- company_sizes: [value1, value2, ...]
+- geographies: [value1, value2, ...]
+- pain_points: [value1, value2, ...]
+
+Only include fields you are actually changing. Then say: "Reply 'Go ahead' to apply this."
+When Amit says 'Yes', 'Go ahead', 'Do it', or similar — that is a confirmation of the PROPOSED ICP UPDATE above. Apply it immediately.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -779,6 +838,13 @@ Deno.serve(async (req: Request) => {
       }
 
       if (sp.type === 'icp_update') {
+        // Fallback: extract product_key from "PROPOSED ICP UPDATE — <product_key>" in last Arohan message
+        if (!sp.product_key && lastArohanMessage) {
+          const pkMatch = lastArohanMessage.match(/PROPOSED ICP UPDATE\s*[—\-]+\s*([a-z0-9][a-z0-9\-\s_]*)/i);
+          if (pkMatch) {
+            sp.product_key = pkMatch[1].trim().toLowerCase().replace(/[\s_]+/g, '-').replace(/[^a-z0-9\-]/g, '');
+          }
+        }
         const { applied, new_version } = await applyICPSuggestion(org_id, sp, trimmedMessage, log);
         if (applied) {
           actionsTriggered.push({

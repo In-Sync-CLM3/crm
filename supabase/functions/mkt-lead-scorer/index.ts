@@ -78,7 +78,7 @@ Deno.serve(async (req) => {
     const campaignIds = [...new Set(leads.map((l) => l.campaign_id).filter(Boolean))];
     const { data: campaigns } = await supabase
       .from('mkt_campaigns')
-      .select('id, icp_criteria, name')
+      .select('id, icp_criteria, name, product_key')
       .in('id', campaignIds.length > 0 ? campaignIds : ['__none__']);
 
     const campaignMap = new Map(campaigns?.map((c) => [c.id, c]) || []);
@@ -167,7 +167,7 @@ Deno.serve(async (req) => {
 async function scoreLead(
   supabase: ReturnType<typeof getSupabaseClient>,
   lead: Record<string, unknown>,
-  campaignMap: Map<string, { id: string; icp_criteria: Record<string, unknown>; name: string }>,
+  campaignMap: Map<string, { id: string; icp_criteria: Record<string, unknown>; name: string; product_key?: string }>,
   actions: Array<Record<string, unknown>>
 ): Promise<{ tokens: number }> {
   const campaign = lead.campaign_id ? campaignMap.get(lead.campaign_id as string) : null;
@@ -318,13 +318,22 @@ recommendation guide:
 
   // Auto-enroll if score exceeds threshold (>= 70)
   if (total >= 70 && lead.status !== 'enrolled' && lead.status !== 'converted') {
-    const { data: activeCampaigns } = await supabase
+    const leadCampaign = lead.campaign_id ? campaignMap.get(lead.campaign_id as string) : null;
+    const productKey = leadCampaign?.product_key;
+
+    let campaignQuery = supabase
       .from('mkt_campaigns')
       .select('id')
       .eq('org_id', lead.org_id as string)
       .eq('status', 'active')
       .order('created_at', { ascending: false })
       .limit(1);
+
+    if (productKey) {
+      campaignQuery = campaignQuery.eq('product_key', productKey);
+    }
+
+    const { data: activeCampaigns } = await campaignQuery;
 
     if (activeCampaigns && activeCampaigns.length > 0) {
       const { data: existingEnrollment } = await supabase

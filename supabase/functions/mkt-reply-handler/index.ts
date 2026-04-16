@@ -87,14 +87,22 @@ Deno.serve(async (req) => {
       .single();
 
     if (enrollment) {
-      await supabase
+      const { data: latestAction } = await supabase
         .from('mkt_sequence_actions')
-        .update({ replied_at: new Date().toISOString() })
+        .select('id')
         .eq('enrollment_id', enrollment.id)
         .eq('channel', channel)
         .is('replied_at', null)
         .order('sent_at', { ascending: false })
-        .limit(1);
+        .limit(1)
+        .maybeSingle();
+
+      if (latestAction) {
+        await supabase
+          .from('mkt_sequence_actions')
+          .update({ replied_at: new Date().toISOString() })
+          .eq('id', latestAction.id);
+      }
     }
 
     // Update engagement score (reply = high engagement)

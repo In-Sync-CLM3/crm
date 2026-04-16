@@ -451,8 +451,8 @@ async function sourceFromApollo(
       inserted_so_far: apolloInserted,
     });
 
-    // If Apollo returned fewer than requested, there are no more pages
-    if (people.length < Math.min(remaining + apolloInserted, APOLLO_PAGE_SIZE)) break;
+    // If Apollo returned fewer than a full page, there are no more pages
+    if (people.length < APOLLO_PAGE_SIZE) break;
   }
 
   return apolloInserted;

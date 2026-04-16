@@ -7,8 +7,9 @@ import { createEngineLogger } from '../_shared/engineLogger.ts';
 //
 // Runs daily (via pg_cron at 01:00 UTC / 06:30 IST).
 // For every active product across all orgs:
-//   - Count contacts with status='new' (the uncontacted, actionable pool)
-//   - If count < LEAD_CAP (3000), fire mkt-source-leads to top it up
+//   1. Enroll any un-enrolled status='new' contacts into the active campaign
+//   2. Count remaining status='new' contacts
+//   3. If count < LEAD_CAP (3000), fire mkt-source-leads to top it up
 //
 // mkt-source-leads is self-chaining (cursor-based) so it pages through the
 // 464K native dataset automatically until the gap is filled.
@@ -53,11 +54,41 @@ Deno.serve(async (req) => {
 
     let triggered = 0;
     let skipped = 0;
+    let totalEnrolled = 0;
 
-    // 2. For each product, count available (status='new') contacts
+    // 2. For each product: enroll un-enrolled contacts, then top up sourcing if needed
     for (const p of products as ActiveProduct[]) {
       const { org_id, product_key } = p;
 
+      // --- Step A: enroll any un-enrolled status='new' contacts into the active campaign ---
+      const { data: activeCampaign } = await supabase
+        .from('mkt_campaigns')
+        .select('id')
+        .eq('org_id', org_id)
+        .eq('product_key', product_key)
+        .eq('status', 'active')
+        .limit(1)
+        .single();
+
+      if (activeCampaign) {
+        const campaign_id = activeCampaign.id as string;
+
+        // Single atomic INSERT ... SELECT via RPC — no while loop needed
+        const { data: productEnrolled, error: enrollErr } = await supabase.rpc('enroll_new_contacts', {
+          p_org_id:      org_id,
+          p_campaign_id: campaign_id,
+          p_product_key: product_key,
+        });
+
+        if (enrollErr) {
+          await logger.warn('daily-enroll-error', { org_id, product_key, error: enrollErr.message });
+        } else if ((productEnrolled || 0) > 0) {
+          await logger.info('daily-enrolled', { org_id, product_key, campaign_id, enrolled: productEnrolled });
+          totalEnrolled += productEnrolled as number;
+        }
+      }
+
+      // --- Step B: count available contacts and top up via mkt-source-leads if needed ---
       const { count, error: countError } = await supabase
         .from('contacts')
         .select('id', { count: 'exact', head: true })
@@ -84,7 +115,7 @@ Deno.serve(async (req) => {
         gap: LEAD_CAP - available,
       });
 
-      // 3. Fire mkt-source-leads (fire-and-forget — it self-chains until cap is filled)
+      // Fire mkt-source-leads (fire-and-forget — it self-chains until cap is filled)
       fetch(`${supabaseUrl}/functions/v1/mkt-source-leads`, {
         method: 'POST',
         headers: {
@@ -97,7 +128,7 @@ Deno.serve(async (req) => {
       triggered++;
     }
 
-    const result = { status: 'ok', total_products: products.length, triggered, skipped };
+    const result = { status: 'ok', total_products: products.length, triggered, skipped, enrolled: totalEnrolled };
     await logger.info('daily-refresh-complete', result);
 
     return new Response(
