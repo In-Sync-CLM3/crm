@@ -18,8 +18,15 @@ interface OnboardBody {
   product_name: string;
   product_url: string;
   git_repo_url?: string;
+  product_notes?: string;
   supabase_url: string;
   supabase_service_role_key: string;
+}
+
+interface FinalizeIcpBody {
+  mode: 'finalize_icp';
+  org_id: string;
+  product_key: string;
 }
 
 interface ResumeBody {
@@ -58,7 +65,7 @@ interface RefreshContentBody {
   product_key: string;
 }
 
-type RequestBody = OnboardBody | ResumeBody | ToggleBody | SyncBody | DeleteBody | RefreshContentBody;
+type RequestBody = OnboardBody | ResumeBody | ToggleBody | SyncBody | DeleteBody | RefreshContentBody | FinalizeIcpBody;
 
 interface OnboardingStep {
   id: string;
@@ -87,6 +94,7 @@ interface StepContext {
   product_key: string;
   product_url: string;
   git_repo_url: string;
+  product_notes: string;
   supabase_url: string;
   supabase_service_role_key: string;
 }
@@ -368,7 +376,7 @@ async function markStepFailed(
 // ---------------------------------------------------------------------------
 
 async function stepRegister(ctx: StepContext): Promise<Record<string, unknown>> {
-  const { supabase, org_id, product_key, product_url, git_repo_url, supabase_url } = ctx;
+  const { supabase, org_id, product_key, product_url, git_repo_url, product_notes, supabase_url } = ctx;
   const initials = deriveInitials(product_key.replace(/-/g, ' '));
   const secretUrlName = `${initials}_SUPABASE_URL`;
   const secretKeyName = `${initials}_SUPABASE_SERVICE_KEY`;
@@ -388,6 +396,7 @@ async function stepRegister(ctx: StepContext): Promise<Record<string, unknown>> 
         product_name,
         product_url,
         git_repo_url: git_repo_url || null,
+        product_notes: product_notes || null,
         supabase_url,
         supabase_secret_name: secretKeyName,
         onboarding_status: 'in_progress',
@@ -505,7 +514,7 @@ async function stepSchemaSniff(ctx: StepContext): Promise<Record<string, unknown
 }
 
 async function stepIcpInfer(ctx: StepContext): Promise<Record<string, unknown>> {
-  const { supabase, org_id, product_key, product_url, git_repo_url, supabase_url, supabase_service_role_key } = ctx;
+  const { supabase, org_id, product_key, product_url, git_repo_url, product_notes, supabase_url, supabase_service_role_key } = ctx;
 
   const { data: product } = await supabase
     .from('mkt_products')
@@ -574,6 +583,7 @@ async function stepIcpInfer(ctx: StepContext): Promise<Record<string, unknown>> 
 
   const contextSection = [
     crawledContext || `Product URL: ${product_url || 'not provided'}`,
+    product_notes?.trim() ? `=== Founder Notes ===\n${product_notes.trim()}` : '',
     dbEnrichment ? `=== Real User Data ===\n${dbEnrichment}` : '',
   ].filter(Boolean).join('\n\n');
 
@@ -593,6 +603,7 @@ Product name: "${product_name}"
 ${contextSection}
 
 Using the product content above as your PRIMARY signal (what the product says about itself and who it targets), infer the most accurate B2B ICP.
+${product_notes?.trim() ? 'The Founder Notes above are first-hand knowledge from the founder — treat them as the highest-confidence signal, overriding the landing page where they conflict.' : ''}
 ${dbEnrichment ? 'The real user data above should CONFIRM or REFINE the ICP — not replace what the product copy says.' : ''}
 
 Return JSON only:
@@ -833,15 +844,27 @@ Return a JSON array of exactly 4 template objects.`,
 async function stepCallScripts(ctx: StepContext): Promise<Record<string, unknown>> {
   const { supabase, org_id, product_key } = ctx;
 
-  // Skip check
-  const { count: existing } = await supabase
+  const SCRIPT_TYPES = ['intro', 'follow_up', 'demo', 'closing'] as const;
+  const TARGET = SCRIPT_TYPES.length;
+
+  // Check which types already exist
+  const { data: existing } = await supabase
     .from('mkt_call_scripts')
-    .select('*', { count: 'exact', head: true })
+    .select('call_type')
     .eq('org_id', org_id)
     .eq('product_key', product_key);
 
-  if ((existing ?? 0) > 0) {
-    return { skipped: true, reason: `${existing} call scripts already exist`, count: existing };
+  const existingCount = existing?.length ?? 0;
+
+  if (existingCount >= TARGET) {
+    return { skipped: true, reason: `${existingCount} call scripts already exist`, count: existingCount };
+  }
+
+  // Find the next type not yet generated
+  const existingTypes = new Set(existing?.map((s: { call_type: string }) => s.call_type) ?? []);
+  const nextType = SCRIPT_TYPES.find((t) => !existingTypes.has(t));
+  if (!nextType) {
+    return { skipped: true, reason: 'All script types already generated', count: existingCount };
   }
 
   const { data: product } = await supabase
@@ -859,44 +882,45 @@ async function stepCallScripts(ctx: StepContext): Promise<Record<string, unknown
     key_points: string[]; objection_handling: Record<string, string>; closing: string;
   };
 
-  let callScripts: CallScript[] = [];
+  // Generate ONE script per invocation — keeps each LLM call well under timeout
+  const { data: script } = await callLLMJson<CallScript>(
+    `Generate ONE "${nextType}" phone call script for a B2B SaaS product called "${product_name}" (${product_url}).
 
-  const { data } = await callLLMJson<CallScript[]>(
-    `Generate 4 phone call scripts for a B2B SaaS product called "${product_name}" (${product_url}).
-Types needed: 1 intro/discovery, 1 follow-up, 1 demo, 1 closing.
-
-Each script should have:
-- name: e.g. "${product_key}-call-intro"
-- call_type: "intro" | "follow_up" | "demo" | "closing"
+The script must have:
+- name: "${product_key}-call-${nextType.replace('_', '-')}"
+- call_type: "${nextType}"
 - objective: what the call aims to achieve (1 sentence)
 - opening: how to start the call (2-3 sentences)
 - key_points: array of 3-5 talking points
 - objection_handling: object with 3 common objections as keys and responses as values
 - closing: how to end the call (2-3 sentences)
 
-Return a JSON array of 4 script objects.`,
-    { model: 'sonnet', max_tokens: 4096, temperature: 0.5 },
+Return a single JSON object (not an array).`,
+    { model: 'sonnet', max_tokens: 1024, temperature: 0.5 },
   );
-  if (Array.isArray(data)) callScripts = data;
 
-  if (callScripts.length > 0) {
-    const scriptRows = callScripts.map((s) => ({
-      org_id,
-      name: s.name,
-      product_key,
-      call_type: s.call_type,
-      objective: s.objective,
-      opening: s.opening,
-      key_points: s.key_points,
-      objection_handling: s.objection_handling,
-      closing: s.closing,
-      is_active: true,
-    }));
-    const { error: scriptErr } = await supabase.from('mkt_call_scripts').insert(scriptRows);
-    if (scriptErr) throw new Error(`Call scripts insert error: ${scriptErr.message}`);
+  const { error: scriptErr } = await supabase.from('mkt_call_scripts').insert({
+    org_id,
+    name: script.name,
+    product_key,
+    call_type: script.call_type,
+    objective: script.objective,
+    opening: script.opening,
+    key_points: script.key_points,
+    objection_handling: script.objection_handling,
+    closing: script.closing,
+    is_active: true,
+  });
+  if (scriptErr) throw new Error(`Call scripts insert error: ${scriptErr.message}`);
+
+  const newCount = existingCount + 1;
+
+  if (newCount < TARGET) {
+    // Self-chain: signal the runner to re-invoke for the next script
+    return { chain: true, generated_so_far: newCount, next_type: SCRIPT_TYPES.find((t) => !existingTypes.has(t) && t !== nextType) };
   }
 
-  return { call_scripts_generated: callScripts.length };
+  return { call_scripts_generated: newCount };
 }
 
 async function stepCampaignCreate(ctx: StepContext): Promise<Record<string, unknown>> {
@@ -1026,7 +1050,63 @@ async function stepSourceLeads(ctx: StepContext): Promise<Record<string, unknown
   }
 
   const result = await resp.json();
-  return { sourced: result };
+
+  // After sourcing, enroll new contacts into any active campaign for this product.
+  // This handles the case where the product toggle was activated before leads were available.
+  const { data: activeCampaign } = await supabase
+    .from('mkt_campaigns')
+    .select('id')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key)
+    .eq('status', 'active')
+    .limit(1)
+    .single();
+
+  let totalEnrolled = 0;
+  if (activeCampaign) {
+    const campaign_id = activeCampaign.id as string;
+    const { data: existing } = await supabase
+      .from('mkt_sequence_enrollments')
+      .select('lead_id')
+      .eq('campaign_id', campaign_id);
+    const enrolledIds = new Set((existing || []).map((e: Record<string, unknown>) => e.lead_id as string));
+
+    const now = new Date().toISOString();
+    let offset = 0;
+    while (true) {
+      const { data: batch } = await supabase
+        .from('contacts')
+        .select('id, org_id')
+        .eq('org_id', org_id)
+        .eq('mkt_product_key', product_key)
+        .eq('status', 'new')
+        .range(offset, offset + 999);
+
+      if (!batch || batch.length === 0) break;
+
+      const rows = (batch as Array<{ id: string; org_id: string }>)
+        .filter((c) => !enrolledIds.has(c.id))
+        .map((c) => ({
+          org_id: c.org_id,
+          lead_id: c.id,
+          campaign_id,
+          current_step: 1,
+          status: 'active',
+          next_action_at: now,
+          enrolled_at: now,
+        }));
+
+      for (let i = 0; i < rows.length; i += 500) {
+        await supabase.from('mkt_sequence_enrollments').insert(rows.slice(i, i + 500));
+      }
+      totalEnrolled += rows.length;
+
+      if (batch.length < 1000) break;
+      offset += 1000;
+    }
+  }
+
+  return { sourced: result, enrolled: totalEnrolled };
 }
 
 async function stepVapiAssistants(ctx: StepContext): Promise<Record<string, unknown>> {
@@ -1221,6 +1301,7 @@ async function runSteps(
   git_repo_url: string,
   supabase_url: string,
   supabase_service_role_key: string,
+  product_notes = '',
 ): Promise<StepResult[]> {
   const { data: steps, error: loadErr } = await supabase
     .from('mkt_onboarding_steps')
@@ -1239,6 +1320,7 @@ async function runSteps(
     product_key,
     product_url,
     git_repo_url,
+    product_notes,
     supabase_url,
     supabase_service_role_key,
   };
@@ -1267,6 +1349,19 @@ async function runSteps(
     try {
       const result = await handler(ctx);
 
+      // Handler signalled self-chain: leave step in_progress and fire a new resume invocation
+      if (result.chain) {
+        await logger.info(`step-${step.step_name}-chaining`, { product_key, ...result });
+        const fnUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/mkt-product-manager`;
+        const svcKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+        fetch(fnUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${svcKey}` },
+          body: JSON.stringify({ mode: 'resume', org_id, product_key }),
+        }).catch(() => {}); // fire-and-forget
+        break; // don't advance to next steps in this invocation
+      }
+
       // Check if handler signalled a skip
       if (result.skipped) {
         await markStepSkipped(supabase, step.id, String(result.reason ?? 'skipped by handler'));
@@ -1275,6 +1370,20 @@ async function runSteps(
       }
 
       await logger.info(`step-${step.step_name}`, { product_key, ...result });
+
+      // Gate: after icp_infer, pause until Amit finalizes the ICP
+      if (step.step_name === 'icp_infer' && !result.skipped) {
+        const { data: prod } = await supabase
+          .from('mkt_products')
+          .select('icp_finalized')
+          .eq('org_id', org_id)
+          .eq('product_key', product_key)
+          .single();
+        if (!prod?.icp_finalized) {
+          await logger.info('icp-awaiting-finalization', { product_key, reason: 'ICP inferred — waiting for Amit to review and finalize before content generation' });
+          break; // halt pipeline here; resume after finalize_icp is called
+        }
+      }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       await markStepFailed(supabase, step.id, errMsg);
@@ -1329,7 +1438,7 @@ async function handleOnboard(
   body: OnboardBody,
   logger: ReturnType<typeof createEngineLogger>,
 ): Promise<Record<string, unknown>> {
-  const { org_id, product_name, product_url, git_repo_url = '', supabase_url, supabase_service_role_key } = body;
+  const { org_id, product_name, product_url, git_repo_url = '', product_notes = '', supabase_url, supabase_service_role_key } = body;
   const product_key = deriveProductKey(product_name);
 
   // Initialize all step rows (idempotent)
@@ -1337,7 +1446,7 @@ async function handleOnboard(
 
   // Run the register step synchronously so the product row exists before we return.
   // The frontend can then show the product card immediately.
-  const ctx: StepContext = { supabase, logger, org_id, product_key, product_url, git_repo_url, supabase_url, supabase_service_role_key };
+  const ctx: StepContext = { supabase, logger, org_id, product_key, product_url, git_repo_url, product_notes, supabase_url, supabase_service_role_key };
   const { data: registerRow } = await supabase
     .from('mkt_onboarding_steps')
     .select('id, attempts')
@@ -1361,7 +1470,7 @@ async function handleOnboard(
 
   // Fire remaining steps in the background. EdgeRuntime.waitUntil keeps the
   // function alive after the response is sent so the steps can complete.
-  const bgRun = runSteps(supabase, logger, org_id, product_key, product_url, git_repo_url, supabase_url, supabase_service_role_key)
+  const bgRun = runSteps(supabase, logger, org_id, product_key, product_url, git_repo_url, supabase_url, supabase_service_role_key, product_notes)
     .catch((e) => logger.error('bg-steps-failed', e, { product_key }));
 
   // deno-lint-ignore no-explicit-any
@@ -1383,7 +1492,7 @@ async function handleResume(
   // Load the product to retrieve connection details stored during onboarding
   const { data: product, error: prodErr } = await supabase
     .from('mkt_products')
-    .select('product_url, git_repo_url, supabase_url, supabase_secret_name')
+    .select('product_url, git_repo_url, product_notes, supabase_url, supabase_secret_name')
     .eq('org_id', org_id)
     .eq('product_key', product_key)
     .single();
@@ -1404,6 +1513,7 @@ async function handleResume(
     product.git_repo_url ?? '',
     product.supabase_url ?? '',
     serviceRoleKey,
+    product.product_notes ?? '',
   );
 
   return { product_key, steps };
@@ -1507,6 +1617,15 @@ async function handleToggle(
         .update({ status: 'active', start_date: new Date().toISOString() })
         .eq('id', campaign_id);
 
+      // Thaw any enrollments that were frozen by the toggle-off sentinel (2099-12-31)
+      const PAUSE_SENTINEL = '2099-12-31T23:59:59Z';
+      await supabase
+        .from('mkt_sequence_enrollments')
+        .update({ next_action_at: new Date().toISOString() })
+        .eq('campaign_id', campaign_id)
+        .eq('status', 'active')
+        .eq('next_action_at', PAUSE_SENTINEL);
+
       // Bulk enroll contacts (status='new') — skip any already enrolled to avoid duplicates
       const { data: existing } = await supabase
         .from('mkt_sequence_enrollments')
@@ -1553,11 +1672,37 @@ async function handleToggle(
       await logger.info('campaign-activated', { org_id, product_key, campaign_id, enrolled: totalEnrolled });
     }
   } else if (!active && product) {
-    // Pause all campaigns for this product
+    const offOrg = (product as { org_id: string }).org_id;
+    const offKey = (product as { product_key: string }).product_key;
+
+    // 1. Pause all campaigns for this product
     await supabase.from('mkt_campaigns')
       .update({ status: 'paused' })
-      .eq('org_id', (product as { org_id: string }).org_id)
-      .eq('product_key', (product as { product_key: string }).product_key);
+      .eq('org_id', offOrg)
+      .eq('product_key', offKey);
+
+    // 2. Immediately freeze all active enrollments so they don't keep
+    //    flooding the executor batch queue while the campaign drains.
+    //    Sentinel value 2099-12-31 signals "paused by product toggle".
+    const PAUSE_SENTINEL = '2099-12-31T23:59:59Z';
+    const { data: offCampaigns } = await supabase
+      .from('mkt_campaigns')
+      .select('id')
+      .eq('org_id', offOrg)
+      .eq('product_key', offKey);
+
+    if (offCampaigns && offCampaigns.length > 0) {
+      const offCampaignIds = offCampaigns.map((c: Record<string, unknown>) => c.id as string);
+      // Batch-update in chunks of 500 to avoid URL length limits
+      for (let i = 0; i < offCampaignIds.length; i += 500) {
+        await supabase
+          .from('mkt_sequence_enrollments')
+          .update({ next_action_at: PAUSE_SENTINEL })
+          .in('campaign_id', offCampaignIds.slice(i, i + 500))
+          .eq('status', 'active');
+      }
+      await logger.info('enrollments-frozen', { org_id: offOrg, product_key: offKey, campaigns: offCampaignIds.length });
+    }
   }
 
   return { product_id, active, product: product || null };
@@ -1824,7 +1969,7 @@ async function handleResetStep(
 
   // 4. Load product connection details and re-run steps
   const { data: product } = await supabase.from('mkt_products')
-    .select('product_url, git_repo_url, supabase_url, supabase_secret_name')
+    .select('product_url, git_repo_url, product_notes, supabase_url, supabase_secret_name')
     .eq('org_id', org_id).eq('product_key', product_key).single();
 
   const serviceRoleKey = product?.supabase_secret_name
@@ -1837,6 +1982,7 @@ async function handleResetStep(
     product?.git_repo_url ?? '',
     product?.supabase_url ?? '',
     serviceRoleKey,
+    product?.product_notes ?? '',
   );
 
   await logger.info('step-reset', { product_key, step_name });
@@ -1876,7 +2022,7 @@ async function handleRefreshContent(
 
   // 4. Load product connection details and run all pending steps once (sequential, no race)
   const { data: product } = await supabase.from('mkt_products')
-    .select('product_url, git_repo_url, supabase_url, supabase_secret_name')
+    .select('product_url, git_repo_url, product_notes, supabase_url, supabase_secret_name')
     .eq('org_id', org_id).eq('product_key', product_key).single();
 
   const serviceRoleKey = product?.supabase_secret_name
@@ -1889,10 +2035,36 @@ async function handleRefreshContent(
     product?.git_repo_url ?? '',
     product?.supabase_url ?? '',
     serviceRoleKey,
+    product?.product_notes ?? '',
   );
 
   await logger.info('content-refreshed', { org_id, product_key, steps_run: CONTENT_STEPS.length });
   return { org_id, product_key, steps };
+}
+
+// ---------------------------------------------------------------------------
+// finalize_icp — Amit has reviewed the ICP; unlock content generation steps
+// ---------------------------------------------------------------------------
+
+async function handleFinalizeIcp(
+  supabase: SupabaseClient,
+  body: FinalizeIcpBody,
+  logger: ReturnType<typeof createEngineLogger>,
+): Promise<Record<string, unknown>> {
+  const { org_id, product_key } = body;
+
+  const { error } = await supabase
+    .from('mkt_products')
+    .update({ icp_finalized: true })
+    .eq('org_id', org_id)
+    .eq('product_key', product_key);
+
+  if (error) throw new Error(`Failed to finalize ICP: ${error.message}`);
+
+  await logger.info('icp-finalized', { org_id, product_key });
+
+  // Resume the pipeline — will now proceed past the icp_infer gate into email_templates etc.
+  return handleResume(supabase, { mode: 'resume', org_id, product_key }, logger);
 }
 
 // ---------------------------------------------------------------------------
@@ -1934,6 +2106,9 @@ Deno.serve(async (req) => {
         break;
       case 'refresh_content':
         result = await handleRefreshContent(supabase, body as RefreshContentBody, logger);
+        break;
+      case 'finalize_icp':
+        result = await handleFinalizeIcp(supabase, body as FinalizeIcpBody, logger);
         break;
       default:
         throw new Error(`Unknown mode: ${(body as Record<string, unknown>).mode}`);

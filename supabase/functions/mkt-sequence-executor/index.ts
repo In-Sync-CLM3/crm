@@ -7,8 +7,10 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const BATCH_SIZE = 50;  // Enrollments per run (50 × ~2s sequential = ~100s, within timeout)
-const PARALLEL_SIZE = 1; // Sequential — prevents email provider rate limiting
+const BATCH_SIZE = 50;        // Enrollments to process per run
+const POOL_SIZE = 200;        // Wider fetch pool for fair selection
+const PARALLEL_SIZE = 1;      // Sequential — prevents email provider rate limiting
+const DAILY_CAMPAIGN_LIMIT = 1000; // Max emails per campaign per day
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -40,8 +42,8 @@ Deno.serve(async (req) => {
 
     const nowIso = now.toISOString();
 
-    // Fetch enrollments ready to execute
-    const { data: enrollments, error: fetchError } = await supabase
+    // Fetch a wide pool so we can apply fair campaign allocation
+    const { data: pool, error: fetchError } = await supabase
       .from('mkt_sequence_enrollments')
       .select(`
         id,
@@ -54,20 +56,93 @@ Deno.serve(async (req) => {
       .eq('status', 'active')
       .lte('next_action_at', nowIso)
       .order('next_action_at', { ascending: true })
-      .limit(BATCH_SIZE);
+      .limit(POOL_SIZE);
 
     if (fetchError) throw fetchError;
 
-    if (!enrollments || enrollments.length === 0) {
+    if (!pool || pool.length === 0) {
       return new Response(
         JSON.stringify({ message: 'No enrollments due', executed: 0 }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    await logger.info('executor-start', { enrollment_count: enrollments.length });
+    // ── Fair allocation across campaigns ────────────────────────────────────
+    // 1. Get all distinct campaigns in the pool
+    const poolCampaignIds = [...new Set(pool.map((e) => e.campaign_id))];
 
-    // Batch-fetch related data
+    // 2. Fetch steps for daily-count check (step_id is our join key to actions)
+    const stepsForCountRes = await supabase
+      .from('mkt_campaign_steps')
+      .select('id, campaign_id')
+      .in('campaign_id', poolCampaignIds)
+      .eq('is_active', true);
+
+    const stepIdsByCampaign = new Map<string, string[]>();
+    for (const step of stepsForCountRes.data || []) {
+      const ids = stepIdsByCampaign.get(step.campaign_id as string) || [];
+      ids.push(step.id as string);
+      stepIdsByCampaign.set(step.campaign_id as string, ids);
+    }
+
+    // 3. Check today's sent count per campaign — skip any at or over limit
+    const today = now.toISOString().split('T')[0];
+    const campaignUnderLimit = new Set<string>();
+
+    await Promise.all(poolCampaignIds.map(async (cid) => {
+      const stepIds = stepIdsByCampaign.get(cid) || [];
+      if (stepIds.length === 0) {
+        campaignUnderLimit.add(cid);
+        return;
+      }
+      const { count } = await supabase
+        .from('mkt_sequence_actions')
+        .select('id', { count: 'exact', head: true })
+        .in('step_id', stepIds)
+        .in('status', ['sent', 'delivered', 'pending'])
+        .gte('created_at', `${today}T00:00:00Z`);
+
+      if ((count || 0) < DAILY_CAMPAIGN_LIMIT) {
+        campaignUnderLimit.add(cid);
+      }
+    }));
+
+    // 4. Fair round-robin: equal slots per eligible campaign, total ≤ BATCH_SIZE
+    const eligibleCampaigns = poolCampaignIds.filter((id) => campaignUnderLimit.has(id));
+    const perCampaignCap = eligibleCampaigns.length > 0
+      ? Math.ceil(BATCH_SIZE / eligibleCampaigns.length)
+      : BATCH_SIZE;
+
+    const campaignSlotsUsed = new Map<string, number>();
+    const enrollments: typeof pool = [];
+
+    for (const enrollment of pool) {
+      if (!campaignUnderLimit.has(enrollment.campaign_id)) continue;
+      const used = campaignSlotsUsed.get(enrollment.campaign_id) || 0;
+      if (used >= perCampaignCap) continue;
+      enrollments.push(enrollment);
+      campaignSlotsUsed.set(enrollment.campaign_id, used + 1);
+      if (enrollments.length >= BATCH_SIZE) break;
+    }
+
+    if (enrollments.length === 0) {
+      const limitedCampaigns = poolCampaignIds.filter((id) => !campaignUnderLimit.has(id));
+      return new Response(
+        JSON.stringify({ message: 'All campaigns at daily limit', limited_campaigns: limitedCampaigns }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    await logger.info('executor-start', {
+      pool: pool.length,
+      allotted: enrollments.length,
+      eligible_campaigns: eligibleCampaigns.length,
+      per_campaign_cap: perCampaignCap,
+      slots_used: Object.fromEntries(campaignSlotsUsed),
+    });
+    // ── End fair allocation ──────────────────────────────────────────────────
+
+    // Batch-fetch related data for the allotted enrollments
     const campaignIds = [...new Set(enrollments.map((e) => e.campaign_id))];
     const leadIds = [...new Set(enrollments.map((e) => e.lead_id))];
 
@@ -93,7 +168,7 @@ Deno.serve(async (req) => {
     let completed = 0;
     let failed = 0;
 
-    // Process in parallel batches
+    // Process sequentially
     for (let i = 0; i < enrollments.length; i += PARALLEL_SIZE) {
       const batch = enrollments.slice(i, i + PARALLEL_SIZE);
 
@@ -125,10 +200,9 @@ Deno.serve(async (req) => {
 
     await logger.info('executor-complete', { executed, skipped, completed, failed });
 
-    // Self-chain: if batch was full there are likely more pending — fire next run immediately
-    // rather than waiting for the 5-minute cron tick.
+    // Self-chain: if the pool was full, there are likely more enrollments pending.
     const totalProcessed = executed + skipped + completed;
-    if (totalProcessed >= BATCH_SIZE) {
+    if (pool.length >= POOL_SIZE) {
       fetch(`${supabaseUrl}/functions/v1/mkt-sequence-executor`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json' },
@@ -185,7 +259,12 @@ async function processEnrollment(
       .single();
 
     if (product && !product.active) {
-      // Skip this enrollment — product is paused
+      // Product is toggled off — freeze this enrollment for 4 hours so it
+      // doesn't keep flooding the batch queue on every run.
+      await supabase
+        .from('mkt_sequence_enrollments')
+        .update({ next_action_at: new Date(Date.now() + 4 * 3600 * 1000).toISOString() })
+        .eq('id', enrollment.id as string);
       return 'skipped';
     }
   }
