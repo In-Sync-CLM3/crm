@@ -23,10 +23,9 @@ Deno.serve(async (req) => {
   const supabase = getSupabaseClient();
 
   try {
-    const body = req.method === 'POST' ? await req.json().catch(() => ({})) : {};
-    // Pass ?smtp=1 in body or URL to enable SMTP probing (once port 25 opens)
-    const smtpEnabled = body.smtp === true || new URL(req.url, 'http://x').searchParams.get('smtp') === '1';
-    const verifyUrl = `${VERIFIER_URL}/verify${smtpEnabled ? '?smtp=1' : ''}`;
+    // Always attempt SMTP probe — verifier handles timeout gracefully (returns dns_ok).
+    // When port 25 opens on the Hetzner server, SMTP probing activates automatically.
+    const verifyUrl = `${VERIFIER_URL}/verify?smtp=1`;
 
     // Fetch unverified contacts:
     // - Never verified (email_verification_status IS NULL)
@@ -109,9 +108,7 @@ Deno.serve(async (req) => {
       JSON.stringify({
         message: 'Verification complete',
         processed,
-        smtp_enabled: smtpEnabled,
         results,
-        note: smtpEnabled ? 'Full SMTP probe used' : 'DNS-only mode (port 25 not yet available)',
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
