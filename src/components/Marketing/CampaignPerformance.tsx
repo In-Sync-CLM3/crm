@@ -12,7 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { LoadingState } from "@/components/common/LoadingState";
-import { Megaphone } from "lucide-react";
+import { Megaphone, Radio } from "lucide-react";
 
 interface CampaignPerformanceProps {
   days: number;
@@ -28,6 +28,7 @@ interface Campaign {
   actions: number;
   budget: number;
   spent: number;
+  isLive?: boolean;
 }
 
 function formatRupees(paise: number): string {
@@ -63,12 +64,20 @@ export function CampaignPerformance({ days }: CampaignPerformanceProps) {
     queryFn: async () => {
       if (!effectiveOrgId) return [];
 
-      const [analyticsRes, metaRes] = await Promise.all([
+      const [analyticsRes, metaRes, liveLogRes] = await Promise.all([
         supabase.rpc("get_all_campaigns_analytics", { p_org_id: effectiveOrgId }),
         supabase
           .from("mkt_campaigns")
           .select("id, campaign_type, budget, budget_spent")
           .eq("org_id", effectiveOrgId),
+        supabase
+          .from("mkt_engine_logs")
+          .select("details")
+          .eq("function_name", "mkt-sequence-executor")
+          .eq("action", "executor-start")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
       ]);
 
       if (analyticsRes.error) throw analyticsRes.error;
@@ -77,6 +86,7 @@ export function CampaignPerformance({ days }: CampaignPerformanceProps) {
       const metaMap = new Map(
         ((metaRes.data ?? []) as Array<Record<string, unknown>>).map((c) => [c.id, c])
       );
+      const liveCampaignId = (liveLogRes.data?.details as Record<string, unknown> | null)?.active_campaign as string | undefined;
 
       return analytics.map((row) => {
         const meta = metaMap.get(row.campaign_id as string) as Record<string, unknown> | undefined;
@@ -90,6 +100,7 @@ export function CampaignPerformance({ days }: CampaignPerformanceProps) {
           leads: (row.enrolled as number) ?? 0,
           enrollments: (row.active_enrollments as number) ?? 0,
           actions: ((row.sent as number) ?? 0) + ((row.failed as number) ?? 0),
+          isLive: row.campaign_id === liveCampaignId,
         } as Campaign;
       });
     },
@@ -137,8 +148,19 @@ export function CampaignPerformance({ days }: CampaignPerformanceProps) {
           <TableBody>
             {campaigns.map((campaign) => (
               <TableRow key={campaign.id}>
-                <TableCell className="text-xs font-medium max-w-[200px] truncate">
-                  {campaign.name}
+                <TableCell className="text-xs font-medium max-w-[200px]">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    {campaign.isLive && (
+                      <span className="relative flex-shrink-0 flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+                      </span>
+                    )}
+                    <span className="truncate">{campaign.name}</span>
+                    {campaign.isLive && (
+                      <span className="flex-shrink-0 text-[9px] font-bold text-green-600 uppercase tracking-wide">Live</span>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell className="text-xs capitalize">
                   {campaign.type}
