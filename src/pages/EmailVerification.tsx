@@ -49,7 +49,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.
 };
 
 const EmailVerification = () => {
-  const { orgId } = useOrgContext();
+  const { effectiveOrgId: orgId } = useOrgContext();
   const notify = useNotification();
   const [running, setRunning] = useState(false);
 
