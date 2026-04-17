@@ -409,6 +409,11 @@ export default function Dashboard() {
         deals: r.deals || 0,
         invoiced: r.invoiced || 0,
         received: r.received || 0,
+        invoiced_invoice_ids: r.invoiced_invoice_ids || [],
+        received_invoice_ids: r.received_invoice_ids || [],
+        qualified_contact_ids: r.qualified_contact_ids || [],
+        proposal_contact_ids: r.proposal_contact_ids || [],
+        deal_contact_ids: r.deal_contact_ids || [],
       }));
       const annual_totals = monthly_actuals.reduce(
         (acc: any, m: any) => ({
