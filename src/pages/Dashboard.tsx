@@ -209,22 +209,22 @@ export default function Dashboard() {
     queryKey: ["invoiced-stats", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
-      
+
       const { data, error } = await supabase
         .from("client_invoices")
         .select(`
-          amount, 
+          amount,
           tax_amount,
-          status, 
-          due_date, 
-          document_type, 
+          status,
+          due_date,
+          document_type,
           invoice_date,
           clients(first_name, last_name, company)
         `)
         .eq("org_id", effectiveOrgId)
         .gte("invoice_date", format(dateRange.from, "yyyy-MM-dd"))
         .lte("invoice_date", format(dateRange.to, "yyyy-MM-dd"));
-      
+
       if (error) throw error;
       return data || [];
     },
@@ -236,13 +236,13 @@ export default function Dashboard() {
     queryKey: ["payments-stats", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
-      
+
       const { data, error } = await supabase
         .from("client_invoices")
         .select(`
-          amount, 
-          status, 
-          document_type, 
+          amount,
+          status,
+          document_type,
           invoice_date,
           payment_received_date,
           tax_amount,
@@ -256,17 +256,73 @@ export default function Dashboard() {
         .not("payment_received_date", "is", null)
         .gte("payment_received_date", format(dateRange.from, "yyyy-MM-dd"))
         .lte("payment_received_date", format(dateRange.to, "yyyy-MM-dd"));
-      
+
       if (error) throw error;
       return data || [];
     },
     enabled: !!effectiveOrgId,
   });
 
-  const revenueLoading = invoicedLoading || paymentsLoading;
+  // Fetch billing_documents (proforma + tax invoices) for the date range
+  const { data: billingDocsData, isLoading: billingDocsLoading } = useQuery({
+    queryKey: ["billing-docs-revenue", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
+    queryFn: async () => {
+      if (!effectiveOrgId) throw new Error("No organization context");
 
-  // Combined revenue data for charts (using invoiced data)
-  const revenueData = invoicedData;
+      const { data, error } = await supabase
+        .from("billing_documents")
+        .select("id, doc_number, doc_type, doc_date, client_name, total_amount, total_tax, subtotal, amount_paid, balance_due, status")
+        .eq("org_id", effectiveOrgId)
+        .in("doc_type", ["invoice", "proforma"])
+        .not("status", "in", '("draft","cancelled")')
+        .gte("doc_date", format(dateRange.from, "yyyy-MM-dd"))
+        .lte("doc_date", format(dateRange.to, "yyyy-MM-dd"));
+
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!effectiveOrgId,
+  });
+
+  // Fetch paid billing_documents for payments stats
+  const { data: billingDocsPaidData, isLoading: billingDocsPaidLoading } = useQuery({
+    queryKey: ["billing-docs-paid-revenue", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
+    queryFn: async () => {
+      if (!effectiveOrgId) throw new Error("No organization context");
+
+      const { data, error } = await supabase
+        .from("billing_documents")
+        .select("id, doc_number, doc_type, doc_date, client_name, total_amount, total_tax, subtotal, amount_paid, balance_due, status")
+        .eq("org_id", effectiveOrgId)
+        .in("doc_type", ["invoice", "proforma"])
+        .eq("status", "paid")
+        .gte("doc_date", format(dateRange.from, "yyyy-MM-dd"))
+        .lte("doc_date", format(dateRange.to, "yyyy-MM-dd"));
+
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!effectiveOrgId,
+  });
+
+  const revenueLoading = invoicedLoading || paymentsLoading || billingDocsLoading || billingDocsPaidLoading;
+
+  // Combined revenue data for charts (using invoiced data + billing docs)
+  const revenueData = useMemo(() => {
+    const clientInvoices = invoicedData || [];
+    const billingDocs = (billingDocsData || []).map((d: any) => ({
+      amount: d.subtotal || 0,
+      tax_amount: d.total_tax || 0,
+      status: d.status,
+      due_date: null,
+      document_type: d.doc_type === "proforma" ? "quotation" : "invoice",
+      invoice_date: d.doc_date,
+      invoice_number: d.doc_number,
+      clients: { company: d.client_name, first_name: d.client_name, last_name: "" },
+      _source: "billing",
+    }));
+    return [...clientInvoices, ...billingDocs];
+  }, [invoicedData, billingDocsData]);
 
   // Fetch all-time GST collected + GST paid to dept in a single combined query
   const { data: gstSummary } = useQuery({
@@ -458,11 +514,12 @@ export default function Dashboard() {
   }, [allPaidInvoicesGst, gstPaymentTracking]);
 
   // Process revenue stats - invoiced/pending from invoice_date, payments from payment_received_date
+  // Includes both client_invoices and billing_documents
   const revenueStats: RevenueStats = useMemo(() => {
-    
-    // Calculate Total Invoiced and Pending from invoices by invoice_date (including quotations)
+
+    // Calculate Total Invoiced and Pending from client_invoices by invoice_date
     const invoicesOnly = invoicedData || [];
-    
+
     let totalInvoiced = 0;
     let totalPending = 0;
 
@@ -471,15 +528,26 @@ export default function Dashboard() {
       const taxAmount = invoice.tax_amount || 0;
       const totalAmount = amount + taxAmount;
       totalInvoiced += totalAmount;
-      
+
       if (invoice.status !== "paid") {
         totalPending += totalAmount;
       }
     });
 
-    // Calculate Payments Received, GST, and TDS from payments by payment_received_date (including quotations)
+    // Add billing_documents totals (proforma + tax invoices)
+    const billingDocs = billingDocsData || [];
+    billingDocs.forEach((doc: any) => {
+      const totalAmount = doc.total_amount || 0;
+      totalInvoiced += totalAmount;
+
+      if (doc.status !== "paid") {
+        totalPending += totalAmount;
+      }
+    });
+
+    // Calculate Payments Received, GST, and TDS from payments by payment_received_date
     const paidInvoices = paymentsData || [];
-    
+
     let totalReceived = 0;
     let totalGST = 0;
     let totalTDS = 0;
@@ -487,20 +555,27 @@ export default function Dashboard() {
     paidInvoices.forEach((invoice: any) => {
       const taxAmount = invoice.tax_amount || 0;
       const tdsAmount = invoice.tds_amount || 0;
-      
+
       totalGST += taxAmount;
       totalTDS += tdsAmount;
 
       // Use actual payment received if set, otherwise calculate
       const amount = invoice.amount || 0;
-      const actualReceived = invoice.actual_payment_received || 
-                            invoice.net_received_amount || 
+      const actualReceived = invoice.actual_payment_received ||
+                            invoice.net_received_amount ||
                             (amount + taxAmount - tdsAmount);
       totalReceived += actualReceived;
     });
 
+    // Add paid billing_documents to received
+    const billingDocsPaid = billingDocsPaidData || [];
+    billingDocsPaid.forEach((doc: any) => {
+      totalReceived += doc.amount_paid || doc.total_amount || 0;
+      totalGST += doc.total_tax || 0;
+    });
+
     return { totalInvoiced, totalReceived, totalPending, totalGST, totalTDS, dueToDept };
-  }, [invoicedData, paymentsData, dueToDept]);
+  }, [invoicedData, paymentsData, billingDocsData, billingDocsPaidData, dueToDept]);
 
   // Process monthly revenue data by client for trend chart
   const { clientRevenueData, uniqueClients } = useMemo(() => {
@@ -905,6 +980,8 @@ export default function Dashboard() {
     await queryClient.invalidateQueries({ queryKey: ["whatsapp-campaigns-activity"] });
     await queryClient.invalidateQueries({ queryKey: ["sms-campaigns-activity"] });
     await queryClient.invalidateQueries({ queryKey: ["call-logs-activity"] });
+    await queryClient.invalidateQueries({ queryKey: ["billing-docs-revenue"] });
+    await queryClient.invalidateQueries({ queryKey: ["billing-docs-paid-revenue"] });
     setIsRefreshing(false);
   };
 
@@ -921,8 +998,8 @@ export default function Dashboard() {
 
   // Get invoices for revenue card dialog based on card type
   const getRevenueCardInvoices = useMemo(() => {
-    if (!invoicedData && !paymentsData) return [];
-    
+    if (!invoicedData && !paymentsData && !billingDocsData) return [];
+
     const mapInvoice = (inv: any) => ({
       id: inv.id,
       invoice_number: inv.invoice_number,
@@ -935,21 +1012,42 @@ export default function Dashboard() {
       clientName: inv.clients?.company || `${inv.clients?.first_name || ''} ${inv.clients?.last_name || ''}`.trim() || 'Unknown',
     });
 
+    const mapBillingDoc = (doc: any) => ({
+      id: doc.id,
+      invoice_number: doc.doc_number,
+      amount: doc.subtotal || 0,
+      status: doc.status,
+      invoice_date: doc.doc_date,
+      payment_received_date: doc.status === "paid" ? doc.doc_date : null,
+      tax_amount: doc.total_tax || 0,
+      tds_amount: 0,
+      clientName: doc.client_name || 'Unknown',
+    });
+
+    const billingDocs = billingDocsData || [];
+    const billingDocsPaid = billingDocsPaidData || [];
+
     switch (selectedCardType) {
       case "invoiced":
-        return (invoicedData || []).map(mapInvoice);
+        return [...(invoicedData || []).map(mapInvoice), ...billingDocs.map(mapBillingDoc)];
       case "received":
-        return (paymentsData || []).map(mapInvoice);
+        return [...(paymentsData || []).map(mapInvoice), ...billingDocsPaid.map(mapBillingDoc)];
       case "pending":
-        return (invoicedData || []).filter((inv: any) => inv.status !== "paid").map(mapInvoice);
+        return [
+          ...(invoicedData || []).filter((inv: any) => inv.status !== "paid").map(mapInvoice),
+          ...billingDocs.filter((d: any) => d.status !== "paid").map(mapBillingDoc),
+        ];
       case "gst":
-        return (paymentsData || []).filter((inv: any) => (inv.tax_amount || 0) > 0).map(mapInvoice);
+        return [
+          ...(paymentsData || []).filter((inv: any) => (inv.tax_amount || 0) > 0).map(mapInvoice),
+          ...billingDocsPaid.filter((d: any) => (d.total_tax || 0) > 0).map(mapBillingDoc),
+        ];
       case "tds":
         return (paymentsData || []).filter((inv: any) => (inv.tds_amount || 0) > 0).map(mapInvoice);
       default:
         return [];
     }
-  }, [selectedCardType, invoicedData, paymentsData]);
+  }, [selectedCardType, invoicedData, paymentsData, billingDocsData, billingDocsPaidData]);
 
   // Format currency in Indian format
   const formatCurrency = (amount: number) => {
