@@ -89,8 +89,8 @@ export function DashboardGSTSection({ dateRange }: DashboardGSTSectionProps) {
   const [paymentReference, setPaymentReference] = useState("");
   const [paymentNotes, setPaymentNotes] = useState("");
 
-  // Fetch invoices
-  const { data: invoices, isLoading } = useQuery({
+  // Fetch client invoices
+  const { data: clientInvoices, isLoading: clientInvLoading } = useQuery({
     queryKey: ["gst-invoices", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
     queryFn: async () => {
       if (!effectiveOrgId) return [];
@@ -105,15 +105,59 @@ export function DashboardGSTSection({ dateRange }: DashboardGSTSectionProps) {
         .gte("invoice_date", format(dateRange.from, "yyyy-MM-dd"))
         .lte("invoice_date", format(dateRange.to, "yyyy-MM-dd"))
         .order("invoice_date", { ascending: false });
-      
+
       if (error) throw error;
       return data || [];
     },
     enabled: !!effectiveOrgId,
   });
 
+  // Fetch billing_documents (proforma + tax invoices) for the date range
+  const { data: billingDocs, isLoading: billingDocsLoading } = useQuery({
+    queryKey: ["gst-billing-docs", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
+    queryFn: async () => {
+      if (!effectiveOrgId) return [];
+      const { data, error } = await supabase
+        .from("billing_documents")
+        .select("id, doc_number, doc_type, doc_date, client_name, total_amount, total_tax, subtotal, amount_paid, balance_due, status")
+        .eq("org_id", effectiveOrgId)
+        .in("doc_type", ["invoice", "proforma"])
+        .not("status", "in", '("draft","cancelled")')
+        .gte("doc_date", format(dateRange.from, "yyyy-MM-dd"))
+        .lte("doc_date", format(dateRange.to, "yyyy-MM-dd"))
+        .order("doc_date", { ascending: false });
+
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!effectiveOrgId,
+  });
+
+  const isLoading = clientInvLoading || billingDocsLoading;
+
+  // Merge client_invoices and billing_documents into a unified format
+  const invoices = useMemo(() => {
+    const mapped = (billingDocs || []).map((d: any) => ({
+      id: d.id,
+      invoice_number: d.doc_number,
+      invoice_date: d.doc_date,
+      amount: d.subtotal || 0,
+      tax_amount: d.total_tax || 0,
+      tds_amount: 0,
+      status: d.status,
+      payment_received_date: d.status === "paid" ? d.doc_date : null,
+      actual_payment_received: d.status === "paid" ? d.total_amount : null,
+      net_received_amount: null,
+      due_date: null,
+      document_type: d.doc_type === "proforma" ? "proforma" : "invoice",
+      client: { first_name: d.client_name, last_name: "", company: d.client_name },
+      _source: "billing",
+    }));
+    return [...(clientInvoices || []), ...mapped];
+  }, [clientInvoices, billingDocs]);
+
   // Fetch ALL invoices for GST Pending to Dept (ignores date range)
-  const { data: allInvoices } = useQuery({
+  const { data: allClientInvoices } = useQuery({
     queryKey: ["all-gst-invoices", effectiveOrgId],
     queryFn: async () => {
       if (!effectiveOrgId) return [];
@@ -127,12 +171,52 @@ export function DashboardGSTSection({ dateRange }: DashboardGSTSectionProps) {
         .neq("document_type", "quotation")
         .eq("status", "paid")
         .order("invoice_date", { ascending: false });
-      
+
       if (error) throw error;
       return data || [];
     },
     enabled: !!effectiveOrgId,
   });
+
+  // Fetch ALL paid billing_documents for GST Pending to Dept (ignores date range)
+  const { data: allBillingDocsPaid } = useQuery({
+    queryKey: ["all-gst-billing-docs", effectiveOrgId],
+    queryFn: async () => {
+      if (!effectiveOrgId) return [];
+      const { data, error } = await supabase
+        .from("billing_documents")
+        .select("id, doc_number, doc_type, doc_date, client_name, total_amount, total_tax, subtotal, amount_paid, balance_due, status")
+        .eq("org_id", effectiveOrgId)
+        .in("doc_type", ["invoice", "proforma"])
+        .eq("status", "paid")
+        .order("doc_date", { ascending: false });
+
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!effectiveOrgId,
+  });
+
+  // Merge all paid invoices from both sources
+  const allInvoices = useMemo(() => {
+    const mapped = (allBillingDocsPaid || []).map((d: any) => ({
+      id: d.id,
+      invoice_number: d.doc_number,
+      invoice_date: d.doc_date,
+      amount: d.subtotal || 0,
+      tax_amount: d.total_tax || 0,
+      tds_amount: 0,
+      status: "paid",
+      payment_received_date: d.doc_date,
+      actual_payment_received: d.total_amount,
+      net_received_amount: null,
+      due_date: null,
+      document_type: d.doc_type === "proforma" ? "proforma" : "invoice",
+      client: { first_name: d.client_name, last_name: "", company: d.client_name },
+      _source: "billing",
+    }));
+    return [...(allClientInvoices || []), ...mapped];
+  }, [allClientInvoices, allBillingDocsPaid]);
 
   // Fetch GST payment tracking records
   const { data: gstPayments } = useQuery({

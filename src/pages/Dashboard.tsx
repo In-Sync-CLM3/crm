@@ -330,8 +330,8 @@ export default function Dashboard() {
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
 
-      // Fetch both in parallel instead of 2 sequential queries
-      const [invoicesResult, trackingResult] = await Promise.all([
+      // Fetch all sources in parallel
+      const [invoicesResult, billingDocsResult, trackingResult] = await Promise.all([
         supabase
           .from("client_invoices")
           .select("tax_amount")
@@ -339,16 +339,26 @@ export default function Dashboard() {
           .eq("status", "paid")
           .neq("document_type", "quotation"),
         supabase
+          .from("billing_documents")
+          .select("total_tax")
+          .eq("org_id", effectiveOrgId)
+          .in("doc_type", ["invoice", "proforma"])
+          .eq("status", "paid"),
+        supabase
           .from("gst_payment_tracking")
           .select("amount_paid, payment_status")
           .eq("org_id", effectiveOrgId),
       ]);
 
       if (invoicesResult.error) throw invoicesResult.error;
+      if (billingDocsResult.error) throw billingDocsResult.error;
       if (trackingResult.error) throw trackingResult.error;
 
+      // Merge billing_documents GST into the same format
+      const billingGst = (billingDocsResult.data || []).map((d: any) => ({ tax_amount: d.total_tax || 0 }));
+
       return {
-        allPaidInvoicesGst: invoicesResult.data || [],
+        allPaidInvoicesGst: [...(invoicesResult.data || []), ...billingGst],
         gstPaymentTracking: trackingResult.data || [],
       };
     },
