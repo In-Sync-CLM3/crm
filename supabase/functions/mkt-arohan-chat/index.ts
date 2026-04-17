@@ -19,7 +19,7 @@ interface ConversationMessage {
 }
 
 interface SuggestionPayload {
-  type: 'icp_update' | 'campaign_launch' | 'campaign_pause' | 'campaign_resume' | 'regenerate_step' | 'none';
+  type: 'icp_update' | 'campaign_launch' | 'campaign_pause' | 'campaign_resume' | 'regenerate_step' | 'linkedin_post_now' | 'none';
   product_key?: string;
   step_name?: string;
   field?: string;
@@ -191,7 +191,9 @@ async function loadContext(
   orgId: string,
   threadId: string,
 ) {
-  const [productsRes, icpsRes, campaignsRes, pendingRes, historyRes, waTemplatesRes] = await Promise.all([
+  const today = new Date().toISOString().split('T')[0];
+
+  const [productsRes, icpsRes, campaignsRes, analyticsRes, enrollmentStatsRes, todaySendsRes, contactFunnelRes, pendingRes, historyRes, waTemplatesRes, linkedinRes, recentBlogsRes, liveLogRes] = await Promise.all([
     supabase
       .from('mkt_products')
       .select('product_key, product_name, active, onboarding_status, product_url, schema_map, trial_days')
@@ -203,11 +205,30 @@ async function loadContext(
 
     supabase
       .from('mkt_campaigns')
-      .select('name, product_key, status, channel, total_leads, converted_count')
+      .select('id, name, product_key, status, channel, sequence_priority')
       .eq('org_id', orgId)
-      .in('status', ['active', 'paused'])
-      .order('created_at', { ascending: false })
-      .limit(10),
+      .order('sequence_priority', { ascending: true, nullsFirst: false }),
+
+    supabase.rpc('get_all_campaigns_analytics', { p_org_id: orgId }),
+
+    // Enrollment counts by campaign and status
+    supabase
+      .from('mkt_sequence_enrollments')
+      .select('campaign_id, status')
+      .eq('org_id', orgId),
+
+    // Today's sends by channel
+    supabase
+      .from('mkt_sequence_actions')
+      .select('campaign_id, channel, status')
+      .eq('org_id', orgId)
+      .gte('created_at', `${today}T00:00:00Z`),
+
+    // Contact funnel counts
+    supabase
+      .from('contacts')
+      .select('status')
+      .eq('org_id', orgId),
 
     supabase
       .from('mkt_arohan_conversations')
@@ -232,6 +253,33 @@ async function loadContext(
       .eq('org_id', orgId)
       .order('created_at', { ascending: false })
       .limit(20),
+
+    // LinkedIn blog engine state
+    supabase
+      .from('mkt_linkedin_config')
+      .select('start_date, experiment_complete, winning_slot, last_posted_date, last_posted_slot_index, last_posted_product_key, experiment_slots, active')
+      .eq('org_id', orgId)
+      .eq('active', true)
+      .maybeSingle(),
+
+    // 5 most recent LinkedIn posts with engagement
+    supabase
+      .from('blog_posts')
+      .select('blog_title, product_key, publish_date, linkedin_slot_index, linkedin_cycle, linkedin_likes, linkedin_comments, linkedin_reposts, linkedin_engagement_score')
+      .eq('org_id', orgId)
+      .not('linkedin_post_urn', 'is', null)
+      .order('publish_date', { ascending: false })
+      .limit(5),
+
+    // Currently live campaign from executor logs
+    supabase
+      .from('mkt_engine_logs')
+      .select('details')
+      .eq('function_name', 'mkt-sequence-executor')
+      .eq('action', 'executor-start')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ]);
 
   const products = (productsRes.data || []) as Array<{
@@ -248,14 +296,59 @@ async function loadContext(
     }))
   );
 
+  // Build enrollment stats map: campaign_id → { active, paused, completed, total }
+  const enrollmentMap = new Map<string, Record<string, number>>();
+  for (const row of (enrollmentStatsRes.data || []) as Array<{ campaign_id: string; status: string }>) {
+    if (!enrollmentMap.has(row.campaign_id)) enrollmentMap.set(row.campaign_id, {});
+    const m = enrollmentMap.get(row.campaign_id)!;
+    m[row.status] = (m[row.status] || 0) + 1;
+    m['total'] = (m['total'] || 0) + 1;
+  }
+
+  // Build today's sends map: campaign_id → { sent, delivered, bounced, ... }
+  const todaySendsMap = new Map<string, Record<string, number>>();
+  for (const row of (todaySendsRes.data || []) as Array<{ campaign_id: string; channel: string; status: string }>) {
+    if (!todaySendsMap.has(row.campaign_id)) todaySendsMap.set(row.campaign_id, {});
+    const m = todaySendsMap.get(row.campaign_id)!;
+    m[row.status] = (m[row.status] || 0) + 1;
+    m['total'] = (m['total'] || 0) + 1;
+  }
+
+  // Contact funnel counts
+  const funnelCounts: Record<string, number> = {};
+  for (const row of (contactFunnelRes.data || []) as Array<{ status: string }>) {
+    const s = row.status || 'unknown';
+    funnelCounts[s] = (funnelCounts[s] || 0) + 1;
+  }
+
+  // Analytics keyed by campaign_id
+  const analyticsMap = new Map<string, Record<string, unknown>>();
+  for (const row of (analyticsRes.data || []) as Array<Record<string, unknown>>) {
+    analyticsMap.set(row.campaign_id as string, row);
+  }
+
+  const liveCampaignId = (liveLogRes.data?.details as Record<string, unknown> | null)?.active_campaign as string | undefined;
+
   return {
     products,
     icps: (icpsRes.data || []) as ICPRow[],
     campaigns: campaignsRes.data || [],
+    analyticsMap,
+    enrollmentMap,
+    todaySendsMap,
+    funnelCounts,
+    liveCampaignId,
     pendingSuggestions: pendingRes.data || [],
     threadHistory: (historyRes.data || []) as Array<{ role: string; message: string }>,
     waTemplates: (waTemplatesRes.data || []) as Array<{ name: string; template_name: string; approval_status: string; submission_error: string | null }>,
     landingPages,
+    linkedinConfig: linkedinRes.data ?? null,
+    recentBlogs: (recentBlogsRes.data || []) as Array<{
+      blog_title: string; product_key: string | null; publish_date: string;
+      linkedin_slot_index: number | null; linkedin_cycle: number | null;
+      linkedin_likes: number; linkedin_comments: number; linkedin_reposts: number;
+      linkedin_engagement_score: number | null;
+    }>,
   };
 }
 
@@ -306,6 +399,8 @@ Type guide:
 - "regenerate_step": user wants to regenerate/redo/recreate a step output
   → set step_name to: whatsapp_templates, email_templates, call_scripts, icp_infer, campaign_create, source_leads
   → set product_key if mentioned
+- "linkedin_post_now": user wants to immediately post a LinkedIn article for a product (bypasses the scheduled slot)
+  → set product_key to the product they mentioned (or null to use next in rotation)
 - "none": informational question or general conversation
 
 IMPORTANT: If the current message is a short confirmation ("Yes", "Ok", "Sure", "Go ahead", "Do it") and the previous Arohan message proposed specific changes — treat this as confirmation of those changes and extract the full action from context.
@@ -327,6 +422,42 @@ If not a suggestion, set is_suggestion to false and suggestion_payload to null.`
 // System Prompt Builder
 // ---------------------------------------------------------------------------
 
+function buildLinkedInSection(context: Awaited<ReturnType<typeof loadContext>>): string {
+  const cfg = context.linkedinConfig;
+  if (!cfg) return '## LinkedIn Blog Engine\nNot configured.';
+
+  const slots = cfg.experiment_slots as string[];
+  const start = new Date(cfg.start_date);
+  const today = new Date();
+  const daysSinceStart = Math.max(0, Math.floor((today.getTime() - start.getTime()) / 86_400_000));
+  const cycleDay = (daysSinceStart % 9) + 1;
+  const currentCycle = Math.floor(daysSinceStart / 9) + 1;
+  const todaySlot = cfg.experiment_complete && cfg.winning_slot
+    ? cfg.winning_slot
+    : slots[daysSinceStart % 9];
+
+  const blogLines = context.recentBlogs.length
+    ? context.recentBlogs.map((b) =>
+        `• [${b.publish_date}] ${b.blog_title} (${b.product_key ?? '?'}) — ` +
+        `slot ${b.linkedin_slot_index ?? '?'} cycle ${b.linkedin_cycle ?? '?'} | ` +
+        `👍${b.linkedin_likes} 💬${b.linkedin_comments} 🔁${b.linkedin_reposts} score=${b.linkedin_engagement_score ?? 0}`
+      ).join('\n')
+    : 'No posts yet.';
+
+  const experimentStatus = cfg.experiment_complete
+    ? `COMPLETE — winning slot: ${cfg.winning_slot} IST (locked in permanently)`
+    : `IN PROGRESS — Day ${daysSinceStart + 1}/27 (Cycle ${currentCycle}/3, day ${cycleDay}/9 within cycle) | Today's slot: ${todaySlot} IST`;
+
+  return `## LinkedIn Blog Engine (Arohan Channel)
+Experiment: ${experimentStatus}
+Last posted: ${cfg.last_posted_date ?? 'never'} | Product: ${cfg.last_posted_product_key ?? 'n/a'}
+
+Recent Posts & Engagement:
+${blogLines}
+
+You can trigger an immediate post for any product: just tell Amit "I'll post for [product] now" and classify as linkedin_post_now.`;
+}
+
 function buildSystemPrompt(
   context: Awaited<ReturnType<typeof loadContext>>,
 ): string {
@@ -342,10 +473,31 @@ function buildSystemPrompt(
   ).join('\n\n') || 'No ICPs available yet.';
 
   const campaignLines = context.campaigns.length
-    ? context.campaigns.map((c) =>
-        `• ${c.name} [${c.channel || 'unknown'}, ${c.status}]: ${c.total_leads ?? 0} leads → ${c.converted_count ?? 0} converted`
-      ).join('\n')
-    : 'No active campaigns.';
+    ? context.campaigns.map((c: Record<string, unknown>) => {
+        const cid = c.id as string;
+        const a = context.analyticsMap.get(cid) as Record<string, unknown> | undefined;
+        const e = context.enrollmentMap.get(cid) || {};
+        const t = context.todaySendsMap.get(cid) || {};
+        const isLive = cid === context.liveCampaignId;
+        const sent    = (a?.sent    as number ?? 0);
+        const delivered = (a?.delivered as number ?? 0);
+        const opened  = (a?.opened  as number ?? 0);
+        const replied = (a?.replied as number ?? 0);
+        const bounced = (a?.bounced as number ?? 0);
+        const converted = (a?.converted as number ?? 0);
+        const enrolled  = (a?.enrolled  as number ?? 0);
+        const openRate  = sent > 0 ? `${Math.round(opened / sent * 100)}%` : '—';
+        const delivRate = sent > 0 ? `${Math.round(delivered / sent * 100)}%` : '—';
+        const todayCount = t['total'] || 0;
+        const liveTag = isLive ? ' 🟢 LIVE NOW' : '';
+        return [
+          `• ${c.name as string} [${c.channel as string || 'unknown'}, ${c.status as string}]${liveTag}`,
+          `  Enrolled: ${enrolled.toLocaleString()} | Active: ${e['active'] || 0} | Completed: ${e['completed'] || 0}`,
+          `  All-time: ${sent.toLocaleString()} sent → ${delivRate} delivered → ${openRate} opened → ${replied} replied → ${converted} converted`,
+          `  Bounced: ${bounced} | Today's sends: ${todayCount}`,
+        ].join('\n');
+      }).join('\n\n')
+    : 'No campaigns found.';
 
   const pendingLines = context.pendingSuggestions.length
     ? context.pendingSuggestions.map((s) => `• "${s.message}"`).join('\n')
@@ -409,6 +561,10 @@ ${landingPageLines}
 ## Active Products & Current ICPs
 ${icpLines}
 
+## Contact Funnel (all contacts in database)
+${Object.entries(context.funnelCounts).map(([s, n]) => `• ${s}: ${(n as number).toLocaleString()}`).join('\n') || 'No contacts yet.'}
+Total: ${Object.values(context.funnelCounts).reduce((a, b) => (a as number) + (b as number), 0).toLocaleString()} contacts
+
 ## Active Campaigns
 ${campaignLines}
 
@@ -418,6 +574,8 @@ ${waLines}
 ## Pending Suggestions (not yet applied)
 ${pendingLines}
 
+${buildLinkedInSection(context)}
+
 ## Actions you can take
 - Update an ICP field (industries, designations, company_sizes, geographies, pain_points)
 - Launch a campaign: enroll all eligible leads and start sending immediately
@@ -425,6 +583,8 @@ ${pendingLines}
 - Resume a campaign: restart paused enrollments
 - Regenerate a step: whatsapp_templates, email_templates, call_scripts, icp_infer, campaign_create, source_leads
   → When Amit asks to redo/recreate/regenerate any of these, you will trigger it automatically.
+- Post to LinkedIn now for a product: classify as linkedin_post_now with the product_key
+  → Bypasses the scheduled time — useful for manual overrides or testing
 
 ## CRITICAL: How your actions work
 - You ARE wired to the database. When Amit confirms a change, the system executes it automatically — a green badge appears in the UI confirming it ran.
@@ -589,7 +749,7 @@ async function applyLaunchCampaign(
       .from('mkt_campaigns')
       .select('id, status')
       .eq('org_id', orgId)
-      .contains('metadata', { product_key: payload.product_key })
+      .eq('product_key', payload.product_key)
       .limit(1)
       .maybeSingle();
 
@@ -679,7 +839,7 @@ async function applyCampaignPause(
       .from('mkt_campaigns')
       .select('id')
       .eq('org_id', orgId)
-      .contains('metadata', { product_key: payload.product_key })
+      .eq('product_key', payload.product_key)
       .limit(1)
       .maybeSingle();
 
@@ -717,7 +877,7 @@ async function applyCampaignResume(
       .from('mkt_campaigns')
       .select('id')
       .eq('org_id', orgId)
-      .contains('metadata', { product_key: payload.product_key })
+      .eq('product_key', payload.product_key)
       .limit(1)
       .maybeSingle();
 
@@ -884,6 +1044,18 @@ Deno.serve(async (req: Request) => {
             details: { product_key: sp.product_key, step_name },
           });
         }
+      } else if (sp.type === 'linkedin_post_now') {
+        const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+        const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+        fetch(`${supabaseUrl}/functions/v1/mkt-blog-writer`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ force: true, product_key: sp.product_key ?? null }),
+        }).catch(() => {});
+        actionsTriggered.push({
+          type: 'linkedin_post_now',
+          details: { product_key: sp.product_key ?? 'next in rotation' },
+        });
       }
 
       if (actionsTriggered.length > 0 && amitRow?.id) {
