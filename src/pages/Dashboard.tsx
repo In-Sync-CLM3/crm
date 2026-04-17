@@ -274,7 +274,7 @@ export default function Dashboard() {
         .select("id, doc_number, doc_type, doc_date, client_name, total_amount, total_tax, subtotal, amount_paid, balance_due, status")
         .eq("org_id", effectiveOrgId)
         .in("doc_type", ["invoice", "proforma"])
-        .not("status", "in", '("draft","cancelled")')
+        .not("status", "in", "(draft,cancelled)")
         .gte("doc_date", format(dateRange.from, "yyyy-MM-dd"))
         .lte("doc_date", format(dateRange.to, "yyyy-MM-dd"));
 
