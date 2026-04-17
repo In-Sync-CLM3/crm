@@ -121,11 +121,12 @@ export default function BillingSystem() {
     if (viewDocId === id) setViewDocId(null);
   }, [deleteDocument, viewDocId]);
 
-  const handleSaveDoc = useCallback((doc: BillingDocument) => {
+  const handleSaveDoc = useCallback(async (doc: BillingDocument): Promise<{ success: boolean; error?: string }> => {
     if (editDoc) {
-      updateDocument(doc.id, doc);
+      await updateDocument(doc.id, doc);
+      return { success: true };
     } else {
-      addDocument(doc);
+      return await addDocument(doc);
     }
   }, [editDoc, updateDocument, addDocument]);
 

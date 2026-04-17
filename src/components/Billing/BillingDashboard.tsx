@@ -25,31 +25,31 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
   const invoices = useMemo(() => documents.filter(d => d.doc_type === "invoice"), [documents]);
   const creditNotes = useMemo(() => documents.filter(d => d.doc_type === "credit_note"), [documents]);
 
-  // Revenue = paid invoices + sent/paid proformas (proformas represent confirmed business)
+  // Revenue = paid invoices + paid proformas
   const totalRevenue = useMemo(() =>
-    invoices.filter(d => d.status === "paid").reduce((s, d) => s + d.total_amount, 0),
-  [invoices]);
+    billable.filter(d => d.status === "paid").reduce((s, d) => s + d.total_amount, 0),
+  [billable]);
 
   const outstanding = useMemo(() =>
-    invoices.filter(d => ["sent", "partially_paid"].includes(d.status)).reduce((s, d) => s + d.balance_due, 0),
-  [invoices]);
+    billable.filter(d => ["sent", "partially_paid"].includes(d.status)).reduce((s, d) => s + d.balance_due, 0),
+  [billable]);
 
   const overdue = useMemo(() =>
-    invoices.filter(d => d.status === "overdue").reduce((s, d) => s + d.balance_due, 0),
-  [invoices]);
+    billable.filter(d => d.status === "overdue").reduce((s, d) => s + d.balance_due, 0),
+  [billable]);
 
   const totalCreditNotes = useMemo(() =>
     creditNotes.reduce((s, d) => s + d.total_amount, 0),
   [creditNotes]);
 
-  // This month: invoices generated this month (exclude draft/cancelled)
+  // This month: all billable documents generated this month (exclude draft/cancelled)
   const thisMonthPrefix = useMemo(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   }, []);
   const thisMonthDocs = useMemo(() =>
-    invoices.filter(d => d.doc_date?.startsWith(thisMonthPrefix) && !["draft", "cancelled"].includes(d.status)),
-  [invoices, thisMonthPrefix]);
+    billable.filter(d => d.doc_date?.startsWith(thisMonthPrefix) && !["draft", "cancelled"].includes(d.status)),
+  [billable, thisMonthPrefix]);
   const thisMonth = useMemo(() =>
     thisMonthDocs.reduce((s, d) => s + d.total_amount, 0),
   [thisMonthDocs]);
@@ -89,20 +89,20 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
 
   // Document lists for each card dialog
   const cardDocMap = useMemo<Record<string, BillingDocument[]>>(() => ({
-    paid: invoices.filter(d => d.status === "paid"),
-    sent: invoices.filter(d => ["sent", "partially_paid"].includes(d.status)),
-    overdue: invoices.filter(d => d.status === "overdue"),
+    paid: billable.filter(d => d.status === "paid"),
+    sent: billable.filter(d => ["sent", "partially_paid"].includes(d.status)),
+    overdue: billable.filter(d => d.status === "overdue"),
     this_month: thisMonthDocs,
     credit_notes: creditNotes,
-  }), [invoices, thisMonthDocs, creditNotes]);
+  }), [billable, thisMonthDocs, creditNotes]);
 
   const [dialogCard, setDialogCard] = useState<string | null>(null);
   const dialogDocs = dialogCard ? (cardDocMap[dialogCard] || []) : [];
 
   const kpiCards = [
-    { label: "Total Revenue", value: formatCurrencyINR(totalRevenue), sub: "Paid invoices", icon: TrendingUp, color: "text-emerald-600", bg: "bg-emerald-50", filter: "paid" },
-    { label: "Outstanding", value: formatCurrencyINR(outstanding), sub: `${invoices.filter(d => ["sent", "partially_paid"].includes(d.status)).length} invoices`, icon: Clock, color: "text-amber-600", bg: "bg-amber-50", filter: "sent" },
-    { label: "Overdue", value: formatCurrencyINR(overdue), sub: `${invoices.filter(d => d.status === "overdue").length} invoices`, icon: AlertTriangle, color: "text-red-600", bg: "bg-red-50", filter: "overdue" },
+    { label: "Total Revenue", value: formatCurrencyINR(totalRevenue), sub: "Paid documents", icon: TrendingUp, color: "text-emerald-600", bg: "bg-emerald-50", filter: "paid" },
+    { label: "Outstanding", value: formatCurrencyINR(outstanding), sub: `${billable.filter(d => ["sent", "partially_paid"].includes(d.status)).length} documents`, icon: Clock, color: "text-amber-600", bg: "bg-amber-50", filter: "sent" },
+    { label: "Overdue", value: formatCurrencyINR(overdue), sub: `${billable.filter(d => d.status === "overdue").length} documents`, icon: AlertTriangle, color: "text-red-600", bg: "bg-red-50", filter: "overdue" },
     { label: "This Month", value: formatCurrencyINR(thisMonth), sub: thisMonthLabel, icon: IndianRupee, color: "text-blue-600", bg: "bg-blue-50", filter: "this_month" },
     { label: "Credit Notes", value: formatCurrencyINR(totalCreditNotes), sub: `${creditNotes.length} issued`, icon: FileX2, color: "text-red-600", bg: "bg-red-50", filter: "credit_notes" },
   ];
@@ -229,7 +229,7 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
               {kpiCards.find(c => c.filter === dialogCard)?.label} ({dialogDocs.length})
             </DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">
-              {dialogCard === "this_month" ? thisMonthLabel : "All matching invoices"}
+              {dialogCard === "this_month" ? thisMonthLabel : "All matching documents"}
             </DialogDescription>
           </DialogHeader>
           <div className="flex-1 overflow-auto">

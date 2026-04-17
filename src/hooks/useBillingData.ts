@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useOrgContext } from "@/hooks/useOrgContext";
+import { toast } from "sonner";
 import type {
   BillingDocument,
   BillingDocumentItem,
@@ -277,10 +278,32 @@ export function useBillingData() {
     setSettingsState(newSettings);
   };
 
+  // ─── Check if a document number already exists ───
+  const checkDuplicateDocNumber = async (docNumber: string, excludeId?: string): Promise<boolean> => {
+    if (!effectiveOrgId) return false;
+    let query = supabase
+      .from("billing_documents")
+      .select("id")
+      .eq("org_id", effectiveOrgId)
+      .eq("doc_number", docNumber);
+    if (excludeId) {
+      query = query.neq("id", excludeId);
+    }
+    const { data } = await query.maybeSingle();
+    return !!data;
+  };
+
   // ─── Document CRUD ───
-  const addDocument = useCallback(async (doc: BillingDocument) => {
-    if (!effectiveOrgId || busy) return;
+  const addDocument = useCallback(async (doc: BillingDocument): Promise<{ success: boolean; error?: string }> => {
+    if (!effectiveOrgId || busy) return { success: false, error: "Not ready" };
     const { items, client, ...docData } = doc as any;
+
+    // Check for duplicate document number
+    const isDuplicate = await checkDuplicateDocNumber(docData.doc_number);
+    if (isDuplicate) {
+      return { success: false, error: `Document number "${docData.doc_number}" already exists. Please use a different number or delete the existing document first.` };
+    }
+
     const row = {
       org_id: effectiveOrgId,
       doc_type: docData.doc_type,
@@ -305,7 +328,7 @@ export function useBillingData() {
     };
 
     const { data, error } = await supabase.from("billing_documents").insert(row).select().single();
-    if (error) { console.error("Error adding document:", error); return; }
+    if (error) { console.error("Error adding document:", error); return { success: false, error: "Failed to save document" }; }
 
     // Save items
     await saveItems(data.id, items || []);
@@ -315,6 +338,7 @@ export function useBillingData() {
     // Add to local state
     const newDoc: BillingDocument = { ...doc, id: data.id, org_id: effectiveOrgId, items: items || [] };
     setDocuments(prev => [newDoc, ...prev]);
+    return { success: true };
   }, [effectiveOrgId, settings]);
 
   const updateDocument = useCallback(async (id: string, updates: Partial<BillingDocument>) => {
@@ -364,11 +388,20 @@ export function useBillingData() {
       const prefix = targetType === "proforma" ? (currentSettings.proforma_prefix || "PI") : (currentSettings.invoice_prefix || "INV");
       const nextNum = targetType === "proforma" ? (currentSettings.next_proforma_number || 1) : (currentSettings.next_invoice_number || 1);
 
+      const newDocNumber = `${prefix}-${fy}-${String(nextNum).padStart(4, "0")}`;
+
+      // Check for duplicate document number
+      const isDuplicate = await checkDuplicateDocNumber(newDocNumber);
+      if (isDuplicate) {
+        toast.error(`Document number "${newDocNumber}" already exists. Please check billing settings.`);
+        return doc;
+      }
+
       const { items, client, id, ...docData } = doc as any;
       const row = {
         org_id: effectiveOrgId,
         doc_type: targetType,
-        doc_number: `${prefix}-${fy}-${String(nextNum).padStart(4, "0")}`,
+        doc_number: newDocNumber,
         client_id: docData.client_id || null,
         client_name: docData.client_name,
         client_billing_snapshot: client || null,

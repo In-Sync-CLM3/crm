@@ -18,7 +18,7 @@ interface BillingCreateDocumentProps {
   clients: BillingClient[];
   settings: BillingSettings;
   getNextDocNumber: (docType: BillingDocumentType) => string;
-  onSave: (doc: BillingDocument) => void;
+  onSave: (doc: BillingDocument) => Promise<{ success: boolean; error?: string }> | void;
   onBack: () => void;
   editDoc?: BillingDocument;
   onUpdateSettings?: (settings: BillingSettings) => void;
@@ -144,7 +144,10 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
   const addItem = () => setItems([...items, { description: "", hsn_sac: settings.default_hsn || "998314", qty: 1, unit: "Nos", rate: 0, discount: 0, tax_rate: settings.default_tax_rate || 18 }]);
   const removeItem = (idx: number) => items.length > 1 && setItems(items.filter((_, i) => i !== idx));
 
-  const handleSave = (status: "draft" | "sent") => {
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async (status: "draft" | "sent") => {
+    if (saving) return;
     const newDoc: BillingDocument = {
       id: editDoc?.id || `d${Date.now()}`,
       org_id: settings.org_id || "",
@@ -187,8 +190,19 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
       saveClientBillingDetails(form.client_id, billingDetails);
     }
 
-    onSave(newDoc);
-    onBack();
+    setSaving(true);
+    try {
+      const result = await onSave(newDoc);
+      if (result && !result.success) {
+        toast.error(result.error || "Failed to save document");
+        return;
+      }
+      onBack();
+    } catch {
+      toast.error("Failed to save document");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -419,9 +433,9 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
 
       {/* Actions */}
       <div className="flex items-center justify-end gap-3 pb-8">
-        <Button variant="outline" onClick={onBack}>Cancel</Button>
-        <Button variant="outline" className="inline-flex items-center gap-1.5" onClick={() => handleSave("draft")}><FileText className="h-4 w-4 shrink-0" />{isEdit ? "Update" : "Save as Draft"}</Button>
-        <Button className="inline-flex items-center gap-1.5" onClick={() => handleSave("sent")}><Mail className="h-4 w-4 shrink-0" />{isEdit ? "Update & Send" : "Save & Send"}</Button>
+        <Button variant="outline" onClick={onBack} disabled={saving}>Cancel</Button>
+        <Button variant="outline" className="inline-flex items-center gap-1.5" onClick={() => handleSave("draft")} disabled={saving}><FileText className="h-4 w-4 shrink-0" />{saving ? "Saving..." : isEdit ? "Update" : "Save as Draft"}</Button>
+        <Button className="inline-flex items-center gap-1.5" onClick={() => handleSave("sent")} disabled={saving}><Mail className="h-4 w-4 shrink-0" />{saving ? "Saving..." : isEdit ? "Update & Send" : "Save & Send"}</Button>
       </div>
     </div>
   );
