@@ -72,16 +72,41 @@ Deno.serve(async (req) => {
       );
     }
 
-    await logger.info('scoring-start', { lead_count: leads.length });
+    // Read score thresholds — single source of truth in mkt_engine_config
+    const configOrgId = targetOrgId || leads[0].org_id as string;
+    const { data: thresholdsRow } = await supabase
+      .from('mkt_engine_config')
+      .select('config_value')
+      .eq('org_id', configOrgId)
+      .eq('config_key', 'score_thresholds')
+      .maybeSingle();
+    const thresholds = (thresholdsRow?.config_value as Record<string, number> | null) ?? {};
+    const enrollmentMin: number = thresholds.enrollment_min ?? 40;
 
-    // Fetch ICP criteria for each campaign (batch to avoid N+1)
+    await logger.info('scoring-start', { lead_count: leads.length, enrollment_min: enrollmentMin });
+
+    // Fetch campaign metadata (batch to avoid N+1)
     const campaignIds = [...new Set(leads.map((l) => l.campaign_id).filter(Boolean))];
     const { data: campaigns } = await supabase
       .from('mkt_campaigns')
-      .select('id, icp_criteria, name, product_key')
+      .select('id, name, product_key')
       .in('id', campaignIds.length > 0 ? campaignIds : ['__none__']);
 
-    const campaignMap = new Map(campaigns?.map((c) => [c.id, c]) || []);
+    // Fetch ICP from mkt_product_icp — single source of truth
+    const productKeys = [...new Set((campaigns || []).map((c) => c.product_key).filter(Boolean))];
+    const { data: icpRows } = await supabase
+      .from('mkt_product_icp')
+      .select('product_key, industries, designations, company_sizes, geographies, languages, pain_points')
+      .in('product_key', productKeys.length > 0 ? productKeys : ['__none__'])
+      .order('version', { ascending: false });
+
+    // Keep latest version per product_key
+    const icpByProductKey = new Map<string, Record<string, unknown>>();
+    for (const row of icpRows || []) {
+      if (!icpByProductKey.has(row.product_key)) icpByProductKey.set(row.product_key, row);
+    }
+
+    const campaignMap = new Map((campaigns || []).map((c) => [c.id, c]));
 
     // Fetch recent sequence actions for engagement scoring
     const leadIds = leads.map((l) => l.id);
@@ -127,7 +152,7 @@ Deno.serve(async (req) => {
 
       const results = await Promise.allSettled(
         batch.map((lead) =>
-          scoreLead(supabase, lead, campaignMap, actionsForLead.get(lead.id) || [])
+          scoreLead(supabase, lead, campaignMap, actionsForLead.get(lead.id) || [], enrollmentMin, icpByProductKey)
         )
       );
 
@@ -167,11 +192,13 @@ Deno.serve(async (req) => {
 async function scoreLead(
   supabase: ReturnType<typeof getSupabaseClient>,
   lead: Record<string, unknown>,
-  campaignMap: Map<string, { id: string; icp_criteria: Record<string, unknown>; name: string; product_key?: string }>,
-  actions: Array<Record<string, unknown>>
+  campaignMap: Map<string, { id: string; name: string; product_key?: string }>,
+  actions: Array<Record<string, unknown>>,
+  enrollmentMin: number,
+  icpByProductKey: Map<string, Record<string, unknown>>,
 ): Promise<{ tokens: number }> {
   const campaign = lead.campaign_id ? campaignMap.get(lead.campaign_id as string) : null;
-  const icp = campaign?.icp_criteria || {};
+  const icp = (campaign?.product_key && icpByProductKey.get(campaign.product_key as string)) || {};
   const engagementSummary = buildEngagementSummary(actions);
 
   let scoreData: ScoreResult;
@@ -209,8 +236,8 @@ You MUST return ONLY a JSON object with this exact structure, no other text:
 {"fit_score": <number>, "intent_score": <number>, "engagement_score": <number>, "total_score": <number>, "fit_reasons": ["reason1"], "intent_signals": ["signal1"], "engagement_events": ["event1"], "recommendation": "enroll|nurture|disqualify|monitor"}
 
 recommendation guide:
-- "enroll": total >= 70, ready for outreach sequence
-- "nurture": total 40-69, needs warming up
+- "enroll": total >= ${enrollmentMin}, ready for outreach sequence
+- "nurture": total 20-${enrollmentMin - 1}, needs warming up
 - "monitor": total 20-39, not ready yet
 - "disqualify": total < 20 or clear ICP mismatch`;
 
@@ -245,7 +272,7 @@ recommendation guide:
     });
 
     // Heuristic fallback scoring
-    scoreData = heuristicScore(lead, icp, actions);
+    scoreData = heuristicScore(lead, icp, actions, enrollmentMin);
     scoringModel = 'v1-heuristic';
   }
 
@@ -257,7 +284,7 @@ recommendation guide:
 
   // Determine recommendation from total if missing
   const recommendation = scoreData.recommendation ||
-    (total >= 70 ? 'enroll' : total >= 40 ? 'nurture' : total >= 20 ? 'monitor' : 'disqualify');
+    (total >= enrollmentMin ? 'enroll' : total >= 20 ? 'nurture' : total >= 10 ? 'monitor' : 'disqualify');
 
   // Get previous scores for delta tracking
   const { data: previousScore } = await supabase
@@ -316,8 +343,8 @@ recommendation guide:
     })
     .eq('id', lead.id as string);
 
-  // Auto-enroll if score exceeds threshold (>= 70)
-  if (total >= 70 && lead.status !== 'enrolled' && lead.status !== 'converted') {
+  // Auto-enroll if score meets threshold (from mkt_engine_config.score_thresholds.enrollment_min)
+  if (total >= enrollmentMin && lead.status !== 'enrolled' && lead.status !== 'converted') {
     const leadCampaign = lead.campaign_id ? campaignMap.get(lead.campaign_id as string) : null;
     const productKey = leadCampaign?.product_key;
 
@@ -368,7 +395,8 @@ recommendation guide:
 function heuristicScore(
   lead: Record<string, unknown>,
   icp: Record<string, unknown>,
-  actions: Array<Record<string, unknown>>
+  actions: Array<Record<string, unknown>>,
+  enrollmentMin: number,
 ): ScoreResult {
   let fit = 10; // Base fit score for any lead in the system
   const fitReasons: string[] = [];
@@ -454,7 +482,7 @@ function heuristicScore(
   engagement = Math.min(30, engagement);
 
   const total = fit + intent + engagement;
-  const recommendation = total >= 70 ? 'enroll' : total >= 40 ? 'nurture' : total >= 20 ? 'monitor' : 'disqualify';
+  const recommendation = total >= enrollmentMin ? 'enroll' : total >= 20 ? 'nurture' : total >= 10 ? 'monitor' : 'disqualify';
 
   return {
     fit_score: fit,

@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useArohanChat, ChatMessage } from "@/hooks/useArohanChat";
-import { useArohanContext, CampaignStat } from "@/hooks/useArohanContext";
+import { useArohanContext, CampaignStat, TechRequest } from "@/hooks/useArohanContext";
 import {
   Send,
   RefreshCw,
@@ -18,6 +18,7 @@ import {
   TrendingUp,
   Clock,
   ChevronRight,
+  Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -68,6 +69,8 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
                       ? `Campaign paused — ${(action.details as { product_key?: string }).product_key ?? ""}`
                       : action.type === "campaign_resume"
                       ? `Campaign resumed — ${(action.details as { product_key?: string }).product_key ?? ""}`
+                      : action.type === "tech_request"
+                      ? `Tech request logged — ${(action.details as { title?: string }).title ?? "pending"}`
                       : action.type}
                   </Badge>
                 ))}
@@ -283,6 +286,46 @@ function ContextPanel({ onRefresh }: { onRefresh: () => void }) {
                       {(s.suggestion_payload as Record<string, unknown>).type as string}
                     </Badge>
                   )}
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Tech Requests */}
+      {(context?.techRequests?.length ?? 0) > 0 && (
+        <Card className="border shadow-none border-orange-200 bg-orange-50/40">
+          <CardHeader className="p-2 pb-1">
+            <CardTitle className="text-[11px] flex items-center gap-1.5">
+              <Wrench className="h-3 w-3 text-orange-500" />
+              Tech Requests
+              <Badge variant="secondary" className="text-[9px] py-0 px-1 ml-auto">
+                {context!.techRequests.length}
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-2 pt-0 space-y-1.5">
+            {context!.techRequests.map((r: TechRequest) => (
+              <div key={r.id} className="rounded border border-orange-200 bg-white p-2 text-[11px]">
+                <p className="font-medium text-foreground">{r.title}</p>
+                <p className="text-muted-foreground line-clamp-2 mt-0.5">{r.description}</p>
+                <div className="flex items-center gap-1 mt-1">
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-[9px] py-0 px-1",
+                      r.priority === "high" ? "text-red-700 border-red-300" :
+                      r.priority === "low" ? "text-gray-500 border-gray-300" :
+                      "text-orange-700 border-orange-300"
+                    )}
+                  >
+                    {r.priority}
+                  </Badge>
+                  <Clock className="h-2.5 w-2.5 text-muted-foreground ml-auto" />
+                  <span className="text-[10px] text-muted-foreground">
+                    {new Date(r.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
+                  </span>
                 </div>
               </div>
             ))}

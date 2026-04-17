@@ -1,5 +1,5 @@
 import { getSupabaseClient } from '../_shared/supabaseClient.ts';
-import { createEngineLogger, withTiming } from '../_shared/engineLogger.ts';
+import { createEngineLogger } from '../_shared/engineLogger.ts';
 import { getNextChannel } from '../_shared/channelRouter.ts';
 
 const corsHeaders = {
@@ -7,238 +7,273 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const BATCH_SIZE = 50;        // Enrollments to process per run
-const POOL_SIZE = 200;        // Wider fetch pool for fair selection
-const PARALLEL_SIZE = 1;      // Sequential — prevents email provider rate limiting
-const DAILY_CAMPAIGN_LIMIT = 1000; // Max emails per campaign per day
+// ── Constants ────────────────────────────────────────────────────────────────
+
+const BATCH_SIZE = 50; // Enrollments processed per run
+// Both daily email cap and step-1 target are read from mkt_engine_config at runtime — no hardcode here.
+
+// Campaign sequence order is read from mkt_campaigns.sequence_priority at runtime.
+// To change the order or add/remove campaigns, update that column — no code change needed.
+
+// ── Main handler ─────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
-  }
+  if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
   const logger = createEngineLogger('mkt-sequence-executor');
 
   try {
-    const supabase = getSupabaseClient();
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    // Forward the incoming Authorization header — avoids SUPABASE_SERVICE_ROLE_KEY env var issues
+    const supabase      = getSupabaseClient();
+    const supabaseUrl   = Deno.env.get('SUPABASE_URL')!;
     const serviceRoleKey = (req.headers.get('authorization') || '').replace('Bearer ', '')
       || Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const now = new Date();
+    const now    = new Date();
+    const nowIso = now.toISOString();
+    const today  = nowIso.split('T')[0];
 
-    // Sending window: 03:30–13:30 UTC (09:00–19:00 IST)
-    const utcHour = now.getUTCHours();
-    const utcMin  = now.getUTCMinutes();
-    const minuteOfDay = utcHour * 60 + utcMin;
-    const windowStart = 3 * 60 + 30;   // 03:30 UTC
-    const windowEnd   = 13 * 60 + 30;  // 13:30 UTC
-    if (minuteOfDay < windowStart || minuteOfDay >= windowEnd) {
+    // 1. Load campaign sequence order + org_id from mkt_campaigns.
+    //    sequence_priority (nullable int) defines position; NULL = not in sequence.
+    //    Single source of truth: update that column to reorder campaigns.
+    const { data: sequencedCampaigns } = await supabase
+      .from('mkt_campaigns')
+      .select('id, org_id')
+      .not('sequence_priority', 'is', null)
+      .order('sequence_priority', { ascending: true });
+
+    const campaignOrder = (sequencedCampaigns ?? []).map((c) => c.id as string);
+    const orgId = (sequencedCampaigns ?? [])[0]?.org_id as string;
+
+    if (campaignOrder.length === 0) {
       return new Response(
-        JSON.stringify({ message: 'Outside sending window (03:30–13:30 UTC)', executed: 0 }),
+        JSON.stringify({ message: 'No campaigns with sequence_priority set', executed: 0 }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    const nowIso = now.toISOString();
+    // 2. Resolve all org-level config in one round.
+    //    Sending window, daily cap, and step-1 target are all single sources of truth here.
+    const [limitsRow, seqSettingsRow, windowRow] = await Promise.all([
+      supabase.from('mkt_engine_config').select('config_value').eq('org_id', orgId).eq('config_key', 'channel_limits').maybeSingle(),
+      supabase.from('mkt_engine_config').select('config_value').eq('org_id', orgId).eq('config_key', 'sequence_settings').maybeSingle(),
+      supabase.from('mkt_engine_config').select('config_value').eq('org_id', orgId).eq('config_key', 'sending_window').maybeSingle(),
+    ]);
+    const dailyEmailCap: number =
+      (limitsRow.data?.config_value as Record<string, number> | null)?.email_per_day ?? 2000;
+    const step1Target: number =
+      (seqSettingsRow.data?.config_value as Record<string, number> | null)?.step1_target ?? 1000;
 
-    // Fetch a wide pool so we can apply fair campaign allocation
-    const { data: pool, error: fetchError } = await supabase
-      .from('mkt_sequence_enrollments')
-      .select(`
-        id,
-        org_id,
-        lead_id,
-        campaign_id,
-        current_step,
-        status
-      `)
-      .eq('status', 'active')
-      .lte('next_action_at', nowIso)
-      .order('next_action_at', { ascending: true })
-      .limit(POOL_SIZE);
+    // Parse sending window — defaults to 03:30–13:30 UTC (09:00–19:00 IST)
+    const winCfg = (windowRow.data?.config_value as Record<string, string> | null) ?? {};
+    const startUtc = winCfg.start_utc ?? '03:30';
+    const endUtc   = winCfg.end_utc   ?? '13:30';
+    const toMin = (hhmm: string) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
+    const windowStartMin = toMin(startUtc);
+    const windowEndMin   = toMin(endUtc);
 
-    if (fetchError) throw fetchError;
-
-    if (!pool || pool.length === 0) {
+    // 3. Sending window check
+    const minuteOfDay = now.getUTCHours() * 60 + now.getUTCMinutes();
+    if (minuteOfDay < windowStartMin || minuteOfDay >= windowEndMin) {
       return new Response(
-        JSON.stringify({ message: 'No enrollments due', executed: 0 }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ message: `Outside sending window (${startUtc}–${endUtc} UTC)`, executed: 0 }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    // ── Fair allocation across campaigns ────────────────────────────────────
-    // 1. Get all distinct campaigns in the pool
-    const poolCampaignIds = [...new Set(pool.map((e) => e.campaign_id))];
+    // Count today's emails for this org only.
+    const { count: emailsSentToday } = await supabase
+      .from('mkt_sequence_actions')
+      .select('id', { count: 'exact', head: true })
+      .eq('org_id', orgId)
+      .eq('channel', 'email')
+      .in('status', ['sent', 'delivered', 'pending'])
+      .gte('created_at', `${today}T00:00:00Z`);
 
-    // 2. Fetch steps for daily-count check (step_id is our join key to actions)
-    const stepsForCountRes = await supabase
+    const dailyBudget = dailyEmailCap - (emailsSentToday || 0);
+    if (dailyBudget <= 0) {
+      return new Response(
+        JSON.stringify({ message: `Daily email cap (${dailyEmailCap}) reached`, executed: 0 }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // 4. Find the active campaign.
+    //    Fetch step-1 step IDs for all sequenced campaigns, then count all-time sent/delivered.
+    const { data: step1Rows } = await supabase
       .from('mkt_campaign_steps')
       .select('id, campaign_id')
-      .in('campaign_id', poolCampaignIds)
+      .in('campaign_id', campaignOrder)
+      .eq('step_number', 1)
       .eq('is_active', true);
 
-    const stepIdsByCampaign = new Map<string, string[]>();
-    for (const step of stepsForCountRes.data || []) {
-      const ids = stepIdsByCampaign.get(step.campaign_id as string) || [];
-      ids.push(step.id as string);
-      stepIdsByCampaign.set(step.campaign_id as string, ids);
+    const step1IdByCampaign = new Map<string, string>();
+    for (const row of step1Rows || []) {
+      step1IdByCampaign.set(row.campaign_id as string, row.id as string);
     }
 
-    // 3. Check today's sent count per campaign — skip any at or over limit
-    const today = now.toISOString().split('T')[0];
-    const campaignUnderLimit = new Set<string>();
+    let activeCampaignId: string | null   = null;
+    let step1AlreadySent                  = 0;
 
-    await Promise.all(poolCampaignIds.map(async (cid) => {
-      const stepIds = stepIdsByCampaign.get(cid) || [];
-      if (stepIds.length === 0) {
-        campaignUnderLimit.add(cid);
-        return;
-      }
-      const { count } = await supabase
+    for (const cid of campaignOrder) {
+      const stepId = step1IdByCampaign.get(cid);
+      if (!stepId) continue;
+
+      const { count: sent } = await supabase
         .from('mkt_sequence_actions')
         .select('id', { count: 'exact', head: true })
-        .in('step_id', stepIds)
-        .in('status', ['sent', 'delivered', 'pending'])
-        .gte('created_at', `${today}T00:00:00Z`);
+        .eq('step_id', stepId)
+        .in('status', ['sent', 'delivered']);
 
-      if ((count || 0) < DAILY_CAMPAIGN_LIMIT) {
-        campaignUnderLimit.add(cid);
+      if ((sent ?? 0) < step1Target) {
+        activeCampaignId  = cid;
+        step1AlreadySent  = sent ?? 0;
+        break;
       }
-    }));
-
-    // 4. Fair round-robin: equal slots per eligible campaign, total ≤ BATCH_SIZE
-    const eligibleCampaigns = poolCampaignIds.filter((id) => campaignUnderLimit.has(id));
-    const perCampaignCap = eligibleCampaigns.length > 0
-      ? Math.ceil(BATCH_SIZE / eligibleCampaigns.length)
-      : BATCH_SIZE;
-
-    const campaignSlotsUsed = new Map<string, number>();
-    const enrollments: typeof pool = [];
-
-    for (const enrollment of pool) {
-      if (!campaignUnderLimit.has(enrollment.campaign_id)) continue;
-      const used = campaignSlotsUsed.get(enrollment.campaign_id) || 0;
-      if (used >= perCampaignCap) continue;
-      enrollments.push(enrollment);
-      campaignSlotsUsed.set(enrollment.campaign_id, used + 1);
-      if (enrollments.length >= BATCH_SIZE) break;
     }
 
+    const step1Quota = activeCampaignId ? step1Target - step1AlreadySent : 0;
+
+    // 4. Fetch due enrollments — two independent pools:
+    //
+    //    a) Follow-ups (step > 1, any campaign, due now) — time-sensitive, always run.
+    //    b) Step-1 (step = 1, active campaign only, due now) — capped at step1Quota.
+    //
+    //    Follow-ups are processed first. Total batch capped at BATCH_SIZE and daily budget.
+
+    const { data: followupPool } = await supabase
+      .from('mkt_sequence_enrollments')
+      .select('id, org_id, lead_id, campaign_id, current_step, status')
+      .eq('status', 'active')
+      .gt('current_step', 1)
+      .lte('next_action_at', nowIso)
+      .order('next_action_at', { ascending: true })
+      .limit(BATCH_SIZE);
+
+    const step1PoolResult = (activeCampaignId && step1Quota > 0)
+      ? await supabase
+          .from('mkt_sequence_enrollments')
+          .select('id, org_id, lead_id, campaign_id, current_step, status')
+          .eq('status', 'active')
+          .eq('current_step', 1)
+          .eq('campaign_id', activeCampaignId)
+          .lte('next_action_at', nowIso)
+          .order('next_action_at', { ascending: true })
+          .limit(Math.min(step1Quota, BATCH_SIZE))
+      : { data: [] };
+
+    const followups = followupPool ?? [];
+    const step1s    = step1PoolResult.data ?? [];
+
+    // Combine: follow-ups first, then step-1, total ≤ min(BATCH_SIZE, dailyBudget)
+    const cap         = Math.min(BATCH_SIZE, dailyBudget);
+    const enrollments = [...followups, ...step1s].slice(0, cap);
+
     if (enrollments.length === 0) {
-      const limitedCampaigns = poolCampaignIds.filter((id) => !campaignUnderLimit.has(id));
       return new Response(
-        JSON.stringify({ message: 'All campaigns at daily limit', limited_campaigns: limitedCampaigns }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ message: 'No enrollments due', active_campaign: activeCampaignId, executed: 0 }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
     await logger.info('executor-start', {
-      pool: pool.length,
-      allotted: enrollments.length,
-      eligible_campaigns: eligibleCampaigns.length,
-      per_campaign_cap: perCampaignCap,
-      slots_used: Object.fromEntries(campaignSlotsUsed),
+      active_campaign:   activeCampaignId,
+      step1_sent:        step1AlreadySent,
+      step1_quota:       step1Quota,
+      followups_due:     followups.length,
+      step1_due:         step1s.length,
+      batch:             enrollments.length,
+      daily_budget_left: dailyBudget,
     });
-    // ── End fair allocation ──────────────────────────────────────────────────
 
-    // Batch-fetch related data for the allotted enrollments
+    // 5. Batch-fetch related data
     const campaignIds = [...new Set(enrollments.map((e) => e.campaign_id))];
-    const leadIds = [...new Set(enrollments.map((e) => e.lead_id))];
+    const leadIds     = [...new Set(enrollments.map((e) => e.lead_id))];
 
     const [campaignsRes, leadsRes, stepsRes] = await Promise.all([
-      supabase.from('mkt_campaigns').select('id, name, status, metadata').in('id', campaignIds),
-      supabase.from('contacts').select('id, org_id, email, phone, first_name, last_name, company, status, email_verification_status').in('id', leadIds),
-      supabase.from('mkt_campaign_steps').select('*').in('campaign_id', campaignIds).eq('is_active', true).order('step_number', { ascending: true }),
+      supabase
+        .from('mkt_campaigns')
+        .select('id, name, status, product_key')
+        .in('id', campaignIds),
+      supabase
+        .from('contacts')
+        .select('id, org_id, email, phone, first_name, last_name, company, status, email_verification_status')
+        .in('id', leadIds),
+      supabase
+        .from('mkt_campaign_steps')
+        .select('*')
+        .in('campaign_id', campaignIds)
+        .eq('is_active', true)
+        .order('step_number', { ascending: true }),
     ]);
 
-    const campaignMap = new Map(campaignsRes.data?.map((c) => [c.id, c]) || []);
-    const leadMap = new Map(leadsRes.data?.map((l) => [l.id, l]) || []);
-
-    // Group steps by campaign
+    const campaignMap    = new Map((campaignsRes.data ?? []).map((c) => [c.id, c]));
+    const leadMap        = new Map((leadsRes.data ?? []).map((l) => [l.id, l]));
     const stepsByCampaign = new Map<string, Array<Record<string, unknown>>>();
-    for (const step of stepsRes.data || []) {
-      const existing = stepsByCampaign.get(step.campaign_id) || [];
-      existing.push(step);
-      stepsByCampaign.set(step.campaign_id, existing);
+    for (const step of stepsRes.data ?? []) {
+      const arr = stepsByCampaign.get(step.campaign_id) ?? [];
+      arr.push(step);
+      stepsByCampaign.set(step.campaign_id, arr);
     }
 
-    let executed = 0;
-    let skipped = 0;
-    let completed = 0;
-    let failed = 0;
+    // 6. Process sequentially
+    let executed = 0, skipped = 0, completed = 0, failed = 0;
 
-    // Process sequentially
-    for (let i = 0; i < enrollments.length; i += PARALLEL_SIZE) {
-      const batch = enrollments.slice(i, i + PARALLEL_SIZE);
-
-      const results = await Promise.allSettled(
-        batch.map((enrollment) =>
-          processEnrollment(
-            supabase,
-            supabaseUrl,
-            serviceRoleKey,
-            enrollment,
-            campaignMap,
-            leadMap,
-            stepsByCampaign
-          )
-        )
-      );
-
-      for (const result of results) {
-        if (result.status === 'fulfilled') {
-          if (result.value === 'executed') executed++;
-          else if (result.value === 'skipped') skipped++;
-          else if (result.value === 'completed') completed++;
-        } else {
-          failed++;
-          console.error('[mkt-sequence-executor] Process failed:', result.reason);
-        }
+    for (const enrollment of enrollments) {
+      try {
+        const result = await processEnrollment(
+          supabase, supabaseUrl, serviceRoleKey,
+          enrollment, campaignMap, leadMap, stepsByCampaign,
+        );
+        if (result === 'executed')  executed++;
+        else if (result === 'skipped')   skipped++;
+        else if (result === 'completed') completed++;
+        else if (result === 'stop')      break; // daily limit hit mid-batch — stop cleanly
+      } catch (e) {
+        failed++;
+        console.error('[mkt-sequence-executor] enrollment failed:', e);
       }
     }
 
     await logger.info('executor-complete', { executed, skipped, completed, failed });
 
-    // Self-chain: only when pool was full AND we actually executed a meaningful number.
-    // Fewer than 10 executed = mostly skipped/completed enrollments; let cron handle it.
-    if (pool.length >= POOL_SIZE && executed >= 10) {
+    // Self-chain when the batch was full — there may be more to process immediately.
+    if (enrollments.length >= cap) {
       fetch(`${supabaseUrl}/functions/v1/mkt-sequence-executor`, {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Authorization': `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json' },
-        body: '{}',
+        body:    '{}',
       }).catch(() => {});
     }
 
     return new Response(
-      JSON.stringify({ message: 'Sequence execution complete', executed, skipped, completed, failed }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ message: 'Sequence execution complete', executed, skipped, completed, failed, active_campaign: activeCampaignId }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
+
   } catch (error) {
     await logger.error('executor-fatal', error);
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   }
 });
 
-/**
- * Process a single enrollment: determine step, check channel, dispatch action.
- */
-async function processEnrollment(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  supabaseUrl: string,
-  serviceRoleKey: string,
-  enrollment: Record<string, unknown>,
-  campaignMap: Map<string, Record<string, unknown>>,
-  leadMap: Map<string, Record<string, unknown>>,
-  stepsByCampaign: Map<string, Array<Record<string, unknown>>>
-): Promise<'executed' | 'skipped' | 'completed'> {
-  const campaign = campaignMap.get(enrollment.campaign_id as string);
-  const lead = leadMap.get(enrollment.lead_id as string);
+// ── processEnrollment ─────────────────────────────────────────────────────────
 
-  // Skip if campaign is no longer active
+async function processEnrollment(
+  supabase:        ReturnType<typeof getSupabaseClient>,
+  supabaseUrl:     string,
+  serviceRoleKey:  string,
+  enrollment:      Record<string, unknown>,
+  campaignMap:     Map<string, Record<string, unknown>>,
+  leadMap:         Map<string, Record<string, unknown>>,
+  stepsByCampaign: Map<string, Array<Record<string, unknown>>>,
+): Promise<'executed' | 'skipped' | 'completed' | 'stop'> {
+
+  const campaign = campaignMap.get(enrollment.campaign_id as string);
+  const lead     = leadMap.get(enrollment.lead_id as string);
+
+  // Cancel if campaign is no longer active
   if (!campaign || campaign.status !== 'active') {
     await supabase
       .from('mkt_sequence_enrollments')
@@ -247,9 +282,9 @@ async function processEnrollment(
     return 'skipped';
   }
 
-  // Check if product is active (if campaign has a product_key)
-  const campaignMeta = (campaign as Record<string, unknown>).metadata as Record<string, unknown> | undefined;
-  const productKey = campaignMeta?.product_key as string | undefined;
+  // Freeze for 4 h if the product has been toggled off
+  const productKey = campaign.product_key as string | undefined;
+
   if (productKey) {
     const { data: product } = await supabase
       .from('mkt_products')
@@ -259,17 +294,15 @@ async function processEnrollment(
       .single();
 
     if (product && !product.active) {
-      // Product is toggled off — freeze this enrollment for 4 hours so it
-      // doesn't keep flooding the batch queue on every run.
       await supabase
         .from('mkt_sequence_enrollments')
-        .update({ next_action_at: new Date(Date.now() + 4 * 3600 * 1000).toISOString() })
+        .update({ next_action_at: new Date(Date.now() + 4 * 3600_000).toISOString() })
         .eq('id', enrollment.id as string);
       return 'skipped';
     }
   }
 
-  // Skip if lead is disqualified or already converted
+  // Cancel if lead is disqualified
   if (!lead || lead.status === 'disqualified') {
     await supabase
       .from('mkt_sequence_enrollments')
@@ -278,14 +311,12 @@ async function processEnrollment(
     return 'skipped';
   }
 
-
-  // Get the current step
-  const steps = stepsByCampaign.get(enrollment.campaign_id as string) || [];
+  // Find the current step
+  const steps          = stepsByCampaign.get(enrollment.campaign_id as string) ?? [];
   const currentStepNum = enrollment.current_step as number;
-  const step = steps.find((s) => s.step_number === currentStepNum);
+  const step           = steps.find((s) => s.step_number === currentStepNum);
 
   if (!step) {
-    // No more steps — mark enrollment as completed
     await supabase
       .from('mkt_sequence_enrollments')
       .update({ status: 'completed', completed_at: new Date().toISOString() })
@@ -293,42 +324,46 @@ async function processEnrollment(
     return 'completed';
   }
 
-  // Check channel availability via router
+  // Determine channel
   const channelResult = await getNextChannel(
     { id: lead.id as string, org_id: lead.org_id as string, email: lead.email as string | null, phone: lead.phone as string | null },
-    { channel: step.channel as string }
+    { channel: step.channel as string },
   );
 
   if (!channelResult.allowed) {
-    // Log skipped action
+    // Daily rate limit hit — stop this batch cleanly without touching the enrollment.
+    // The enrollment stays due and will be retried on the next run / tomorrow.
+    if ((channelResult.reason ?? '').toLowerCase().includes('limit')) {
+      return 'stop';
+    }
+
+    // Permanent skip: no contact info available for this channel or any fallback.
     await supabase.from('mkt_sequence_actions').insert({
-      org_id: enrollment.org_id as string,
+      org_id:       enrollment.org_id as string,
       enrollment_id: enrollment.id as string,
-      step_id: step.id as string,
-      step_number: currentStepNum,
-      channel: step.channel as string,
-      status: 'skipped',
+      step_id:      step.id as string,
+      step_number:  currentStepNum,
+      channel:      step.channel as string,
+      status:       'skipped',
       failure_reason: channelResult.reason,
       scheduled_at: new Date().toISOString(),
     });
-
-    // Advance to next step anyway
     await advanceToNextStep(supabase, enrollment, steps, currentStepNum);
     return 'skipped';
   }
 
-  // Check step conditions (e.g., require previous opened)
-  const conditions = (step.conditions || {}) as Record<string, boolean>;
+  // Check step conditions
+  const conditions = (step.conditions ?? {}) as Record<string, boolean>;
   if (conditions.require_previous_opened || conditions.skip_if_replied) {
-    const skipResult = await checkStepConditions(supabase, enrollment, currentStepNum, conditions);
-    if (skipResult === 'skip') {
+    const check = await checkStepConditions(supabase, enrollment, currentStepNum, conditions);
+    if (check === 'skip') {
       await supabase.from('mkt_sequence_actions').insert({
-        org_id: enrollment.org_id as string,
+        org_id:       enrollment.org_id as string,
         enrollment_id: enrollment.id as string,
-        step_id: step.id as string,
-        step_number: currentStepNum,
-        channel: channelResult.channel,
-        status: 'skipped',
+        step_id:      step.id as string,
+        step_number:  currentStepNum,
+        channel:      channelResult.channel,
+        status:       'skipped',
         failure_reason: 'Conditions not met',
         scheduled_at: new Date().toISOString(),
       });
@@ -337,18 +372,18 @@ async function processEnrollment(
     }
   }
 
-  // Create the action record
+  // Create action record
   const { data: action, error: actionError } = await supabase
     .from('mkt_sequence_actions')
     .insert({
-      org_id: enrollment.org_id as string,
+      org_id:       enrollment.org_id as string,
       enrollment_id: enrollment.id as string,
-      step_id: step.id as string,
-      step_number: currentStepNum,
-      channel: channelResult.channel,
-      status: 'pending',
+      step_id:      step.id as string,
+      step_number:  currentStepNum,
+      channel:      channelResult.channel,
+      status:       'pending',
       scheduled_at: new Date().toISOString(),
-      variant: step.ab_test_id ? undefined : null, // A/B handled by sender
+      variant:      step.ab_test_id ? undefined : null,
       metadata: {
         fallback_from: channelResult.reason ? step.channel : undefined,
       },
@@ -358,105 +393,109 @@ async function processEnrollment(
 
   if (actionError) throw actionError;
 
-  // Dispatch to the appropriate sender
+  // Resolve template — when falling back from email to WhatsApp, look up the
+  // product's WhatsApp template by step number; the email template_id is invalid
+  // in mkt_whatsapp_templates.
+  let effectiveTemplateId = step.template_id;
+  if (channelResult.channel === 'whatsapp' && step.channel !== 'whatsapp' && productKey) {
+    const stepTypeMap: Record<number, string> = { 1: 'welcome', 2: 'feature-highlight', 3: 'trial-reminder', 4: 'reactivation' };
+    const stepType = stepTypeMap[step.step_number as number] ?? 'welcome';
+
+    const { data: waTemplate } = await supabase
+      .from('mkt_whatsapp_templates')
+      .select('id')
+      .eq('name', `${productKey}-wa-${stepType}`)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (waTemplate) {
+      effectiveTemplateId = waTemplate.id;
+    } else {
+      const { data: anyWa } = await supabase
+        .from('mkt_whatsapp_templates')
+        .select('id')
+        .like('name', `${productKey}-wa-%`)
+        .eq('is_active', true)
+        .limit(1)
+        .maybeSingle();
+      if (anyWa) effectiveTemplateId = anyWa.id;
+    }
+  }
+
+  // Dispatch to sender
   const senderMap: Record<string, string> = {
-    email: 'mkt-send-email',
+    email:    'mkt-send-email',
     whatsapp: 'mkt-send-whatsapp',
-    call: 'mkt-initiate-call',
-    sms: 'mkt-send-whatsapp', // SMS goes through WhatsApp for now
+    call:     'mkt-initiate-call',
+    sms:      'mkt-send-whatsapp',
   };
+  const senderFn = senderMap[channelResult.channel] ?? 'mkt-send-email';
 
-  const senderFunction = senderMap[channelResult.channel] || 'mkt-send-email';
-
-  // Invoke the sender function
   try {
-    const response = await fetch(`${supabaseUrl}/functions/v1/${senderFunction}`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${serviceRoleKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        action_id: action!.id,
+    const res = await fetch(`${supabaseUrl}/functions/v1/${senderFn}`, {
+      method:  'POST',
+      headers: { 'Authorization': `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        action_id:    action!.id,
         enrollment_id: enrollment.id,
-        lead_id: enrollment.lead_id,
-        step_id: step.id,
-        campaign_id: enrollment.campaign_id,
-        campaign_name: (campaign as Record<string, unknown>).name as string | undefined,
-        template_id: step.template_id,
-        ab_test_id: step.ab_test_id,
-        channel: channelResult.channel,
+        lead_id:      enrollment.lead_id,
+        step_id:      step.id,
+        campaign_id:  enrollment.campaign_id,
+        campaign_name: campaign.name as string | undefined,
+        template_id:  effectiveTemplateId,
+        ab_test_id:   step.ab_test_id,
+        channel:      channelResult.channel,
       }),
     });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Sender ${senderFunction} returned ${response.status}: ${errText}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Sender ${senderFn} returned ${res.status}: ${errText}`);
     }
   } catch (error) {
-    // Mark action as failed
     await supabase
       .from('mkt_sequence_actions')
-      .update({
-        status: 'failed',
-        failed_at: new Date().toISOString(),
-        failure_reason: error instanceof Error ? error.message : String(error),
-      })
+      .update({ status: 'failed', failed_at: new Date().toISOString(), failure_reason: error instanceof Error ? error.message : String(error) })
       .eq('id', action!.id);
     throw error;
   }
 
-  // Advance to next step
   await advanceToNextStep(supabase, enrollment, steps, currentStepNum);
-
   return 'executed';
 }
 
-/**
- * Advance enrollment to the next step via atomic RPC.
- * The RPC looks up the next step and updates the enrollment in a single DB round-trip.
- */
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 async function advanceToNextStep(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  enrollment: Record<string, unknown>,
-  _steps: Array<Record<string, unknown>>,
-  currentStepNum: number
+  supabase:    ReturnType<typeof getSupabaseClient>,
+  enrollment:  Record<string, unknown>,
+  _steps:      Array<Record<string, unknown>>,
+  currentStep: number,
 ): Promise<void> {
   await supabase.rpc('advance_enrollment_step', {
     p_enrollment_id: enrollment.id as string,
-    p_current_step:  currentStepNum,
+    p_current_step:  currentStep,
   });
 }
 
-/**
- * Check step conditions (require previous opened, skip if replied).
- */
 async function checkStepConditions(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  enrollment: Record<string, unknown>,
-  currentStepNum: number,
-  conditions: Record<string, boolean>
+  supabase:    ReturnType<typeof getSupabaseClient>,
+  enrollment:  Record<string, unknown>,
+  currentStep: number,
+  conditions:  Record<string, boolean>,
 ): Promise<'proceed' | 'skip'> {
-  // Get previous actions for this enrollment
-  const { data: prevActions } = await supabase
+  const { data: prev } = await supabase
     .from('mkt_sequence_actions')
-    .select('step_number, opened_at, clicked_at, replied_at')
+    .select('step_number, opened_at, replied_at')
     .eq('enrollment_id', enrollment.id as string)
-    .lt('step_number', currentStepNum)
+    .lt('step_number', currentStep)
     .order('step_number', { ascending: false })
     .limit(5);
 
-  if (!prevActions || prevActions.length === 0) return 'proceed';
+  if (!prev || prev.length === 0) return 'proceed';
 
-  const lastAction = prevActions[0];
-
-  if (conditions.require_previous_opened && !lastAction.opened_at) {
-    return 'skip';
-  }
-
-  if (conditions.skip_if_replied && prevActions.some((a) => a.replied_at)) {
-    return 'skip';
-  }
+  if (conditions.require_previous_opened && !prev[0].opened_at)            return 'skip';
+  if (conditions.skip_if_replied && prev.some((a) => a.replied_at))        return 'skip';
 
   return 'proceed';
 }

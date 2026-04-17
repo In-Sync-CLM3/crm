@@ -931,7 +931,7 @@ async function stepCampaignCreate(ctx: StepContext): Promise<Record<string, unkn
     .from('mkt_campaigns')
     .select('id')
     .eq('org_id', org_id)
-    .contains('metadata', { product_key })
+    .eq('product_key', product_key)
     .limit(1)
     .single();
 
@@ -975,7 +975,7 @@ async function stepCampaignCreate(ctx: StepContext): Promise<Record<string, unkn
       name: `${product_name} - Initial Outbound`,
       campaign_type: 'outbound',
       status: 'draft',
-      metadata: { product_key },
+      metadata: {},
     })
     .select('id')
     .single();

@@ -1,6 +1,11 @@
 import { getSupabaseClient } from '../_shared/supabaseClient.ts';
 import { createEngineLogger } from '../_shared/engineLogger.ts';
 import { updateMemory } from '../_shared/conversationMemory.ts';
+import {
+  hardSuppressContact,
+  softBounceContact,
+  suppressContactByEmail,
+} from '../_shared/emailSuppression.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -240,7 +245,10 @@ async function handleResendWebhook(req: Request): Promise<Response> {
         const isHard = bounceType === 'hard' || bounceType === '' || bounceType === 'unknown';
         if (isHard) {
           const toEmail = Array.isArray(data.to) ? data.to[0] : data.to;
-          if (toEmail) await suppressContactByEmail(supabase, toEmail as string, logger);
+          if (toEmail) {
+            const r = await suppressContactByEmail(supabase, toEmail as string);
+            if (r.suppressed) await logger.info('verification-bounce-suppressed', { email: toEmail, contact_id: r.contactId });
+          }
         }
       }
       return new Response(JSON.stringify({ received: true, processed: 'mkt_verification' }), {
@@ -430,66 +438,9 @@ async function updateABTestMetrics(
   }
 }
 
-const SOFT_BOUNCE_HARD_THRESHOLD = 3;
+// suppressContactByEmail is imported from _shared/emailSuppression.ts
 
-/**
- * Suppress a contact looked up by email address.
- * Used for verification bounce events where there is no action_id.
- */
-async function suppressContactByEmail(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  email: string,
-  logger: ReturnType<typeof createEngineLogger>
-): Promise<void> {
-  try {
-    const { data: contact } = await supabase
-      .from('contacts')
-      .select('id, org_id')
-      .eq('email', email)
-      .is('email_bounce_type', null)
-      .maybeSingle();
-
-    if (!contact) return;
-
-    // Mark invalid + hard-bounced
-    await supabase
-      .from('contacts')
-      .update({
-        email_verification_status: 'invalid',
-        email_bounce_type: 'hard',
-        email_bounced_at: new Date().toISOString(),
-      })
-      .eq('id', contact.id);
-
-    // Cancel any active enrollments
-    const { count } = await supabase
-      .from('mkt_sequence_enrollments')
-      .update({
-        status: 'cancelled',
-        cancelled_at: new Date().toISOString(),
-        cancel_reason: 'Hard bounce — email invalid (verification send)',
-      })
-      .eq('lead_id', contact.id)
-      .eq('status', 'active')
-      .select('id', { count: 'exact', head: true });
-
-    await logger.info('verification-bounce-suppressed', {
-      email,
-      contact_id: contact.id,
-      enrollments_cancelled: count || 0,
-    });
-  } catch (err) {
-    console.error('[mkt-email-webhook] suppressContactByEmail failed:', err);
-  }
-}
-
-/**
- * Permanently suppress a contact from email sending.
- * Reason: 'hard_bounce' | 'spam_complaint'
- * - Marks contact email_bounce_type = 'hard'
- * - Upserts into mkt_unsubscribes (channel = 'email')
- * - Cancels all active enrollments
- */
+// Thin wrapper: resolves enrollment → contact then delegates to shared hardSuppressContact
 async function suppressContact(
   supabase: ReturnType<typeof getSupabaseClient>,
   action: { id: string; enrollment_id: string; org_id: string },
@@ -497,73 +448,19 @@ async function suppressContact(
   logger: ReturnType<typeof createEngineLogger>
 ): Promise<void> {
   try {
-    // Get lead_id from enrollment
     const { data: enrollment } = await supabase
-      .from('mkt_sequence_enrollments')
-      .select('lead_id')
-      .eq('id', action.enrollment_id)
-      .single();
-
+      .from('mkt_sequence_enrollments').select('lead_id').eq('id', action.enrollment_id).single();
     if (!enrollment?.lead_id) return;
-
-    const leadId = enrollment.lead_id;
-
-    // Get contact email
     const { data: contact } = await supabase
-      .from('contacts')
-      .select('email, org_id')
-      .eq('id', leadId)
-      .single();
-
-    // Mark contact as hard-bounced
-    await supabase
-      .from('contacts')
-      .update({
-        email_bounce_type: 'hard',
-        email_bounced_at: new Date().toISOString(),
-      })
-      .eq('id', leadId);
-
-    // Add to suppression list (mkt_unsubscribes)
-    await supabase
-      .from('mkt_unsubscribes')
-      .upsert(
-        {
-          org_id: action.org_id,
-          lead_id: leadId,
-          email: contact?.email || null,
-          channel: 'email',
-          reason,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'org_id,email,channel' }
-      );
-
-    // Cancel all active enrollments for this contact
-    const { count } = await supabase
-      .from('mkt_sequence_enrollments')
-      .update({
-        status: 'cancelled',
-        cancelled_at: new Date().toISOString(),
-        cancel_reason: reason === 'spam_complaint' ? 'Spam complaint' : 'Hard bounce — email undeliverable',
-      })
-      .eq('lead_id', leadId)
-      .eq('status', 'active')
-      .select('id', { count: 'exact', head: true });
-
-    await logger.info('contact-suppressed', {
-      lead_id: leadId,
-      reason,
-      enrollments_cancelled: count || 0,
-    });
+      .from('contacts').select('email').eq('id', enrollment.lead_id).single();
+    await hardSuppressContact(supabase, enrollment.lead_id, action.org_id, contact?.email ?? null, reason);
+    await logger.info('contact-suppressed', { lead_id: enrollment.lead_id, reason });
   } catch (err) {
     console.error('[mkt-email-webhook] suppressContact failed:', err);
   }
 }
 
-/**
- * Handle a soft bounce: increment counter, escalate to hard if threshold reached.
- */
+// Thin wrapper: resolves enrollment → contact then delegates to shared softBounceContact
 async function handleSoftBounce(
   supabase: ReturnType<typeof getSupabaseClient>,
   action: { id: string; enrollment_id: string; org_id: string },
@@ -571,41 +468,12 @@ async function handleSoftBounce(
 ): Promise<void> {
   try {
     const { data: enrollment } = await supabase
-      .from('mkt_sequence_enrollments')
-      .select('lead_id')
-      .eq('id', action.enrollment_id)
-      .single();
-
+      .from('mkt_sequence_enrollments').select('lead_id').eq('id', action.enrollment_id).single();
     if (!enrollment?.lead_id) return;
-
-    // Increment soft bounce counter
     const { data: contact } = await supabase
-      .from('contacts')
-      .select('email_soft_bounce_count, email_bounce_type')
-      .eq('id', enrollment.lead_id)
-      .single();
-
-    // Already hard-suppressed — nothing more to do
-    if (contact?.email_bounce_type === 'hard') return;
-
-    const newCount = (contact?.email_soft_bounce_count || 0) + 1;
-
-    await supabase
-      .from('contacts')
-      .update({
-        email_soft_bounce_count: newCount,
-        email_bounce_type: newCount >= SOFT_BOUNCE_HARD_THRESHOLD ? 'hard' : 'soft',
-        email_bounced_at: new Date().toISOString(),
-      })
-      .eq('id', enrollment.lead_id);
-
-    if (newCount >= SOFT_BOUNCE_HARD_THRESHOLD) {
-      // Escalate to hard bounce treatment
-      await suppressContact(supabase, action, 'soft_bounce_escalated', logger);
-      await logger.info('soft-bounce-escalated', { lead_id: enrollment.lead_id, count: newCount });
-    } else {
-      await logger.info('soft-bounce-recorded', { lead_id: enrollment.lead_id, count: newCount });
-    }
+      .from('contacts').select('email').eq('id', enrollment.lead_id).single();
+    await softBounceContact(supabase, enrollment.lead_id, action.org_id, contact?.email ?? null);
+    await logger.info('soft-bounce-handled', { lead_id: enrollment.lead_id });
   } catch (err) {
     console.error('[mkt-email-webhook] handleSoftBounce failed:', err);
   }

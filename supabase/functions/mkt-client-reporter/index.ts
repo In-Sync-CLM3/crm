@@ -239,18 +239,20 @@ async function processOrg(
     }
   }
 
-  // Fetch cost data for the org (for ROI calculation)
-  const { data: costConfig } = await supabase
-    .from('mkt_engine_config')
-    .select('config_value')
-    .eq('org_id', orgId)
-    .eq('config_key', 'cost_per_contact_monthly')
-    .maybeSingle();
+  // Fetch cost + score threshold config for the org
+  const [costConfig, thresholdsConfig] = await Promise.all([
+    supabase.from('mkt_engine_config').select('config_value').eq('org_id', orgId).eq('config_key', 'cost_per_contact_monthly').maybeSingle(),
+    supabase.from('mkt_engine_config').select('config_value').eq('org_id', orgId).eq('config_key', 'score_thresholds').maybeSingle(),
+  ]);
 
   // Default cost per contact per month: Rs 500 = 50000 paise
-  const costPerContact = costConfig?.config_value
-    ? Number((costConfig.config_value as Record<string, unknown>).value || 50000)
+  const costPerContact = costConfig.data?.config_value
+    ? Number((costConfig.data.config_value as Record<string, unknown>).value || 50000)
     : 50000;
+
+  // Conversion threshold — single source of truth in mkt_engine_config
+  const conversionMin: number =
+    (thresholdsConfig.data?.config_value as Record<string, number> | null)?.conversion_min ?? 70;
 
   // Process each contact
   let reportsGenerated = 0;
@@ -264,10 +266,11 @@ async function processOrg(
         convertedLeadsByContact[contact.id] || 0,
         actionsMap[contact.id] || [],
         costPerContact,
+        conversionMin,
       );
 
       // Generate narrative via LLM
-      const narrative = await generateNarrative(metrics, reportMonth);
+      const narrative = await generateNarrative(metrics, reportMonth, conversionMin);
 
       // Insert into mkt_client_outcomes
       const { error: insertError } = await supabase.from('mkt_client_outcomes').insert({
@@ -361,9 +364,10 @@ function aggregateContactMetrics(
   dealsWon: number,
   actions: Array<{ channel: string; status: string; metadata: Record<string, unknown>; opened_at: string | null; replied_at: string | null }>,
   costPerContact: number,
+  conversionMin: number,
 ): ContactMetrics {
   const leadsSourced = leads.length;
-  const leadsQualified = leads.filter((l) => (l.total_score || 0) >= 70).length;
+  const leadsQualified = leads.filter((l) => (l.total_score || 0) >= conversionMin).length;
 
   // Meetings booked: actions where metadata contains 'meeting' or 'demo'
   const meetingsBooked = actions.filter((a) => {
@@ -421,6 +425,7 @@ function aggregateContactMetrics(
 async function generateNarrative(
   metrics: ContactMetrics,
   reportMonth: string,
+  conversionMin: number,
 ): Promise<string> {
   const monthLabel = formatMonthLabel(reportMonth);
   const revRupees = (metrics.revenue_generated / 100).toLocaleString('en-IN');
@@ -432,7 +437,7 @@ PERIOD: ${monthLabel}
 
 PERFORMANCE METRICS:
 - Leads sourced: ${metrics.leads_sourced}
-- Leads qualified (score >= 70): ${metrics.leads_qualified}
+- Leads qualified (score >= ${conversionMin}): ${metrics.leads_qualified}
 - Meetings booked: ${metrics.meetings_booked}
 - Deals won: ${metrics.deals_won}
 - Revenue generated: Rs ${revRupees}

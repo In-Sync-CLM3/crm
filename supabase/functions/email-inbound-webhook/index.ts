@@ -1,4 +1,5 @@
 import { getSupabaseClient } from '../_shared/supabaseClient.ts';
+import { hardSuppressContact, softBounceContact } from '../_shared/emailSuppression.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -202,7 +203,7 @@ Deno.serve(async (req) => {
             console.log(`mkt_sequence_actions ${mktAction.id} updated for ${payload.type}`);
           }
 
-          // Suppress contact on permanent bounce
+          // Suppress contact on bounce — delegates to shared emailSuppression module
           if (payload.type === 'email.bounced' && mktAction.enrollment_id) {
             const bounceKind = (eventData.bounce?.type || '').toLowerCase();
             const isPermanent = bounceKind === 'permanent' || bounceKind === 'hard';
@@ -217,51 +218,15 @@ Deno.serve(async (req) => {
             const orgId = mktAction.org_id;
 
             if (leadId && orgId) {
+              const { data: contact } = await supabaseClient
+                .from('contacts').select('email').eq('id', leadId).single();
+              const email = contact?.email ?? null;
+
               if (isPermanent) {
-                // Hard suppress: mark contact, add to unsubscribes, cancel enrollments
-                await Promise.all([
-                  supabaseClient.from('contacts').update({
-                    email_bounce_type: 'hard',
-                    email_bounced_at: now,
-                  }).eq('id', leadId),
-                  supabaseClient.from('mkt_unsubscribes').upsert({
-                    org_id: orgId,
-                    lead_id: leadId,
-                    channel: 'email',
-                    reason: 'Hard bounce (permanent)',
-                    updated_at: now,
-                  }, { onConflict: 'org_id,lead_id,channel' }),
-                  supabaseClient.from('mkt_sequence_enrollments').update({
-                    status: 'cancelled',
-                    cancelled_at: now,
-                    cancel_reason: 'Hard bounce',
-                  }).eq('lead_id', leadId).eq('status', 'active'),
-                ]);
+                await hardSuppressContact(supabaseClient, leadId, orgId, email, 'hard_bounce');
                 console.log(`Hard bounce suppressed contact ${leadId}`);
               } else {
-                // Soft bounce: increment counter, escalate at 3
-                const { data: contact } = await supabaseClient
-                  .from('contacts')
-                  .select('email_soft_bounce_count, email_bounce_type')
-                  .eq('id', leadId)
-                  .single();
-
-                if (contact?.email_bounce_type !== 'hard') {
-                  const newCount = (contact?.email_soft_bounce_count || 0) + 1;
-                  const escalate = newCount >= 3;
-                  await supabaseClient.from('contacts').update({
-                    email_soft_bounce_count: newCount,
-                    email_bounce_type: escalate ? 'hard' : 'soft',
-                    email_bounced_at: now,
-                  }).eq('id', leadId);
-                  if (escalate) {
-                    await supabaseClient.from('mkt_sequence_enrollments').update({
-                      status: 'cancelled',
-                      cancelled_at: now,
-                      cancel_reason: 'Soft bounce escalated',
-                    }).eq('lead_id', leadId).eq('status', 'active');
-                  }
-                }
+                await softBounceContact(supabaseClient, leadId, orgId, email);
               }
             }
           }

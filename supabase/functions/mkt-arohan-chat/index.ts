@@ -19,13 +19,17 @@ interface ConversationMessage {
 }
 
 interface SuggestionPayload {
-  type: 'icp_update' | 'campaign_launch' | 'campaign_pause' | 'campaign_resume' | 'regenerate_step' | 'linkedin_post_now' | 'none';
+  type: 'icp_update' | 'campaign_launch' | 'campaign_pause' | 'campaign_resume' | 'regenerate_step' | 'linkedin_post_now' | 'tech_request' | 'none';
   product_key?: string;
   step_name?: string;
   field?: string;
   value?: unknown;
-  icp_patch?: Record<string, unknown>; // full multi-field patch for icp_update
+  icp_patch?: Record<string, unknown>;
   reason?: string;
+  // tech_request fields
+  title?: string;
+  description?: string;
+  priority?: 'high' | 'medium' | 'low';
 }
 
 interface SuggestionClassification {
@@ -374,7 +378,7 @@ Return JSON only:
 {
   "is_suggestion": true | false,
   "suggestion_payload": {
-    "type": "icp_update" | "campaign_launch" | "campaign_pause" | "campaign_resume" | "regenerate_step" | "none",
+    "type": "icp_update" | "campaign_launch" | "campaign_pause" | "campaign_resume" | "regenerate_step" | "linkedin_post_now" | "tech_request" | "none",
     "product_key": "string or null",
     "step_name": "whatsapp_templates | email_templates | call_scripts | icp_infer | campaign_create | source_leads | null",
     "field": "industries | company_sizes | designations | geographies | languages | pain_points | null",
@@ -387,7 +391,10 @@ Return JSON only:
       "pain_points": [...] | null,
       "confidence_score": 0.0-1.0 number | null
     } | null,
-    "reason": "brief reason string or null"
+    "reason": "brief reason string or null",
+    "title": "short title for tech_request or null",
+    "description": "full description for tech_request or null",
+    "priority": "high | medium | low | null"
   } | null
 }
 
@@ -401,6 +408,10 @@ Type guide:
   → set product_key if mentioned
 - "linkedin_post_now": user wants to immediately post a LinkedIn article for a product (bypasses the scheduled slot)
   → set product_key to the product they mentioned (or null to use next in rotation)
+- "tech_request": Arohan itself has identified a code/config/infrastructure change that needs Claude Code to implement
+  → Only classify as this when YOU (Arohan) are proposing a technical change that requires engineering work
+  → set title (short, e.g. "Add reply-tracking to executor"), description (full details of what needs to change and why), priority (high/medium/low)
+  → This is NOT for user requests — only when Arohan proactively surfaces a technical improvement
 - "none": informational question or general conversation
 
 IMPORTANT: If the current message is a short confirmation ("Yes", "Ok", "Sure", "Go ahead", "Do it") and the previous Arohan message proposed specific changes — treat this as confirmation of those changes and extract the full action from context.
@@ -585,6 +596,11 @@ ${buildLinkedInSection(context)}
   → When Amit asks to redo/recreate/regenerate any of these, you will trigger it automatically.
 - Post to LinkedIn now for a product: classify as linkedin_post_now with the product_key
   → Bypasses the scheduled time — useful for manual overrides or testing
+- Log a tech request for Claude Code: classify as tech_request with title, description, priority
+  → Use this when you identify a code/config/infrastructure improvement that requires engineering work
+  → Claude Code reads this table at the start of every session and picks up pending items
+  → Say: "I've logged a tech request for Claude Code: [title]" and a green badge will confirm it was saved
+  → Examples: new feature needed, bug in the engine, config that should be dynamic, missing data feed
 
 ## CRITICAL: How your actions work
 - You ARE wired to the database. When Amit confirms a change, the system executes it automatically — a green badge appears in the UI confirming it ran.
@@ -908,6 +924,39 @@ async function applyCampaignResume(
 }
 
 // ---------------------------------------------------------------------------
+// Tech Request Action
+// ---------------------------------------------------------------------------
+
+async function applyTechRequest(
+  orgId: string,
+  threadId: string,
+  payload: SuggestionPayload,
+  log: ReturnType<typeof createEngineLogger>,
+): Promise<{ applied: boolean }> {
+  if (!payload.title || !payload.description) return { applied: false };
+
+  const supabase = getSupabaseClient();
+  try {
+    const { error } = await supabase.from('mkt_tech_requests').insert({
+      org_id:      orgId,
+      title:       payload.title,
+      description: payload.description,
+      priority:    payload.priority ?? 'medium',
+      status:      'pending',
+      thread_id:   threadId,
+      context:     { reason: payload.reason ?? null },
+      requested_by: 'arohan',
+    });
+    if (error) throw new Error(error.message);
+    await log.info('tech-request-logged', { org_id: orgId, title: payload.title, priority: payload.priority });
+    return { applied: true };
+  } catch (err) {
+    await log.error('tech-request-failed', err instanceof Error ? err : new Error(String(err)));
+    return { applied: false };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main Handler
 // ---------------------------------------------------------------------------
 
@@ -1042,6 +1091,14 @@ Deno.serve(async (req: Request) => {
           actionsTriggered.push({
             type: 'regenerate_step',
             details: { product_key: sp.product_key, step_name },
+          });
+        }
+      } else if (sp.type === 'tech_request') {
+        const { applied } = await applyTechRequest(org_id, thread_id, sp, log);
+        if (applied) {
+          actionsTriggered.push({
+            type: 'tech_request',
+            details: { title: sp.title, priority: sp.priority ?? 'medium' },
           });
         }
       } else if (sp.type === 'linkedin_post_now') {

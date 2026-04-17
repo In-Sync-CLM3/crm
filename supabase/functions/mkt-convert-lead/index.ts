@@ -6,8 +6,6 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const DEFAULT_SCORE_THRESHOLD = 70;
-
 interface ConvertRequest {
   lead_id?: string;
   org_id?: string;
@@ -37,7 +35,18 @@ Deno.serve(async (req) => {
       );
     }
 
-    const threshold = body.score_threshold || DEFAULT_SCORE_THRESHOLD;
+    // Resolve conversion threshold — single source of truth in mkt_engine_config
+    let conversionMin = 70; // fallback if config row is missing
+    if (body.org_id) {
+      const { data: thresholdsRow } = await supabase
+        .from('mkt_engine_config')
+        .select('config_value')
+        .eq('org_id', body.org_id)
+        .eq('config_key', 'score_thresholds')
+        .maybeSingle();
+      conversionMin = (thresholdsRow?.config_value as Record<string, number> | null)?.conversion_min ?? 70;
+    }
+    const threshold = body.score_threshold ?? conversionMin;
     const autoEnroll = body.auto_enroll !== false; // Default true
 
     let leadsToConvert: Array<Record<string, unknown>> = [];

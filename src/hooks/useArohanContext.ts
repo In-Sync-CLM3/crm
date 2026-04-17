@@ -27,6 +27,15 @@ export interface PendingSuggestion {
   created_at: string;
 }
 
+export interface TechRequest {
+  id: string;
+  title: string;
+  description: string;
+  priority: string;
+  status: string;
+  created_at: string;
+}
+
 export function useArohanContext() {
   const { effectiveOrgId } = useOrgContext();
   const today = new Date().toISOString().split("T")[0];
@@ -42,6 +51,7 @@ export function useArohanContext() {
         todaySendsRes,
         contactsRes,
         pendingRes,
+        techRequestsRes,
         liveLogRes,
       ] = await Promise.all([
         supabase
@@ -71,6 +81,14 @@ export function useArohanContext() {
           .eq("role", "amit")
           .eq("is_suggestion", true)
           .eq("suggestion_applied", false)
+          .order("created_at", { ascending: false })
+          .limit(10),
+
+        supabase
+          .from("mkt_tech_requests")
+          .select("id, title, description, priority, status, created_at")
+          .eq("org_id", effectiveOrgId)
+          .eq("status", "pending")
           .order("created_at", { ascending: false })
           .limit(10),
 
@@ -131,8 +149,9 @@ export function useArohanContext() {
       }
 
       const pending = (pendingRes.data ?? []) as PendingSuggestion[];
+      const techRequests = (techRequestsRes.data ?? []) as TechRequest[];
 
-      return { campaigns, funnel, pending, liveCampaignId };
+      return { campaigns, funnel, pending, techRequests, liveCampaignId };
     },
     enabled: !!effectiveOrgId,
     refetchInterval: 30_000,

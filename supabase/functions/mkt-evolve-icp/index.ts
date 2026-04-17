@@ -95,7 +95,7 @@ async function getCampaignIdsForProduct(
     .from('mkt_campaigns')
     .select('id')
     .eq('org_id', orgId)
-    .contains('metadata', { product_key: productKey });
+    .eq('product_key', productKey);
   return (data || []).map((c: { id: string }) => c.id);
 }
 
@@ -216,60 +216,7 @@ async function evolveProductICP(
     reason: evolutionReason,
   });
 
-  // 8. Cascade the new ICP to all active/draft campaigns for this product
-  await cascadeICPToCampaigns(supabase, orgId, productKey, campaignIds, {
-    industries:    newIndustries,
-    designations:  newDesignations,
-    company_sizes: newCompanySizes,
-    geographies:   currentICP?.geographies ?? [],
-    languages:     currentICP?.languages   ?? ['en'],
-  }, logger);
-
   return nextVersion;
-}
-
-/**
- * Write the evolved ICP criteria to all active/draft campaigns for this product.
- * Campaign IDs are pre-fetched to avoid a redundant query.
- */
-async function cascadeICPToCampaigns(
-  supabase: SupabaseClient,
-  orgId: string,
-  productKey: string,
-  campaignIds: string[],
-  icpCriteria: Record<string, unknown>,
-  logger: ReturnType<typeof createEngineLogger>,
-): Promise<void> {
-  if (campaignIds.length === 0) return;
-
-  // Only cascade to active or draft campaigns (not paused/completed)
-  const { data: targetCampaigns } = await supabase
-    .from('mkt_campaigns')
-    .select('id')
-    .in('id', campaignIds)
-    .in('status', ['active', 'draft']);
-
-  const targetIds = (targetCampaigns || []).map((c: { id: string }) => c.id);
-  if (targetIds.length === 0) return;
-
-  const { error } = await supabase
-    .from('mkt_campaigns')
-    .update({ icp_criteria: icpCriteria })
-    .in('id', targetIds);
-
-  if (error) {
-    await logger.warn('icp-cascade-failed', {
-      org_id: orgId,
-      product_key: productKey,
-      error: error.message,
-    });
-  } else {
-    await logger.info('icp-cascaded', {
-      org_id: orgId,
-      product_key: productKey,
-      campaign_count: targetIds.length,
-    });
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -385,16 +332,6 @@ async function handleManualOverride(
     reason,
     fields_patched: Object.keys(icp_patch),
   });
-
-  // Cascade to campaigns
-  const campaignIds = await getCampaignIdsForProduct(supabase, org_id, product_key);
-  await cascadeICPToCampaigns(supabase, org_id, product_key, campaignIds, {
-    industries:    merged.industries,
-    designations:  merged.designations,
-    company_sizes: merged.company_sizes,
-    geographies:   merged.geographies,
-    languages:     merged.languages,
-  }, logger);
 
   // Wipe stale templates + scripts and regenerate from the new ICP — fire-and-forget.
   // A single refresh_content call handles all 3 steps sequentially (avoids the race
