@@ -428,7 +428,7 @@ export default function Dashboard() {
 
   // Fetch yearly invoices with client details for dialog (fallback for drill-down)
   // Need to include invoices where either invoice_date OR payment_received_date is in the year
-  const { data: yearlyInvoicesWithClients = [] } = useQuery({
+  const { data: yearlyClientInvoices = [] } = useQuery({
     queryKey: ["yearly-invoices-with-clients", effectiveOrgId, currentYear],
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
@@ -451,6 +451,44 @@ export default function Dashboard() {
     enabled: !!effectiveOrgId,
     staleTime: 120000,
   });
+
+  // Fetch yearly billing_documents for drill-down lookup
+  const { data: yearlyBillingDocs = [] } = useQuery({
+    queryKey: ["yearly-billing-docs", effectiveOrgId, currentYear],
+    queryFn: async () => {
+      if (!effectiveOrgId) throw new Error("No organization context");
+      const startOfYear = `${currentYear}-01-01`;
+      const endOfYear = `${currentYear}-12-31`;
+
+      const { data, error } = await supabase
+        .from("billing_documents")
+        .select("id, doc_number, doc_type, doc_date, client_name, total_amount, total_tax, subtotal, amount_paid, status")
+        .eq("org_id", effectiveOrgId)
+        .in("doc_type", ["invoice", "proforma"])
+        .not("status", "in", "(draft,cancelled)")
+        .gte("doc_date", startOfYear)
+        .lte("doc_date", endOfYear);
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!effectiveOrgId,
+    staleTime: 120000,
+  });
+
+  // Normalize billing_documents to the same shape as client_invoices for the drill-down lookup
+  const yearlyInvoicesWithClients = useMemo(() => {
+    const mappedBilling = (yearlyBillingDocs || []).map((d: any) => ({
+      id: d.id,
+      invoice_number: d.doc_number,
+      amount: Number(d.total_amount) || 0,
+      status: d.status,
+      invoice_date: d.doc_date,
+      payment_received_date: d.status === "paid" ? d.doc_date : null,
+      document_type: d.doc_type === "proforma" ? "quotation" : "invoice",
+      clients: { id: null, company: d.client_name, first_name: d.client_name, last_name: "" },
+    }));
+    return [...(yearlyClientInvoices || []), ...mappedBilling];
+  }, [yearlyClientInvoices, yearlyBillingDocs]);
 
   const activityLoading = emailLoading || whatsappLoading || callsLoading || smsLoading;
 
