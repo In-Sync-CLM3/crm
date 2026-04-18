@@ -9,8 +9,13 @@ const corsHeaders = {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const BATCH_SIZE = 50; // Enrollments processed per run
-// Both daily email cap and step-1 target are read from mkt_engine_config at runtime — no hardcode here.
+// Batch size: 25 sends × ~3 s each ≈ 75 s — comfortably under the 150 s idle timeout.
+// Self-chain removed: the pg_cron heartbeat (job #26, every 5 min) is the sole
+// trigger. This eliminates concurrent-run double-send risk while still delivering
+// 300 sends/hour (25 × 12 runs) — enough for all active campaigns in the window.
+// If an invocation crashes or times out mid-batch, unprocessed enrollments keep
+// their old next_action_at (in the past) and are auto-recovered on the next cron tick.
+const BATCH_SIZE = 25;
 
 // Campaign sequence order is read from mkt_campaigns.sequence_priority at runtime.
 // To change the order or add/remove campaigns, update that column — no code change needed.
@@ -30,6 +35,7 @@ Deno.serve(async (req) => {
     const now    = new Date();
     const nowIso = now.toISOString();
     const today  = nowIso.split('T')[0];
+
 
     // 1. Load campaign sequence order + org_id from mkt_campaigns.
     //    sequence_priority (nullable int) defines position; NULL = not in sequence.
@@ -239,15 +245,6 @@ Deno.serve(async (req) => {
     }
 
     await logger.info('executor-complete', { executed, skipped, completed, failed });
-
-    // Self-chain when the batch was full — there may be more to process immediately.
-    if (enrollments.length >= cap) {
-      fetch(`${supabaseUrl}/functions/v1/mkt-sequence-executor`, {
-        method:  'POST',
-        headers: { 'Authorization': `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json' },
-        body:    '{}',
-      }).catch(() => {});
-    }
 
     return new Response(
       JSON.stringify({ message: 'Sequence execution complete', executed, skipped, completed, failed, active_campaign: activeCampaignId }),
