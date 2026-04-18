@@ -122,10 +122,10 @@ function fmtDate(iso: string | null): string {
 
 function keyMetric(row: ProductChannelRow): { value: string; label: string } {
   const sent = Number(row.sent);
-  const opens = Number(row.opens);
+  const clicks = Number(row.clicks);
   const delivered = Number(row.delivered);
   if (row.channel === "email") {
-    return { value: ratePct(opens, sent), label: "open rate" };
+    return { value: ratePct(clicks, sent), label: "click rate" };
   }
   if (row.channel === "whatsapp") {
     return { value: ratePct(delivered, sent), label: "delivered" };
@@ -193,7 +193,7 @@ function ActiveCell({ row, ch }: { row: ProductChannelRow; ch: typeof CHANNELS[0
           <div className="space-y-0.5">
             <div className="font-semibold">{ch.label}</div>
             <div>Sent: {Number(row.sent).toLocaleString()}</div>
-            {row.channel === "email" && <div>Opens: {Number(row.opens).toLocaleString()} · Clicks: {Number(row.clicks).toLocaleString()} · Replies: {Number(row.replies).toLocaleString()}</div>}
+            {row.channel === "email" && <div>Clicks: {Number(row.clicks).toLocaleString()} · Replies: {Number(row.replies).toLocaleString()} · Opens: {Number(row.opens).toLocaleString()}</div>}
             {row.channel === "whatsapp" && <div>Delivered: {Number(row.delivered).toLocaleString()} · Replies: {Number(row.replies).toLocaleString()}</div>}
             {row.actual_start_date && <div className="text-muted-foreground">Since {fmtDate(row.actual_start_date)}</div>}
           </div>
