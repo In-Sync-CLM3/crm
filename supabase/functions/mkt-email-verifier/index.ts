@@ -1,5 +1,4 @@
 import { getSupabaseClient } from '../_shared/supabaseClient.ts';
-import nodemailer from 'npm:nodemailer@6.9.14';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,11 +10,6 @@ const BATCH_SIZE = 200;
 const DELAY_MS = 100;
 // Retry dns_ok contacts every 7 days
 const DNS_OK_RETRY_DAYS = 7;
-// Promote pending_bounce → valid after 48 h with no bounce signal
-const PENDING_BOUNCE_PROMOTE_HOURS = 48;
-// Probe sender for G-Suite / M365 probe emails
-const PROBE_FROM = 'julie@paisaasaarthi.com';
-const PROBE_FROM_NAME = 'Julie Clay';
 
 // Consumer / free email providers — mark as 'hosted' immediately, skip SMTP probe.
 // These domains are not probeable and have no value in B2B campaigns.
@@ -39,31 +33,6 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/**
- * Send a probe email via Gmail SMTP.
- * Used for G-Suite and M365 hosted mailboxes where SMTP probing is blocked.
- * A bounce-back to anita.raiofficial1@gmail.com means the address is invalid.
- */
-async function sendProbeEmail(toEmail: string): Promise<void> {
-  const password = Deno.env.get('PROBE_EMAIL_PASSWORD');
-  if (!password) throw new Error('PROBE_EMAIL_PASSWORD not set');
-
-  const transporter = nodemailer.createTransport({
-    host: 'smtp.office365.com',
-    port: 587,
-    secure: false,
-    auth: { user: PROBE_FROM, pass: password },
-  });
-
-  await transporter.sendMail({
-    from: `${PROBE_FROM_NAME} <${PROBE_FROM}>`,
-    to: toEmail,
-    subject: 'Have a kit kat',
-    text: `I told my computer I needed a break. Now it won't stop sending me Kit-Kat ads.`,
-    html: `<p>I told my computer I needed a break. Now it won't stop sending me Kit-Kat ads.</p>`,
-  });
-}
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -77,16 +46,6 @@ Deno.serve(async (req) => {
     const limit: number = typeof body.limit === 'number' ? Math.min(body.limit, BATCH_SIZE) : BATCH_SIZE;
     // Always attempt SMTP probe — port 25 is now open on the Hetzner server.
     const verifyUrl = `${VERIFIER_URL}/verify?smtp=1`;
-
-    // Promote pending_bounce contacts that haven't bounced in 48 h → valid.
-    // Runs every invocation (cron every 15 min), so no dedicated cron needed.
-    const promoteAfter = new Date(Date.now() - PENDING_BOUNCE_PROMOTE_HOURS * 3600 * 1000).toISOString();
-    await supabase
-      .from('contacts')
-      .update({ email_verification_status: 'valid' })
-      .eq('email_verification_status', 'pending_bounce')
-      .is('email_bounce_type', null)
-      .lt('email_verified_at', promoteAfter);
 
     // Fetch unverified contacts:
     // - Never verified (email_verification_status IS NULL)
@@ -153,8 +112,10 @@ Deno.serve(async (req) => {
           const status: string = data.status || 'unknown';
           const reason: string = data.reason || '';
 
-          // G-Suite and M365 — SMTP probing is blocked by these providers.
-          // Send a real probe email from Gmail; if it bounces back, the address is invalid.
+          // G-Suite and M365 block SMTP probing entirely. We cannot confirm individual
+          // mailboxes without sending real emails — which harms sender reputation.
+          // Treat them as 'hosted' (same as consumer domains): send cautiously, rely
+          // on Resend bounce events to suppress bad addresses after the fact.
           const isWorkspaceHost = status === 'hosted' &&
             (reason === 'google_workspace' || reason === 'microsoft_365');
 
@@ -169,16 +130,16 @@ Deno.serve(async (req) => {
               .eq('id', contact.id);
             results['dns_ok'] = (results['dns_ok'] || 0) + 1;
           } else if (isWorkspaceHost) {
-            await sendProbeEmail(email);
+            // Mark as hosted — cannot probe without harming reputation.
             await supabase
               .from('contacts')
               .update({
-                email_verification_status: 'pending_bounce',
-                email_verification_provider: `probe-${reason}`,
+                email_verification_status: 'hosted',
+                email_verification_provider: `${reason}`,
                 email_verified_at: new Date().toISOString(),
               })
               .eq('id', contact.id);
-            results['pending_bounce'] = (results['pending_bounce'] || 0) + 1;
+            results['hosted'] = (results['hosted'] || 0) + 1;
           } else {
             await supabase
               .from('contacts')

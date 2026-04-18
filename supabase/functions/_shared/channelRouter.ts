@@ -112,8 +112,12 @@ async function isOptedOut(
 function hasContactInfo(lead: Lead, channel: string): boolean {
   switch (channel) {
     case 'email':
-      // Suppress verified-invalid emails to prevent hard bounces
+      // Block addresses that are confirmed invalid or catch-all domains.
+      // catch_all domains accept any SMTP connection but silently drop or
+      // defer non-existent mailboxes — they generate deferred bounces that
+      // erode sender reputation the same way hard bounces do.
       if (lead.email_verification_status === 'invalid') return false;
+      if (lead.email_verification_status === 'catch_all') return false;
       return !!lead.email;
     case 'whatsapp':
     case 'call':
