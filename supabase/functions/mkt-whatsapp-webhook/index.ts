@@ -29,6 +29,15 @@ Deno.serve(async (req) => {
     const messages = payload?.whatsapp?.messages || payload?.messages || [];
     const statuses = payload?.whatsapp?.statuses || payload?.statuses || [];
 
+    // Log raw payload once for debugging — helps trace Exotel callback format
+    await logger.info('webhook-received', {
+      has_statuses: statuses.length > 0,
+      has_messages: messages.length > 0,
+      has_custom_data: !!payload.custom_data,
+      root_status: payload.status ?? null,
+      first_status: statuses[0] ?? null,
+    });
+
     // Handle status updates (delivery, read receipts)
     for (const status of statuses) {
       await handleStatusUpdate(supabase, status, logger);
@@ -39,15 +48,25 @@ Deno.serve(async (req) => {
       await handleInboundMessage(supabase, supabaseUrl, serviceRoleKey, message, logger);
     }
 
-    // Also handle custom_data style callbacks
+    // Handle custom_data callbacks — action_id-based update.
+    // Exotel may send the delivery status at root level (payload.status) OR
+    // nested inside payload.whatsapp.statuses[0].status — check both.
     if (payload.custom_data) {
       try {
         const customData = typeof payload.custom_data === 'string'
           ? JSON.parse(payload.custom_data)
           : payload.custom_data;
 
-        if (customData.action_id && payload.status) {
-          await handleStatusByActionId(supabase, customData, payload.status, logger);
+        if (customData.action_id) {
+          const callbackStatus =
+            payload.status ??
+            payload.whatsapp?.statuses?.[0]?.status ??
+            payload.statuses?.[0]?.status ??
+            null;
+
+          if (callbackStatus) {
+            await handleStatusByActionId(supabase, customData, String(callbackStatus).toLowerCase(), logger);
+          }
         }
       } catch {
         // custom_data might not be JSON
@@ -78,16 +97,19 @@ async function handleStatusUpdate(
   const messageSid = status.id as string || status.sid as string;
   if (!messageSid) return;
 
-  const statusType = status.status as string;
+  const statusType = ((status.status as string) || '').toLowerCase();
 
-  // Find the action by external_id
+  // Find the action by external_id (the message SID stored at send time)
   const { data: action } = await supabase
     .from('mkt_sequence_actions')
     .select('id, enrollment_id')
     .eq('external_id', messageSid)
-    .single();
+    .maybeSingle();
 
-  if (!action) return;
+  if (!action) {
+    await logger.info('status-no-action-match', { message_sid: messageSid, status: statusType });
+    return;
+  }
 
   const updates: Record<string, unknown> = {};
 
@@ -132,7 +154,8 @@ async function handleStatusByActionId(
 ): Promise<void> {
   const updates: Record<string, unknown> = {};
 
-  switch (status) {
+  const s = status.toLowerCase();
+  switch (s) {
     case 'delivered':
     case 'sent':
       updates.status = 'delivered';
