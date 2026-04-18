@@ -36,11 +36,16 @@ Deno.serve(async (req) => {
     //    Single source of truth: update that column to reorder campaigns.
     const { data: sequencedCampaigns } = await supabase
       .from('mkt_campaigns')
-      .select('id, org_id')
+      .select('id, org_id, status')
       .not('sequence_priority', 'is', null)
       .order('sequence_priority', { ascending: true });
 
-    const campaignOrder = (sequencedCampaigns ?? []).map((c) => c.id as string);
+    // campaignOrder: ALL sequenced campaigns (for step1 counting).
+    // activeCampaignOrder: only 'active' campaigns — paused/inactive campaigns are
+    // skipped when finding the current activeCampaignId so their absent enrollments
+    // don't block lower-priority active campaigns from being selected.
+    const campaignOrder       = (sequencedCampaigns ?? []).map((c) => c.id as string);
+    const activeCampaignOrder = (sequencedCampaigns ?? []).filter((c) => c.status === 'active').map((c) => c.id as string);
     const orgId = (sequencedCampaigns ?? [])[0]?.org_id as string;
 
     if (campaignOrder.length === 0) {
@@ -113,7 +118,7 @@ Deno.serve(async (req) => {
     let activeCampaignId: string | null   = null;
     let step1AlreadySent                  = 0;
 
-    for (const cid of campaignOrder) {
+    for (const cid of activeCampaignOrder) {
       const stepId = step1IdByCampaign.get(cid);
       if (!stepId) continue;
 

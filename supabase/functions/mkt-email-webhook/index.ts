@@ -12,6 +12,38 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const SITE_URL = Deno.env.get('SITE_URL') || 'https://app.in-sync.io';
+
+// ---------------------------------------------------------------------------
+// Redirect allowlist — derived from mkt_products (SoT).
+// Domains are cached in-process for 60 s; a new product onboarded to
+// mkt_products is automatically allowlisted on the next cache refresh.
+// Static entries: the app's own SITE_URL hostname is always included.
+// ---------------------------------------------------------------------------
+let _allowlistCache: { domains: Set<string>; expiresAt: number } | null = null;
+
+async function getAllowedDomains(
+  supabase: ReturnType<typeof getSupabaseClient>
+): Promise<Set<string>> {
+  const now = Date.now();
+  if (_allowlistCache && now < _allowlistCache.expiresAt) return _allowlistCache.domains;
+
+  const domains = new Set<string>();
+
+  // Always allow our own app domain
+  try { domains.add(new URL(SITE_URL).hostname); } catch { /* ignore */ }
+
+  // Derive from mkt_products — every registered product's URLs are trusted
+  const { data } = await supabase.from('mkt_products').select('product_url, payment_url');
+  for (const row of data || []) {
+    try { if (row.product_url) domains.add(new URL(row.product_url).hostname); } catch { /* ignore */ }
+    try { if (row.payment_url) domains.add(new URL(row.payment_url).hostname); } catch { /* ignore */ }
+  }
+
+  _allowlistCache = { domains, expiresAt: now + 60_000 };
+  return domains;
+}
+
 /**
  * Handles email events:
  * 1. Resend webhook events (delivered, opened, clicked, bounced, complained)
@@ -121,11 +153,14 @@ function isSecurityScanner(req: Request): boolean {
 
 /**
  * Handle click tracking — redirect to original URL.
+ * Enforces a domain allowlist derived from mkt_products (SoT).
  * Skips recording if the request looks like an email security scanner.
  */
 async function handleClickTracking(url: URL, req: Request): Promise<Response> {
+  const startMs = Date.now();
   const trackingId = url.searchParams.get('id');
   const targetUrl = url.searchParams.get('url');
+  const channel = url.searchParams.get('channel') || 'email'; // email | whatsapp
 
   if (!targetUrl) {
     return new Response('Missing URL', { status: 400 });
@@ -133,25 +168,179 @@ async function handleClickTracking(url: URL, req: Request): Promise<Response> {
 
   const decodedUrl = decodeURIComponent(targetUrl);
 
-  if (trackingId && !isSecurityScanner(req)) {
-    const actionId = extractActionId(trackingId);
+  // ---------------------------------------------------------------------------
+  // Allowlist check — must pass before any redirect or recording.
+  // Prevents use of this endpoint as an open redirector.
+  // ---------------------------------------------------------------------------
+  const supabase = getSupabaseClient();
+  const logger = createEngineLogger('mkt-email-webhook');
 
-    if (actionId) {
-      const supabase = getSupabaseClient();
+  let hostname: string;
+  try {
+    hostname = new URL(decodedUrl).hostname;
+  } catch {
+    await logger.warn('allowlist-invalid-url', { url: decodedUrl, channel });
+    return new Response(null, { status: 302, headers: { Location: SITE_URL } });
+  }
 
-      // Update the action record — only first click
-      await supabase
-        .from('mkt_sequence_actions')
-        .update({ clicked_at: new Date().toISOString() })
-        .eq('id', actionId)
-        .is('clicked_at', null);
+  const allowedDomains = await getAllowedDomains(supabase);
+  if (!allowedDomains.has(hostname)) {
+    await logger.warn('allowlist-rejection', { hostname, url: decodedUrl, channel });
+    return new Response(null, { status: 302, headers: { Location: SITE_URL } });
+  }
 
-      // Log engagement score delta
-      await updateEngagementScore(supabase, actionId, 'email_click', 5);
+  // ---------------------------------------------------------------------------
+  // Signature verification (v=2 signed links; v=1 legacy with warn log)
+  // ---------------------------------------------------------------------------
+  const v = url.searchParams.get('v') || '1';
+  if (v === '2') {
+    const ts = url.searchParams.get('ts');
+    const sig = url.searchParams.get('sig');
+    const hmacSecret = Deno.env.get('MKT_CLICK_HMAC_SECRET');
+    const actionIdForSig = trackingId ? extractActionId(trackingId) : null;
+
+    if (!ts || !sig || !actionIdForSig || !hmacSecret) {
+      await logger.warn('sig-missing-params', { v, channel });
+      return new Response(null, { status: 302, headers: { Location: SITE_URL } });
+    }
+
+    // Reject links older than 90 days
+    const linkAge = Date.now() - parseInt(ts, 10);
+    if (linkAge > 90 * 24 * 60 * 60 * 1000) {
+      await logger.warn('sig-expired', { action_id: actionIdForSig, age_days: Math.floor(linkAge / 86400000), channel });
+      return new Response(null, { status: 302, headers: { Location: SITE_URL } });
+    }
+
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(hmacSecret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    const expectedBytes = await crypto.subtle.sign(
+      'HMAC',
+      key,
+      new TextEncoder().encode(`${actionIdForSig}|${ts}`)
+    );
+    const expectedSig = Array.from(new Uint8Array(expectedBytes)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    if (sig !== expectedSig) {
+      await logger.warn('sig-invalid', { action_id: actionIdForSig, channel });
+      return new Response(null, { status: 302, headers: { Location: SITE_URL } });
+    }
+  } else {
+    // v=1: legacy unsigned link — allow but warn so we know when it's safe to remove fallback
+    await logger.warn('sig-v1-legacy', { tracking_id: trackingId, channel });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Record click — log every event; score only real, non-duplicate clicks.
+  // ---------------------------------------------------------------------------
+  const clickedAt = new Date();
+  const actionId = trackingId ? extractActionId(trackingId) : null;
+
+  // Determine if bot (UA check already run above; add timing heuristic here)
+  const uaBot = isSecurityScanner(req);
+  let isBotClick = uaBot;
+  let botReason: string | null = uaBot ? 'ua_match' : null;
+
+  // Fetch action for timing heuristic + contact_id
+  let contactId: string | null = null;
+  let orgId: string | null = null;
+  if (actionId) {
+    const { data: action } = await supabase
+      .from('mkt_sequence_actions')
+      .select('org_id, enrollment_id, sent_at, clicked_at')
+      .eq('id', actionId)
+      .single();
+
+    if (action) {
+      orgId = action.org_id;
+
+      // Timing heuristic: click within 2 s of send = almost certainly a scanner
+      if (!isBotClick && action.sent_at) {
+        const msSinceSend = clickedAt.getTime() - new Date(action.sent_at).getTime();
+        if (msSinceSend >= 0 && msSinceSend < 2000) {
+          isBotClick = true;
+          botReason = 'timing_heuristic';
+        }
+      }
+
+      // Resolve contact_id from enrollment
+      if (action.enrollment_id) {
+        const { data: enr } = await supabase
+          .from('mkt_sequence_enrollments')
+          .select('lead_id')
+          .eq('id', action.enrollment_id)
+          .single();
+        if (enr?.lead_id) contactId = enr.lead_id;
+      }
+
+      // Stamp first-touch clicked_at on action record (real humans only)
+      if (!isBotClick && !action.clicked_at) {
+        await supabase
+          .from('mkt_sequence_actions')
+          .update({ clicked_at: clickedAt.toISOString() })
+          .eq('id', actionId)
+          .is('clicked_at', null);
+      }
     }
   }
 
-  // Redirect to the original URL
+  // Dedup check: same action + url within 3 s → mark as duplicate, skip scoring
+  let isDuplicate = false;
+  if (actionId && !isBotClick) {
+    const windowStart = new Date(clickedAt.getTime() - 3000).toISOString();
+    const { count } = await supabase
+      .from('mkt_click_events')
+      .select('id', { count: 'exact', head: true })
+      .eq('action_id', actionId)
+      .eq('url', decodedUrl)
+      .eq('is_bot', false)
+      .gte('clicked_at', windowStart);
+    if ((count || 0) > 0) isDuplicate = true;
+  }
+
+  // Hash IP for storage (never log raw IP)
+  const rawIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || '';
+  let ipHash = '';
+  if (rawIp) {
+    const hashBytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawIp));
+    ipHash = Array.from(new Uint8Array(hashBytes)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // Insert event row (every click, including bots and duplicates)
+  if (actionId && orgId) {
+    await supabase.from('mkt_click_events').insert({
+      org_id: orgId,
+      action_id: actionId,
+      contact_id: contactId,
+      channel,
+      url: decodedUrl,
+      clicked_at: clickedAt.toISOString(),
+      user_agent: req.headers.get('user-agent') || null,
+      ip_hash: ipHash || null,
+      is_bot: isBotClick,
+      bot_reason: botReason,
+      is_duplicate: isDuplicate,
+    });
+  }
+
+  // Score engagement: real humans, first-touch only
+  if (actionId && !isBotClick && !isDuplicate) {
+    await updateEngagementScore(supabase, actionId, 'email_click', 5);
+  }
+
+  await logger.info('click-redirect', {
+    action_id: actionId,
+    channel,
+    is_bot: isBotClick,
+    is_duplicate: isDuplicate,
+    duration_ms: Date.now() - startMs,
+  });
+
+  // Redirect to the verified destination
   return new Response(null, {
     status: 302,
     headers: { Location: decodedUrl },

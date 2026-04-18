@@ -78,6 +78,47 @@ Deno.serve(async (req) => {
         for (const [key, value] of Object.entries(vars)) {
           messageContent = messageContent.replaceAll(key, value);
         }
+
+        // Rewrite URLs in message body for click tracking (same webhook, channel=whatsapp)
+        if (messageContent) {
+          const trackingDomain = Deno.env.get('MKT_TRACKING_DOMAIN') || supabaseUrl;
+          const ts = Date.now();
+          const hmacSecret = Deno.env.get('MKT_CLICK_HMAC_SECRET');
+          let clickSig = '';
+          if (hmacSecret) {
+            const key = await crypto.subtle.importKey(
+              'raw',
+              new TextEncoder().encode(hmacSecret),
+              { name: 'HMAC', hash: 'SHA-256' },
+              false,
+              ['sign']
+            );
+            const sigBytes = await crypto.subtle.sign(
+              'HMAC',
+              key,
+              new TextEncoder().encode(`${action_id}|${ts}`)
+            );
+            clickSig = Array.from(new Uint8Array(sigBytes)).map(b => b.toString(16).padStart(2, '0')).join('');
+          }
+          const vParam = clickSig ? `&v=2&ts=${ts}&sig=${clickSig}` : '&v=1';
+          const trackingPixelId = `mkt_${action_id}_${ts}`;
+          const campaignSlug = 'whatsapp_outbound';
+
+          messageContent = messageContent.replace(
+            /https?:\/\/[^\s<>"{}|\\^`[\]]+/g,
+            (rawUrl) => {
+              if (rawUrl.includes('mkt-email-webhook')) return rawUrl;
+              let urlObj: URL;
+              try { urlObj = new URL(rawUrl); } catch { return rawUrl; }
+              urlObj.searchParams.set('utm_source', 'insync_engine');
+              urlObj.searchParams.set('utm_medium', 'whatsapp');
+              urlObj.searchParams.set('utm_campaign', campaignSlug);
+              urlObj.searchParams.set('utm_content', action_id);
+              const urlWithUtm = urlObj.toString();
+              return `${trackingDomain}/functions/v1/mkt-email-webhook?action=click&v=2&id=${trackingPixelId}${vParam}&channel=whatsapp&url=${encodeURIComponent(urlWithUtm)}`;
+            }
+          );
+        }
       }
     }
 

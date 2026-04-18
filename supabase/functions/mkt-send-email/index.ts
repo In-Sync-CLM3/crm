@@ -137,11 +137,15 @@ Deno.serve(async (req) => {
     const trackingPixelId = `mkt_${action_id}_${Date.now()}`;
     const unsubscribeToken = crypto.randomUUID();
 
+    // Tracking domain: branded custom domain if set, falls back to Supabase URL.
+    // Set MKT_TRACKING_DOMAIN=https://track.in-sync.co.in to activate custom domain.
+    const trackingDomain = Deno.env.get('MKT_TRACKING_DOMAIN') || supabaseUrl;
+
     // Build final HTML
     let finalHtml = personalizedContent.html;
 
     // Add unsubscribe link
-    const unsubscribeUrl = `${supabaseUrl}/functions/v1/mkt-email-webhook?action=unsubscribe&token=${unsubscribeToken}&lead_id=${lead_id}&org_id=${orgId}`;
+    const unsubscribeUrl = `${trackingDomain}/functions/v1/mkt-email-webhook?action=unsubscribe&token=${unsubscribeToken}&lead_id=${lead_id}&org_id=${orgId}`;
     const unsubscribeBlock = `
       <div style="margin: 40px 0 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center;">
         <p style="margin: 0; font-size: 12px; color: #6b7280; line-height: 1.5;">
@@ -155,7 +159,7 @@ Deno.serve(async (req) => {
     }
 
     // Add tracking pixel
-    const trackingPixel = `<img src="${supabaseUrl}/functions/v1/mkt-email-webhook?action=open&id=${trackingPixelId}" width="1" height="1" style="display:none" alt="" />`;
+    const trackingPixel = `<img src="${trackingDomain}/functions/v1/mkt-email-webhook?action=open&id=${trackingPixelId}" width="1" height="1" style="display:none" alt="" />`;
     finalHtml = finalHtml.replace('</body>', `${trackingPixel}</body>`);
     if (!finalHtml.includes('</body>')) {
       finalHtml += trackingPixel;
@@ -163,15 +167,34 @@ Deno.serve(async (req) => {
 
     // Wrap links with click tracking and append UTM parameters
     const campaignName = (campaign_name || (template.name as string) || 'mkt_outbound').replace(/\s+/g, '_').toLowerCase();
+
+    // Compute HMAC once per send (v=2 signed links)
+    const ts = Date.now();
+    const hmacSecret = Deno.env.get('MKT_CLICK_HMAC_SECRET');
+    let clickSig = '';
+    if (hmacSecret) {
+      const key = await crypto.subtle.importKey(
+        'raw',
+        new TextEncoder().encode(hmacSecret),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+      );
+      const sigBytes = await crypto.subtle.sign(
+        'HMAC',
+        key,
+        new TextEncoder().encode(`${action_id}|${ts}`)
+      );
+      clickSig = Array.from(new Uint8Array(sigBytes)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    const vParam = clickSig ? `&v=2&ts=${ts}&sig=${clickSig}` : '&v=1';
+
     finalHtml = finalHtml.replace(
       /<a\s+([^>]*href=["']([^"']+)["'][^>]*)>/gi,
       (match, attrs, url) => {
         if (url.includes('unsubscribe') || url.includes('mkt-email-webhook')) return match;
-        // Append UTM parameters to the original URL
-        const separator = url.includes('?') ? '&' : '?';
-        const utmParams = `utm_source=insync_engine&utm_medium=email&utm_campaign=${encodeURIComponent(campaignName)}&utm_content=${encodeURIComponent(action_id)}`;
-        const urlWithUtm = `${url}${separator}${utmParams}`;
-        const trackedUrl = `${supabaseUrl}/functions/v1/mkt-email-webhook?action=click&id=${trackingPixelId}&url=${encodeURIComponent(urlWithUtm)}`;
+        const urlWithUtm = buildUtmUrl(url, 'email', campaignName, action_id);
+        const trackedUrl = `${trackingDomain}/functions/v1/mkt-email-webhook?action=click&v=2&id=${trackingPixelId}${vParam}&channel=email&url=${encodeURIComponent(urlWithUtm)}`;
         return match.replace(url, trackedUrl);
       }
     );
@@ -184,28 +207,37 @@ Deno.serve(async (req) => {
     const replyTo = `Arohan Shaw <arohan@reply.in-sync.co.in>`;
     const fromEmail = `${fromName} <arohan@in-sync.co.in>`;
 
-    const sendResponse = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
+    const resendPayload = JSON.stringify({
+      from: fromEmail,
+      to: [lead.email],
+      subject: personalizedContent.subject,
+      html: finalHtml,
+      reply_to: replyTo,
       headers: {
-        'Authorization': `Bearer ${resendApiKey}`,
-        'Content-Type': 'application/json',
+        'List-Unsubscribe': `<mailto:unsubscribe@in-sync.co.in>, <${unsubscribeUrl}>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
       },
-      body: JSON.stringify({
-        from: fromEmail,
-        to: [lead.email],
-        subject: personalizedContent.subject,
-        html: finalHtml,
-        reply_to: replyTo,
-        headers: {
-          'List-Unsubscribe': `<mailto:unsubscribe@in-sync.co.in>, <${unsubscribeUrl}>`,
-          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
-        },
-        tags: [
-          { name: 'mkt_engine', value: 'true' },
-          { name: 'action_id', value: (action_id || '').replace(/[^a-zA-Z0-9_-]/g, '_') },
-        ],
-      }),
+      tags: [
+        { name: 'mkt_engine', value: 'true' },
+        { name: 'action_id', value: (action_id || '').replace(/[^a-zA-Z0-9_-]/g, '_') },
+      ],
     });
+
+    let sendResponse = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${resendApiKey}`, 'Content-Type': 'application/json' },
+      body: resendPayload,
+    });
+
+    // On 429 rate-limit, wait 1.1 s and retry once.
+    if (sendResponse.status === 429) {
+      await new Promise((r) => setTimeout(r, 1100));
+      sendResponse = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${resendApiKey}`, 'Content-Type': 'application/json' },
+        body: resendPayload,
+      });
+    }
 
     if (!sendResponse.ok) {
       const errText = await sendResponse.text();
@@ -322,6 +354,20 @@ Deno.serve(async (req) => {
     );
   }
 });
+
+/**
+ * Build a URL with UTM parameters appended using the URL API.
+ * Handles fragments, existing query strings, and trailing slashes correctly.
+ */
+function buildUtmUrl(rawUrl: string, medium: string, campaignName: string, actionId: string): string {
+  let urlObj: URL;
+  try { urlObj = new URL(rawUrl); } catch { return rawUrl; }
+  urlObj.searchParams.set('utm_source', 'insync_engine');
+  urlObj.searchParams.set('utm_medium', medium);
+  urlObj.searchParams.set('utm_campaign', campaignName);
+  urlObj.searchParams.set('utm_content', actionId);
+  return urlObj.toString();
+}
 
 /**
  * Personalize email subject and body using Haiku.
