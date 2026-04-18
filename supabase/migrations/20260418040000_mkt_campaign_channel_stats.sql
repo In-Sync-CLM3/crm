@@ -1,7 +1,6 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import postgres from "https://deno.land/x/postgresjs@v3.4.4/mod.js";
+-- mkt_campaign_channel_stats: per-campaign, per-channel action aggregates.
+-- Powers the channel-aware campaign cards in the Marketing dashboard.
 
-const MIGRATION = `
 CREATE OR REPLACE FUNCTION public.mkt_campaign_channel_stats(p_org_id uuid)
 RETURNS TABLE (
   campaign_id   uuid,
@@ -32,26 +31,3 @@ LANGUAGE sql STABLE SECURITY DEFINER AS $$
 $$;
 
 GRANT EXECUTE ON FUNCTION public.mkt_campaign_channel_stats(uuid) TO authenticated;
-`;
-
-serve(async (_req) => {
-  const dbUrl = Deno.env.get("SUPABASE_DB_URL");
-  if (!dbUrl) {
-    return new Response(JSON.stringify({ error: "SUPABASE_DB_URL not set" }), {
-      status: 500, headers: { "Content-Type": "application/json" },
-    });
-  }
-  const sql = postgres(dbUrl, { max: 1 });
-  try {
-    await sql.unsafe(MIGRATION);
-    return new Response(JSON.stringify({ ok: true, message: "mkt_campaign_channel_stats created" }), {
-      headers: { "Content-Type": "application/json" },
-    });
-  } catch (e) {
-    return new Response(JSON.stringify({ error: String(e) }), {
-      status: 500, headers: { "Content-Type": "application/json" },
-    });
-  } finally {
-    await sql.end();
-  }
-});
