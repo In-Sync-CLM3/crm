@@ -125,7 +125,8 @@ Deno.serve(async (req) => {
     if (!messageContent) throw new Error('No template content resolved');
 
     const formattedPhone = formatPhoneE164(lead.phone);
-    const webhookUrl = `${supabaseUrl}/functions/v1/mkt-whatsapp-webhook`;
+    const anonKey    = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
+    const webhookUrl = `${supabaseUrl}/functions/v1/mkt-whatsapp-webhook?apikey=${anonKey}`;
 
     // Build and send
     const payload = buildExotelPayload({
