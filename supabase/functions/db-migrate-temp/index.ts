@@ -149,7 +149,14 @@ LANGUAGE sql STABLE SECURITY DEFINER AS $$
     COUNT(a.id) FILTER (WHERE a.replied_at IS NOT NULL)*10+COUNT(a.id) FILTER (WHERE a.delivered_at IS NOT NULL AND a.channel='whatsapp')*2) DESC
   LIMIT p_limit;
 $$;
-GRANT EXECUTE ON FUNCTION public.mkt_hot_leads(uuid,int) TO authenticated;`
+GRANT EXECUTE ON FUNCTION public.mkt_hot_leads(uuid,int) TO authenticated;`,
+
+  // 7. Campaign bounce guard — probe_sent_at column
+  `ALTER TABLE public.mkt_campaigns
+  ADD COLUMN IF NOT EXISTS probe_sent_at TIMESTAMPTZ;
+UPDATE public.mkt_campaigns
+SET probe_sent_at = created_at
+WHERE probe_sent_at IS NULL;`
 ];
 
 serve(async (_req) => {
