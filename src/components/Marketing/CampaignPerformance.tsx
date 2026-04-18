@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/table";
 import { LoadingState } from "@/components/common/LoadingState";
 import { Megaphone, Globe } from "lucide-react";
+import { CampaignHeatmap } from "./CampaignHeatmap";
 
 const STEP1_TARGET = 1000;
 
@@ -298,6 +299,9 @@ export function CampaignPerformance({ days }: CampaignPerformanceProps) {
           </CardContent>
         </Card>
       )}
+
+      {/* Daily heatmap */}
+      <CampaignHeatmap />
 
       {/* GA4 landing traffic */}
       <Card className="p-3">
