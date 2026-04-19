@@ -63,25 +63,88 @@ export function InvoicesTab() {
   const [editPaymentDate, setEditPaymentDate] = useState("");
   const [editActualPayment, setEditActualPayment] = useState("");
 
-  // Fetch all invoices with entity info
+  // Fetch all invoices with entity info — merges client_invoices and billing_documents
   const { data: invoices, isLoading } = useQuery({
     queryKey: ["all-invoices", effectiveOrgId],
     queryFn: async () => {
       if (!effectiveOrgId) return [];
-      
-      const { data, error } = await supabase
-        .from("client_invoices")
-        .select(`
-          *,
-          client:clients(id, first_name, last_name, company),
-          contact:contacts(id, first_name, last_name, company),
-          external_entity:external_entities(id, name, company)
-        `)
-        .eq("org_id", effectiveOrgId)
-        .order("invoice_date", { ascending: false });
-      
-      if (error) throw error;
-      return data;
+
+      const [clientInvoicesRes, billingDocsRes] = await Promise.all([
+        supabase
+          .from("client_invoices")
+          .select(`
+            *,
+            client:clients(id, first_name, last_name, company),
+            contact:contacts(id, first_name, last_name, company),
+            external_entity:external_entities(id, name, company)
+          `)
+          .eq("org_id", effectiveOrgId),
+        supabase
+          .from("billing_documents")
+          .select(`
+            id, org_id, doc_type, doc_number, doc_date, due_date, status,
+            subtotal, total_tax, total_amount, amount_paid, balance_due,
+            notes, client_id, client_name, client_billing_snapshot,
+            client:clients(id, first_name, last_name, company)
+          `)
+          .eq("org_id", effectiveOrgId),
+      ]);
+
+      if (clientInvoicesRes.error) throw clientInvoicesRes.error;
+      if (billingDocsRes.error) throw billingDocsRes.error;
+
+      const clientRows = (clientInvoicesRes.data || []).map((r: any) => ({
+        ...r,
+        _source: "client_invoices" as const,
+      }));
+
+      const billingRows = (billingDocsRes.data || []).map((d: any) => {
+        // Prefer resolved client; fall back to snapshot for name-only display
+        const snapshot = d.client_billing_snapshot || null;
+        const fallbackClient = !d.client && (snapshot || d.client_name)
+          ? {
+              id: d.client_id || null,
+              first_name: snapshot?.first_name || d.client_name || "",
+              last_name: snapshot?.last_name || "",
+              company: snapshot?.company || d.client_name || "",
+            }
+          : null;
+
+        return {
+          id: d.id,
+          _source: "billing_documents" as const,
+          org_id: d.org_id,
+          invoice_number: d.doc_number,
+          invoice_date: d.doc_date,
+          due_date: d.due_date,
+          document_type: d.doc_type,
+          status: d.status || "draft",
+          amount: Number(d.subtotal || 0),
+          tax_amount: Number(d.total_tax || 0),
+          currency: "INR",
+          notes: d.notes,
+          file_url: null,
+          client_id: d.client_id,
+          contact_id: null,
+          external_entity_id: null,
+          client: d.client || fallbackClient,
+          contact: null,
+          external_entity: null,
+          tds_amount: 0,
+          payment_received_date: null,
+          actual_payment_received: null,
+          amount_paid: Number(d.amount_paid || 0),
+          balance_due: Number(d.balance_due || 0),
+        };
+      });
+
+      const merged = [...clientRows, ...billingRows].sort((a, b) => {
+        const da = a.invoice_date ? new Date(a.invoice_date).getTime() : 0;
+        const db = b.invoice_date ? new Date(b.invoice_date).getTime() : 0;
+        return db - da;
+      });
+
+      return merged;
     },
     enabled: !!effectiveOrgId,
   });
@@ -95,11 +158,12 @@ export function InvoicesTab() {
     
     const matchesStatus = statusFilter === "all" || inv.status === statusFilter;
     const matchesType = typeFilter === "all" || inv.document_type === typeFilter || (typeFilter === "proforma" && inv.document_type === "quotation");
-    
+
     let matchesEntityType = true;
     if (entityTypeFilter === "client") matchesEntityType = !!inv.client_id;
     else if (entityTypeFilter === "contact") matchesEntityType = !!inv.contact_id;
     else if (entityTypeFilter === "external") matchesEntityType = !!inv.external_entity_id;
+    else if (entityTypeFilter === "billing") matchesEntityType = inv._source === "billing_documents";
     
     return matchesSearch && matchesStatus && matchesType && matchesEntityType;
   });
@@ -429,6 +493,7 @@ export function InvoicesTab() {
               <SelectItem value="all">All Types</SelectItem>
               <SelectItem value="invoice">Invoice</SelectItem>
               <SelectItem value="proforma">Proforma Invoice</SelectItem>
+              <SelectItem value="credit_note">Credit Note</SelectItem>
             </SelectContent>
           </Select>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -451,6 +516,7 @@ export function InvoicesTab() {
               <SelectItem value="client">Clients</SelectItem>
               <SelectItem value="contact">Contacts</SelectItem>
               <SelectItem value="external">External</SelectItem>
+              <SelectItem value="billing">Billing System</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -647,19 +713,28 @@ export function InvoicesTab() {
                   const statusInfo = invoiceStatuses.find((s) => s.value === inv.status);
                   const total = (inv.amount || 0) + (inv.tax_amount || 0);
                   const isProforma = inv.document_type === "quotation" || inv.document_type === "proforma";
-                 const isEditing = editingInvoiceId === inv.id;
-                 const tdsDeducted = inv.tds_amount || 0;
+                  const isCreditNote = inv.document_type === "credit_note";
+                  const isBilling = inv._source === "billing_documents";
+                  const isEditing = editingInvoiceId === inv.id;
+                  const tdsDeducted = inv.tds_amount || 0;
 
                   return (
-                    <TableRow 
-                      key={inv.id}
+                    <TableRow
+                      key={`${inv._source || "client_invoices"}_${inv.id}`}
                      className={inv.file_url && !isEditing ? "cursor-pointer hover:bg-muted/50" : ""}
                      onClick={() => !isEditing && inv.file_url && setViewingFile(inv.file_url)}
                     >
-                      <TableCell className="font-medium">{inv.invoice_number}</TableCell>
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-2">
+                          <span>{inv.invoice_number}</span>
+                          {isBilling && (
+                            <Badge variant="outline" className="text-[10px] px-1 py-0">Billing</Badge>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell>
-                        <Badge variant={isProforma ? "secondary" : "default"}>
-                          {isProforma ? "Proforma" : "Invoice"}
+                        <Badge variant={isCreditNote ? "destructive" : isProforma ? "secondary" : "default"}>
+                          {isCreditNote ? "Credit Note" : isProforma ? "Proforma" : "Invoice"}
                         </Badge>
                       </TableCell>
                       <TableCell>
@@ -700,25 +775,31 @@ export function InvoicesTab() {
                        )}
                      </TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
-                        <Select
-                          value={inv.status}
-                          onValueChange={(newStatus) => updateStatusMutation.mutate({ invoiceId: inv.id, newStatus })}
-                        >
-                          <SelectTrigger className="w-[100px] h-7">
-                            <Badge variant={statusInfo?.variant}>{statusInfo?.label}</Badge>
-                          </SelectTrigger>
-                          <SelectContent>
-                            {invoiceStatuses.map((s) => (
-                              <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        {isBilling ? (
+                          <Badge variant={statusInfo?.variant ?? "outline"}>
+                            {statusInfo?.label ?? inv.status}
+                          </Badge>
+                        ) : (
+                          <Select
+                            value={inv.status}
+                            onValueChange={(newStatus) => updateStatusMutation.mutate({ invoiceId: inv.id, newStatus })}
+                          >
+                            <SelectTrigger className="w-[100px] h-7">
+                              <Badge variant={statusInfo?.variant}>{statusInfo?.label}</Badge>
+                            </SelectTrigger>
+                            <SelectContent>
+                              {invoiceStatuses.map((s) => (
+                                <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
                       </TableCell>
                       <TableCell>{format(new Date(inv.invoice_date), "MMM d, yyyy")}</TableCell>
                       <TableCell>{inv.due_date ? format(new Date(inv.due_date), "MMM d, yyyy") : "-"}</TableCell>
                       <TableCell className="text-right space-x-1" onClick={(e) => e.stopPropagation()}>
                        {/* Edit button */}
-                      {!isEditing && inv.status === "paid" && (
+                      {!isBilling && !isEditing && inv.status === "paid" && (
                          <Button
                            variant="ghost"
                            size="icon"
@@ -749,7 +830,7 @@ export function InvoicesTab() {
                            </Button>
                          </>
                        )}
-                        {isProforma && (
+                        {!isBilling && isProforma && (
                           <Button
                             variant="ghost"
                             size="icon"
@@ -766,14 +847,16 @@ export function InvoicesTab() {
                             </a>
                           </Button>
                         )}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => deleteInvoiceMutation.mutate(inv.id)}
-                          title="Delete"
-                        >
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
+                        {!isBilling && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => deleteInvoiceMutation.mutate(inv.id)}
+                            title="Delete"
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   );
