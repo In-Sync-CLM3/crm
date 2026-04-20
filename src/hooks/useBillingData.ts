@@ -415,6 +415,22 @@ export function useBillingData() {
       }
 
       const { items, client, id, ...docData } = doc as any;
+      // On PI→Invoice conversion, swap proforma boilerplate (e.g. "Tax invoice
+      // will be issued upon receipt of payment") for the invoice-default terms.
+      // Only override when the source used the proforma default; custom edits
+      // the user made on the PI are preserved.
+      const sourceTerms = docData.terms_and_conditions || "";
+      const isProformaBoilerplate =
+        doc.doc_type === "proforma" &&
+        targetType === "invoice" &&
+        (!sourceTerms || sourceTerms === (currentSettings.default_proforma_terms || ""));
+      const resolvedTerms = isProformaBoilerplate
+        ? (currentSettings.default_terms || null)
+        : (sourceTerms || null);
+      const resolvedNotes = isProformaBoilerplate
+        ? (currentSettings.default_terms || null)
+        : (docData.notes || null);
+
       const row: any = {
         org_id: effectiveOrgId,
         doc_type: targetType,
@@ -432,8 +448,8 @@ export function useBillingData() {
         amount_paid: 0,
         balance_due: docData.total_amount,
         status: "draft",
-        notes: docData.notes || null,
-        terms_and_conditions: docData.terms_and_conditions || null,
+        notes: resolvedNotes,
+        terms_and_conditions: resolvedTerms,
         converted_from_id: id || null,
       };
 
