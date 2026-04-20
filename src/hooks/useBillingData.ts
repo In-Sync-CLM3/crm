@@ -366,12 +366,43 @@ export function useBillingData() {
   }, []);
 
   const deleteDocument = useCallback(async (id: string) => {
-    // Items and payments cascade-delete via FK
+    if (!effectiveOrgId) return;
+
+    // Capture the doc before delete so we know its type + numeric suffix
+    // for counter reconciliation. Items and payments cascade-delete via FK.
+    const target = documents.find(d => d.id === id);
     const { error } = await supabase.from("billing_documents").delete().eq("id", id);
     if (error) { console.error("Error deleting document:", error); return; }
     setDocuments(prev => prev.filter(d => d.id !== id));
     setPayments(prev => prev.filter(p => p.document_id !== id));
-  }, []);
+
+    // Release the deleted number back into the series: the next new doc of
+    // the same type should reuse the highest unused slot. We recompute the
+    // counter from whatever invoices actually remain for this org+type.
+    if (target) {
+      const counterKey =
+        target.doc_type === "proforma" ? "next_proforma_number" :
+        target.doc_type === "credit_note" ? "next_credit_note_number" :
+        "next_invoice_number";
+      const { data: remaining } = await supabase
+        .from("billing_documents")
+        .select("doc_number")
+        .eq("org_id", effectiveOrgId)
+        .eq("doc_type", target.doc_type);
+      const maxNum = (remaining || []).reduce((mx, r: any) => {
+        const m = /-(\d+)$/.exec(r.doc_number || "");
+        const n = m ? parseInt(m[1], 10) : 0;
+        return n > mx ? n : mx;
+      }, 0);
+      const nextVal = maxNum + 1;
+      if (settings.id && settings[counterKey] !== nextVal) {
+        await supabase.from("billing_settings")
+          .update({ [counterKey]: nextVal, updated_at: new Date().toISOString() })
+          .eq("id", settings.id);
+        setSettingsState(prev => ({ ...prev, [counterKey]: nextVal }));
+      }
+    }
+  }, [effectiveOrgId, documents, settings]);
 
   const convertDocument = useCallback(async (doc: BillingDocument, targetType: BillingDocumentType) => {
     if (!effectiveOrgId || busy) return doc;
