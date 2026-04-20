@@ -315,6 +315,14 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
             </div>
           )}
 
+          {/* Tax-invoice thank-you note */}
+          {doc.doc_type === "invoice" && (
+            <div className="mt-4 pt-4 border-t">
+              <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Note</p>
+              <p className="text-xs text-muted-foreground">We value your business and trust.</p>
+            </div>
+          )}
+
           <p className="text-center text-[10px] text-muted-foreground mt-6 pt-4 border-t">
             This is a computer-generated document and does not require a physical signature.
           </p>
