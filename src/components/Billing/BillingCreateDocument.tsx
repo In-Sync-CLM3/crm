@@ -18,10 +18,12 @@ interface BillingCreateDocumentProps {
   clients: BillingClient[];
   settings: BillingSettings;
   getNextDocNumber: (docType: BillingDocumentType) => string;
-  onSave: (doc: BillingDocument) => Promise<{ success: boolean; error?: string }> | void;
+  onSave: (doc: BillingDocument) => Promise<{ success: boolean; error?: string; id?: string }> | void;
   onBack: () => void;
   editDoc?: BillingDocument;
   onUpdateSettings?: (settings: BillingSettings) => void;
+  onRecordAdvance?: (payload: { document_id: string; amount: number; payment_date: string; reference_number?: string; notes?: string; org_id: string }) => Promise<void> | void;
+  existingAdvanceTotal?: number;
 }
 
 interface RawItem {
@@ -40,9 +42,10 @@ function getDefaultTerms(settings: BillingSettings, docType: BillingDocumentType
   return settings.default_terms || "";
 }
 
-export function BillingCreateDocument({ docType, clients, settings, getNextDocNumber, onSave, onBack, editDoc, onUpdateSettings }: BillingCreateDocumentProps) {
+export function BillingCreateDocument({ docType, clients, settings, getNextDocNumber, onSave, onBack, editDoc, onUpdateSettings, onRecordAdvance, existingAdvanceTotal = 0 }: BillingCreateDocumentProps) {
   const { getClientBillingDetails, saveClientBillingDetails } = useBillingClientCache();
   const isEdit = !!editDoc;
+  const advanceLocked = isEdit && existingAdvanceTotal > 0;
 
   const [form, setForm] = useState({
     doc_number: editDoc?.doc_number || getNextDocNumber(docType),
@@ -50,6 +53,9 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
     doc_date: editDoc?.doc_date || new Date().toISOString().split("T")[0],
     due_date: editDoc?.due_date || "",
     notes: editDoc?.notes || getDefaultTerms(settings, docType),
+    advance_amount: existingAdvanceTotal > 0 ? String(existingAdvanceTotal) : "",
+    advance_date: new Date().toISOString().split("T")[0],
+    advance_reference: "",
   });
 
   const [items, setItems] = useState<RawItem[]>(
@@ -148,6 +154,15 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
 
   const handleSave = async (status: "draft" | "sent") => {
     if (saving) return;
+    const advanceAmount = advanceLocked ? 0 : Math.max(0, parseFloat(form.advance_amount) || 0);
+    const amountPaidWithAdvance = (editDoc?.amount_paid || 0) + advanceAmount;
+    const derivedStatus: BillingDocument["status"] = editDoc
+      ? (status === "sent" ? status : editDoc.status)
+      : (advanceAmount > 0 && advanceAmount >= totals.grandTotal
+          ? "paid"
+          : advanceAmount > 0
+            ? "partially_paid"
+            : status);
     const newDoc: BillingDocument = {
       id: editDoc?.id || `d${Date.now()}`,
       org_id: settings.org_id || "",
@@ -175,9 +190,9 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
       subtotal: totals.subtotal,
       total_tax: totals.totalTax,
       total_amount: totals.grandTotal,
-      amount_paid: editDoc?.amount_paid || 0,
-      balance_due: totals.grandTotal - (editDoc?.amount_paid || 0),
-      status: editDoc ? (status === "sent" ? status : editDoc.status) : status,
+      amount_paid: amountPaidWithAdvance,
+      balance_due: Math.max(0, totals.grandTotal - amountPaidWithAdvance),
+      status: derivedStatus,
       notes: form.notes,
       terms_and_conditions: form.notes,
       original_invoice_id: editDoc?.original_invoice_id,
@@ -196,6 +211,19 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
       if (result && !result.success) {
         toast.error(result.error || "Failed to save document");
         return;
+      }
+      // If user entered an advance and the doc was newly created, persist it
+      // as an advance payment so it appears in payment history + analytics.
+      const newId = result && "id" in result ? result.id : undefined;
+      if (!editDoc && advanceAmount > 0 && newId && onRecordAdvance) {
+        await onRecordAdvance({
+          document_id: newId,
+          amount: advanceAmount,
+          payment_date: form.advance_date,
+          reference_number: form.advance_reference || undefined,
+          notes: "Advance received earlier",
+          org_id: settings.org_id || "",
+        });
       }
       onBack();
     } catch {
@@ -402,6 +430,48 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
             <div className="h-px bg-border" />
             <div className="flex justify-between text-lg font-bold text-primary"><span>Grand Total</span><span>{formatCurrencyINR(totals.grandTotal)}</span></div>
             {totals.grandTotal > 0 && <p className="text-[10px] text-muted-foreground pt-1">{numberToWords(totals.grandTotal)}</p>}
+
+            {/* Advance adjustment (for invoices & proformas only) */}
+            {docType !== "credit_note" && (
+              <>
+                <div className="h-px bg-border mt-2" />
+                <div className="space-y-1.5 pt-1">
+                  <Label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Advance Received Earlier {advanceLocked && <span className="text-[10px] font-normal">(locked — already recorded)</span>}</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      type="number"
+                      placeholder="Amount"
+                      value={form.advance_amount}
+                      disabled={advanceLocked}
+                      onChange={e => setForm({ ...form, advance_amount: e.target.value })}
+                    />
+                    <Input
+                      type="date"
+                      value={form.advance_date}
+                      disabled={advanceLocked}
+                      onChange={e => setForm({ ...form, advance_date: e.target.value })}
+                    />
+                  </div>
+                  <Input
+                    placeholder="Reference (UTR / Txn ID — optional)"
+                    value={form.advance_reference}
+                    disabled={advanceLocked}
+                    onChange={e => setForm({ ...form, advance_reference: e.target.value })}
+                  />
+                </div>
+                {(() => {
+                  const adv = Math.max(0, parseFloat(form.advance_amount) || 0);
+                  if (adv <= 0) return null;
+                  const net = Math.max(0, totals.grandTotal - adv);
+                  return (
+                    <>
+                      <div className="flex justify-between text-sm"><span className="text-muted-foreground">Less: Advance Adjusted</span><span className="text-emerald-600">-{formatCurrencyINR(adv)}</span></div>
+                      <div className="flex justify-between text-base font-bold text-emerald-700"><span>Net Payable</span><span>{formatCurrencyINR(net)}</span></div>
+                    </>
+                  );
+                })()}
+              </>
+            )}
           </div>
         </div>
       </Card>

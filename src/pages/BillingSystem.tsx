@@ -182,6 +182,11 @@ export default function BillingSystem() {
     }
 
     if (createDocType) {
+      const existingAdvanceTotal = editDoc
+        ? getDocumentPayments(editDoc.id)
+            .filter(p => p.payment_mode === "advance")
+            .reduce((s, p) => s + (p.amount || 0), 0)
+        : 0;
       return (
         <BillingCreateDocument
           docType={createDocType}
@@ -192,6 +197,19 @@ export default function BillingSystem() {
           onBack={handleBack}
           editDoc={editDoc || undefined}
           onUpdateSettings={updateSettings}
+          onRecordAdvance={async (p) => {
+            await recordPayment({
+              document_id: p.document_id,
+              amount: p.amount,
+              tds_amount: 0,
+              payment_date: p.payment_date,
+              payment_mode: "advance",
+              reference_number: p.reference_number || "",
+              notes: p.notes || "",
+              org_id: p.org_id,
+            } as any);
+          }}
+          existingAdvanceTotal={existingAdvanceTotal}
         />
       );
     }

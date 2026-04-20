@@ -295,7 +295,7 @@ export function useBillingData() {
   };
 
   // ─── Document CRUD ───
-  const addDocument = useCallback(async (doc: BillingDocument): Promise<{ success: boolean; error?: string }> => {
+  const addDocument = useCallback(async (doc: BillingDocument): Promise<{ success: boolean; error?: string; id?: string }> => {
     if (!effectiveOrgId || busy) return { success: false, error: "Not ready" };
     const { items, client, ...docData } = doc as any;
 
@@ -347,7 +347,7 @@ export function useBillingData() {
     // Add to local state
     const newDoc: BillingDocument = { ...doc, id: data.id, org_id: effectiveOrgId, items: items || [] };
     setDocuments(prev => [newDoc, ...prev]);
-    return { success: true };
+    return { success: true, id: data.id };
   }, [effectiveOrgId, settings]);
 
   const updateDocument = useCallback(async (id: string, updates: Partial<BillingDocument>): Promise<{ success: boolean; error?: string }> => {

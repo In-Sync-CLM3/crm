@@ -267,12 +267,20 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
               <div className="flex justify-between text-base font-bold text-primary"><span>Grand Total</span><span>{formatCurrencyINR(doc.total_amount)}</span></div>
               {(() => {
                 const totalTds = payments.reduce((sum, p) => sum + (p.tds_amount || 0), 0);
-                if (totalTds > 0) {
-                  const netPayable = doc.total_amount - totalTds;
+                const totalAdvance = payments
+                  .filter(p => p.payment_mode === "advance")
+                  .reduce((sum, p) => sum + (p.amount || 0), 0);
+                if (totalTds > 0 || totalAdvance > 0) {
+                  const netPayable = doc.total_amount - totalTds - totalAdvance;
                   return (
                     <>
                       <div className="h-px bg-border my-2" />
-                      <div className="flex justify-between text-sm"><span className="text-muted-foreground">Less: TDS Deducted</span><span className="text-red-600">-{formatCurrencyINR(totalTds)}</span></div>
+                      {totalAdvance > 0 && (
+                        <div className="flex justify-between text-sm"><span className="text-muted-foreground">Less: Advance Adjusted</span><span className="text-emerald-600">-{formatCurrencyINR(totalAdvance)}</span></div>
+                      )}
+                      {totalTds > 0 && (
+                        <div className="flex justify-between text-sm"><span className="text-muted-foreground">Less: TDS Deducted</span><span className="text-red-600">-{formatCurrencyINR(totalTds)}</span></div>
+                      )}
                       <div className="flex justify-between text-base font-bold text-emerald-700"><span>Net Payable</span><span>{formatCurrencyINR(Math.max(0, netPayable))}</span></div>
                     </>
                   );
