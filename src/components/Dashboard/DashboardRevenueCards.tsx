@@ -8,7 +8,6 @@ interface RevenueStats {
   totalPending: number;
   totalGST: number;
   totalTDS: number;
-  dueToDept: number;
 }
 
 export type RevenueCardType = "invoiced" | "received" | "pending" | "gst" | "tds";
@@ -64,19 +63,16 @@ export const DashboardRevenueCards = memo(function DashboardRevenueCards({ reven
         <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5 sm:mt-1 hidden sm:block">Awaiting payment</p>
       </Card>
 
-      {/* Due to Dept - Orange themed card */}
-      <Card 
-        className="p-3 sm:p-4 cursor-pointer hover:shadow-md transition-shadow hover:border-orange-500/50 active:scale-[0.98] bg-gradient-to-br from-orange-50 to-background border-orange-200"
+      <Card
+        className="p-3 sm:p-4 cursor-pointer hover:shadow-md transition-shadow hover:border-blue-500/50 active:scale-[0.98]"
         onClick={() => handleClick("gst")}
       >
         <div className="flex items-center justify-between">
-          <span className="text-xs sm:text-sm font-medium text-orange-600">Due to Dept</span>
-          <div className="p-1.5 bg-orange-100 rounded-md">
-            <IndianRupee className="h-4 w-4 sm:h-5 sm:w-5 text-orange-600" />
-          </div>
+          <span className="text-xs sm:text-sm font-medium text-muted-foreground">GST</span>
+          <Percent className="h-4 w-4 sm:h-5 sm:w-5 text-blue-500" />
         </div>
-        <div className="text-lg sm:text-2xl font-bold text-orange-700 mt-1 sm:mt-2 truncate">{formatCurrency(revenueStats.dueToDept)}</div>
-        <p className="text-[10px] sm:text-xs text-orange-500 mt-0.5 sm:mt-1 hidden sm:block">Pending to pay</p>
+        <div className="text-lg sm:text-2xl font-bold text-blue-600 mt-1 sm:mt-2 truncate">{formatCurrency(revenueStats.totalGST)}</div>
+        <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5 sm:mt-1 hidden sm:block">Collected this period</p>
       </Card>
 
       <Card 

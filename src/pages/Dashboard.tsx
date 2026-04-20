@@ -16,7 +16,6 @@ import { TrendingUp, PhoneCall, IndianRupee, ArrowLeft, RefreshCw, Percent } fro
 import { DashboardStatsCards } from "@/components/Dashboard/DashboardStatsCards";
 import { DashboardRevenueCards, type RevenueCardType } from "@/components/Dashboard/DashboardRevenueCards";
 import { RevenueCardDialog } from "@/components/Dashboard/RevenueCardDialog";
-import { DueToDeptDialog } from "@/components/Dashboard/DueToDeptDialog";
 import { DashboardRevenueChart } from "@/components/Dashboard/DashboardRevenueChart";
 import { DashboardPipelineChart } from "@/components/Dashboard/DashboardPipelineChart";
 import { DashboardActivityChart } from "@/components/Dashboard/DashboardActivityChart";
@@ -54,7 +53,6 @@ interface RevenueStats {
   totalPending: number;
   totalGST: number;
   totalTDS: number;
-  dueToDept: number;
 }
 
 interface MonthlyRevenueData {
@@ -84,9 +82,6 @@ export default function Dashboard() {
   // Dialog state for revenue card drill-down
   const [revenueCardDialogOpen, setRevenueCardDialogOpen] = useState(false);
   const [selectedCardType, setSelectedCardType] = useState<RevenueCardType>("invoiced");
-  
-  // Dialog state for Due to Dept breakdown
-  const [dueToDeptDialogOpen, setDueToDeptDialogOpen] = useState(false);
 
   // Removed goal state - no longer needed with new MonthlyGoalTracker
 
@@ -324,50 +319,23 @@ export default function Dashboard() {
     return [...clientInvoices, ...billingDocs];
   }, [invoicedData, billingDocsData]);
 
-  // Fetch all-time GST collected + GST paid to dept in a single combined query
-  const { data: gstSummary } = useQuery({
-    queryKey: ["gst-summary-dashboard", effectiveOrgId],
+  // Fetch billing_payments (date range) so TDS deducted via the billing flow
+  // counts toward the TDS card, not just legacy client_invoices.
+  const { data: billingPaymentsData } = useQuery({
+    queryKey: ["billing-payments-tds", effectiveOrgId, format(dateRange.from, "yyyy-MM-dd"), format(dateRange.to, "yyyy-MM-dd")],
     queryFn: async () => {
       if (!effectiveOrgId) throw new Error("No organization context");
-
-      // Fetch all sources in parallel
-      const [invoicesResult, billingDocsResult, trackingResult] = await Promise.all([
-        supabase
-          .from("client_invoices")
-          .select("tax_amount")
-          .eq("org_id", effectiveOrgId)
-          .eq("status", "paid")
-          .neq("document_type", "quotation"),
-        supabase
-          .from("billing_documents")
-          .select("total_tax")
-          .eq("org_id", effectiveOrgId)
-          .in("doc_type", ["invoice", "proforma"])
-          .eq("status", "paid"),
-        supabase
-          .from("gst_payment_tracking")
-          .select("amount_paid, payment_status")
-          .eq("org_id", effectiveOrgId),
-      ]);
-
-      if (invoicesResult.error) throw invoicesResult.error;
-      if (billingDocsResult.error) throw billingDocsResult.error;
-      if (trackingResult.error) throw trackingResult.error;
-
-      // Merge billing_documents GST into the same format
-      const billingGst = (billingDocsResult.data || []).map((d: any) => ({ tax_amount: d.total_tax || 0 }));
-
-      return {
-        allPaidInvoicesGst: [...(invoicesResult.data || []), ...billingGst],
-        gstPaymentTracking: trackingResult.data || [],
-      };
+      const { data, error } = await supabase
+        .from("billing_payments")
+        .select("amount, tds_amount, payment_date")
+        .eq("org_id", effectiveOrgId)
+        .gte("payment_date", format(dateRange.from, "yyyy-MM-dd"))
+        .lte("payment_date", format(dateRange.to, "yyyy-MM-dd"));
+      if (error) throw error;
+      return data || [];
     },
     enabled: !!effectiveOrgId,
-    staleTime: 60000,
   });
-
-  const allPaidInvoicesGst = gstSummary?.allPaidInvoicesGst;
-  const gstPaymentTracking = gstSummary?.gstPaymentTracking;
 
   // Fetch current goal - MOVED BEFORE EARLY RETURN
   // Fetch pipeline stages to get contacts by stage for MonthlyGoalTracker
@@ -551,21 +519,6 @@ export default function Dashboard() {
       }));
   }, [emailCampaigns, whatsappCampaigns, smsCampaigns, callLogs, dateRange]);
 
-  // Calculate Due to Dept (all-time GST collected - all-time GST paid to dept)
-  const dueToDept = useMemo(() => {
-    const totalCollectedAllTime = allPaidInvoicesGst?.reduce((sum, inv) => 
-      sum + (inv.tax_amount || 0), 0) || 0;
-    
-    const totalPaidToDept = gstPaymentTracking?.reduce((sum, p) => {
-      if (p.payment_status === "paid" || p.payment_status === "partial") {
-        return sum + (p.amount_paid || 0);
-      }
-      return sum;
-    }, 0) || 0;
-    
-    return totalCollectedAllTime - totalPaidToDept;
-  }, [allPaidInvoicesGst, gstPaymentTracking]);
-
   // Process revenue stats - invoiced/pending from invoice_date, payments from payment_received_date
   // Includes both client_invoices and billing_documents
   const revenueStats: RevenueStats = useMemo(() => {
@@ -627,8 +580,15 @@ export default function Dashboard() {
       totalGST += doc.total_tax || 0;
     });
 
-    return { totalInvoiced, totalReceived, totalPending, totalGST, totalTDS, dueToDept };
-  }, [invoicedData, paymentsData, billingDocsData, billingDocsPaidData, dueToDept]);
+    // TDS deducted on billing_payments in range — TDS isn't stored on the
+    // billing_documents row, only on each payment entry.
+    const billingPayments = billingPaymentsData || [];
+    billingPayments.forEach((p: any) => {
+      totalTDS += p.tds_amount || 0;
+    });
+
+    return { totalInvoiced, totalReceived, totalPending, totalGST, totalTDS };
+  }, [invoicedData, paymentsData, billingDocsData, billingDocsPaidData, billingPaymentsData]);
 
   // Process monthly revenue data by client for trend chart
   const { clientRevenueData, uniqueClients } = useMemo(() => {
@@ -1040,11 +1000,6 @@ export default function Dashboard() {
 
   // Handle revenue card click to show drill-down dialog
   const handleRevenueCardClick = (cardType: RevenueCardType) => {
-    // For GST card, show Due to Dept monthly breakdown dialog
-    if (cardType === "gst") {
-      setDueToDeptDialogOpen(true);
-      return;
-    }
     setSelectedCardType(cardType);
     setRevenueCardDialogOpen(true);
   };
@@ -1266,12 +1221,6 @@ export default function Dashboard() {
               dateRangeLabel={`${format(dateRange.from, "MMM d, yyyy")} - ${format(dateRange.to, "MMM d, yyyy")}`}
             />
 
-            {/* Due to Dept Monthly Breakdown Dialog */}
-            <DueToDeptDialog
-              open={dueToDeptDialogOpen}
-              onClose={() => setDueToDeptDialogOpen(false)}
-            />
-
             {/* Progression Chart - Full Page Animated */}
             <ProgressionChart monthlyActuals={monthlyActuals} />
 
@@ -1328,12 +1277,6 @@ export default function Dashboard() {
               cardType={selectedCardType}
               invoices={getRevenueCardInvoices}
               dateRangeLabel={`${format(dateRange.from, "MMM d, yyyy")} - ${format(dateRange.to, "MMM d, yyyy")}`}
-            />
-
-            {/* Due to Dept Monthly Breakdown Dialog */}
-            <DueToDeptDialog
-              open={dueToDeptDialogOpen}
-              onClose={() => setDueToDeptDialogOpen(false)}
             />
 
             {/* Monthly Revenue by Client Chart */}
