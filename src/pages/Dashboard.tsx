@@ -327,7 +327,7 @@ export default function Dashboard() {
       if (!effectiveOrgId) throw new Error("No organization context");
       const { data, error } = await supabase
         .from("billing_payments")
-        .select("amount, tds_amount, payment_date")
+        .select("id, amount, tds_amount, payment_date, document:billing_documents(doc_number, client_name, total_tax)")
         .eq("org_id", effectiveOrgId)
         .gte("payment_date", format(dateRange.from, "yyyy-MM-dd"))
         .lte("payment_date", format(dateRange.to, "yyyy-MM-dd"));
@@ -1032,8 +1032,21 @@ export default function Dashboard() {
       clientName: doc.client_name || 'Unknown',
     });
 
+    const mapBillingPayment = (p: any) => ({
+      id: p.id,
+      invoice_number: p.document?.doc_number || '—',
+      amount: p.amount || 0,
+      status: 'paid',
+      invoice_date: p.payment_date,
+      payment_received_date: p.payment_date,
+      tax_amount: p.document?.total_tax || 0,
+      tds_amount: p.tds_amount || 0,
+      clientName: p.document?.client_name || 'Unknown',
+    });
+
     const billingDocs = billingDocsData || [];
     const billingDocsPaid = billingDocsPaidData || [];
+    const billingPayments = billingPaymentsData || [];
 
     switch (selectedCardType) {
       case "invoiced":
@@ -1051,11 +1064,14 @@ export default function Dashboard() {
           ...billingDocsPaid.filter((d: any) => (d.total_tax || 0) > 0).map(mapBillingDoc),
         ];
       case "tds":
-        return (paymentsData || []).filter((inv: any) => (inv.tds_amount || 0) > 0).map(mapInvoice);
+        return [
+          ...(paymentsData || []).filter((inv: any) => (inv.tds_amount || 0) > 0).map(mapInvoice),
+          ...billingPayments.filter((p: any) => (p.tds_amount || 0) > 0).map(mapBillingPayment),
+        ];
       default:
         return [];
     }
-  }, [selectedCardType, invoicedData, paymentsData, billingDocsData, billingDocsPaidData]);
+  }, [selectedCardType, invoicedData, paymentsData, billingDocsData, billingDocsPaidData, billingPaymentsData]);
 
   // Format currency in Indian format
   const formatCurrency = (amount: number) => {
