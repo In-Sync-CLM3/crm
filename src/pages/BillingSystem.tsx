@@ -123,11 +123,9 @@ export default function BillingSystem() {
 
   const handleSaveDoc = useCallback(async (doc: BillingDocument): Promise<{ success: boolean; error?: string }> => {
     if (editDoc) {
-      await updateDocument(doc.id, doc);
-      return { success: true };
-    } else {
-      return await addDocument(doc);
+      return await updateDocument(doc.id, doc);
     }
+    return await addDocument(doc);
   }, [editDoc, updateDocument, addDocument]);
 
   const handleIssueCreditNote = useCallback((doc: BillingDocument) => {

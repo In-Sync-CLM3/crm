@@ -329,7 +329,15 @@ export function useBillingData() {
     };
 
     const { data, error } = await supabase.from("billing_documents").insert(row).select().single();
-    if (error) { console.error("Error adding document:", error); return { success: false, error: "Failed to save document" }; }
+    if (error) {
+      console.error("Error adding document:", error);
+      if ((error as any).code === "23505") {
+        const msg = `Document number "${docData.doc_number}" already exists. Please use a different number.`;
+        toast.error(msg);
+        return { success: false, error: msg };
+      }
+      return { success: false, error: "Failed to save document" };
+    }
 
     // Save items
     await saveItems(data.id, items || []);
@@ -342,7 +350,7 @@ export function useBillingData() {
     return { success: true };
   }, [effectiveOrgId, settings]);
 
-  const updateDocument = useCallback(async (id: string, updates: Partial<BillingDocument>) => {
+  const updateDocument = useCallback(async (id: string, updates: Partial<BillingDocument>): Promise<{ success: boolean; error?: string }> => {
     const { items, client, ...updateData } = updates as any;
     const row: Record<string, any> = { updated_at: new Date().toISOString() };
 
@@ -356,14 +364,35 @@ export function useBillingData() {
     // Save client billing snapshot if client details are provided
     if (client) row.client_billing_snapshot = client;
 
+    // Strict duplicate guard: if doc_number is being changed, confirm no other
+    // doc in the same org already holds that number before attempting the
+    // update. The DB unique index is the final backstop.
+    if ("doc_number" in row) {
+      const isDup = await checkDuplicateDocNumber(row.doc_number, id);
+      if (isDup) {
+        const msg = `Document number "${row.doc_number}" already exists. Please use a different number.`;
+        toast.error(msg);
+        return { success: false, error: msg };
+      }
+    }
+
     const { error } = await supabase.from("billing_documents").update(row).eq("id", id);
-    if (error) { console.error("Error updating document:", error); return; }
+    if (error) {
+      console.error("Error updating document:", error);
+      if ((error as any).code === "23505") {
+        const msg = `Document number "${row.doc_number}" already exists. Please use a different number.`;
+        toast.error(msg);
+        return { success: false, error: msg };
+      }
+      return { success: false, error: "Failed to update document" };
+    }
 
     // Update items if provided
     if (items) await saveItems(id, items);
 
     setDocuments(prev => prev.map(d => d.id === id ? { ...d, ...updates } : d));
-  }, []);
+    return { success: true };
+  }, [effectiveOrgId]);
 
   const deleteDocument = useCallback(async (id: string) => {
     if (!effectiveOrgId) return;
