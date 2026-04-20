@@ -76,6 +76,7 @@ export interface BillingDocument {
   terms_and_conditions?: string;
   original_invoice_id?: string;
   original_invoice_number?: string;
+  converted_from_id?: string;
   items: BillingDocumentItem[];
   created_at?: string;
   updated_at?: string;

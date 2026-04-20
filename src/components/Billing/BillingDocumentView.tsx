@@ -21,9 +21,12 @@ interface BillingDocumentViewProps {
   onIssueCreditNote?: (doc: BillingDocument) => void;
   onConvertToInvoice?: (doc: BillingDocument) => void;
   onStatusUpdate?: (id: string, updates: Partial<BillingDocument>) => void;
+  convertedInvoice?: { id: string; doc_number: string };
+  onOpenDoc?: (id: string) => void;
+  busy?: boolean;
 }
 
-export function BillingDocumentView({ doc, payments, settings, onBack, onRecordPayment, onEdit, onDelete, onIssueCreditNote, onConvertToInvoice, onStatusUpdate }: BillingDocumentViewProps) {
+export function BillingDocumentView({ doc, payments, settings, onBack, onRecordPayment, onEdit, onDelete, onIssueCreditNote, onConvertToInvoice, onStatusUpdate, convertedInvoice, onOpenDoc, busy }: BillingDocumentViewProps) {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showEmailModal, setShowEmailModal] = useState(false);
@@ -115,9 +118,19 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
               <CreditCard className="h-4 w-4" />Record Payment
             </Button>
           )}
-          {doc.doc_type === "proforma" && doc.status !== "cancelled" && onConvertToInvoice && (
-            <Button className="gap-1.5 bg-primary hover:bg-primary/90" onClick={() => { if (window.confirm(`Convert ${doc.doc_number} to Tax Invoice?`)) onConvertToInvoice(doc); }}>
-              <ArrowRight className="h-4 w-4" />Convert to Tax Invoice
+          {doc.doc_type === "proforma" && doc.status !== "cancelled" && convertedInvoice && onOpenDoc && (
+            <Button className="gap-1.5 bg-primary hover:bg-primary/90" onClick={() => onOpenDoc(convertedInvoice.id)}>
+              <ArrowRight className="h-4 w-4" />View Tax Invoice ({convertedInvoice.doc_number})
+            </Button>
+          )}
+          {doc.doc_type === "proforma" && doc.status !== "cancelled" && !convertedInvoice && onConvertToInvoice && (
+            <Button
+              className="gap-1.5 bg-primary hover:bg-primary/90"
+              disabled={busy}
+              onClick={() => { if (window.confirm(`Convert ${doc.doc_number} to Tax Invoice?`)) onConvertToInvoice(doc); }}
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+              {busy ? "Converting…" : "Convert to Tax Invoice"}
             </Button>
           )}
           {doc.doc_type === "invoice" && doc.status !== "cancelled" && onIssueCreditNote && (

@@ -34,7 +34,7 @@ export default function BillingSystem() {
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<string | undefined>(undefined);
 
   const {
-    documents, payments, settings, loading: billingLoading,
+    documents, payments, settings, loading: billingLoading, busy: billingBusy,
     addDocument, updateDocument, deleteDocument, convertDocument,
     recordPayment, updateSettings, getDocumentPayments, getNextDocNumber,
     issueCreditNote,
@@ -138,13 +138,11 @@ export default function BillingSystem() {
     setEditDoc(null);
   }, [issueCreditNote, updateDocument]);
 
-  const handleConvert = useCallback((doc: BillingDocument) => {
-    const nextType: BillingDocumentType = "invoice";
-    convertDocument(doc, nextType);
-  }, [convertDocument]);
-
-  const handleConvertToInvoice = useCallback((doc: BillingDocument) => {
-    convertDocument(doc, "invoice");
+  const handleConvert = useCallback(async (doc: BillingDocument) => {
+    const newDoc = await convertDocument(doc, "invoice");
+    if (newDoc?.id && newDoc.id !== doc.id) {
+      setViewDocId(newDoc.id);
+    }
   }, [convertDocument]);
 
   const handleRecordPayment = useCallback((payment: { document_id: string; amount: number; tds_amount?: number; payment_date: string; payment_mode: string; reference_number: string; notes: string; org_id: string }) => {
@@ -163,6 +161,9 @@ export default function BillingSystem() {
     if (viewDocId) {
       const doc = documents.find(d => d.id === viewDocId);
       if (!doc) return <div className="text-center text-muted-foreground py-8">Document not found</div>;
+      const convertedInvoice = doc.doc_type === "proforma"
+        ? documents.find(d => d.doc_type === "invoice" && d.converted_from_id === doc.id)
+        : undefined;
       return (
         <BillingDocumentView
           doc={doc}
@@ -175,6 +176,9 @@ export default function BillingSystem() {
           onIssueCreditNote={handleIssueCreditNote}
           onConvertToInvoice={doc.doc_type === "proforma" ? handleConvert : undefined}
           onStatusUpdate={(id, updates) => updateDocument(id, updates)}
+          convertedInvoice={convertedInvoice ? { id: convertedInvoice.id, doc_number: convertedInvoice.doc_number } : undefined}
+          onOpenDoc={setViewDocId}
+          busy={billingBusy}
         />
       );
     }

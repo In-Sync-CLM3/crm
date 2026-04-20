@@ -162,6 +162,7 @@ export function useBillingData() {
           terms_and_conditions: d.terms_and_conditions || undefined,
           original_invoice_id: d.original_invoice_id || undefined,
           original_invoice_number: d.original_invoice_number || undefined,
+          converted_from_id: (d as any).converted_from_id || undefined,
           items,
           created_at: d.created_at || undefined,
           updated_at: d.updated_at || undefined,
@@ -376,6 +377,22 @@ export function useBillingData() {
     if (!effectiveOrgId || busy) return doc;
     setBusy(true);
     try {
+      // Idempotency: if this source doc has already been converted to the
+      // target type, return the existing sibling instead of creating a duplicate.
+      if (doc.id) {
+        const { data: existing } = await supabase
+          .from("billing_documents")
+          .select("id, doc_number, doc_type")
+          .eq("org_id", effectiveOrgId)
+          .eq("converted_from_id", doc.id)
+          .eq("doc_type", targetType)
+          .maybeSingle();
+        if (existing) {
+          toast.info(`${doc.doc_number} was already converted to ${existing.doc_number}. Opening it.`);
+          return { ...doc, id: existing.id, doc_type: targetType, doc_number: existing.doc_number } as BillingDocument;
+        }
+      }
+
       // Fetch latest settings to get correct next number
       const { data: latestSettings } = await supabase
         .from("billing_settings")
@@ -398,7 +415,7 @@ export function useBillingData() {
       }
 
       const { items, client, id, ...docData } = doc as any;
-      const row = {
+      const row: any = {
         org_id: effectiveOrgId,
         doc_type: targetType,
         doc_number: newDocNumber,
@@ -417,10 +434,29 @@ export function useBillingData() {
         status: "draft",
         notes: docData.notes || null,
         terms_and_conditions: docData.terms_and_conditions || null,
+        converted_from_id: id || null,
       };
 
       const { data, error } = await supabase.from("billing_documents").insert(row).select().single();
-      if (error) { console.error("Error converting document:", error); return doc; }
+      if (error) {
+        console.error("Error converting document:", error);
+        // Unique-index race (another click won): reuse the existing sibling.
+        if ((error as any).code === "23505" && id) {
+          const { data: sibling } = await supabase
+            .from("billing_documents")
+            .select("id, doc_number")
+            .eq("org_id", effectiveOrgId)
+            .eq("converted_from_id", id)
+            .eq("doc_type", targetType)
+            .maybeSingle();
+          if (sibling) {
+            toast.info(`${doc.doc_number} was already converted to ${sibling.doc_number}. Opening it.`);
+            return { ...doc, id: sibling.id, doc_type: targetType, doc_number: sibling.doc_number } as BillingDocument;
+          }
+        }
+        toast.error("Could not convert document. Please try again.");
+        return doc;
+      }
 
       // Save items
       await saveItems(data.id, items || []);
@@ -433,6 +469,7 @@ export function useBillingData() {
 
       // Refetch all data to sync state
       await fetchAll();
+      toast.success(`Converted ${doc.doc_number} → ${row.doc_number}`);
       return { ...doc, id: data.id, doc_type: targetType, doc_number: row.doc_number } as BillingDocument;
     } finally {
       setBusy(false);
