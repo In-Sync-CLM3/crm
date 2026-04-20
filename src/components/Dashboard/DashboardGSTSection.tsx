@@ -156,7 +156,9 @@ export function DashboardGSTSection({ dateRange }: DashboardGSTSectionProps) {
     return [...(clientInvoices || []), ...mapped];
   }, [clientInvoices, billingDocs]);
 
-  // Fetch ALL invoices for GST Pending to Dept (ignores date range)
+  // Fetch ALL invoices for GST Pending to Dept (ignores date range).
+  // Indian GST liability accrues on invoice date regardless of client payment,
+  // so we include unpaid invoices too — drafts/quotations/cancelled are excluded.
   const { data: allClientInvoices } = useQuery({
     queryKey: ["all-gst-invoices", effectiveOrgId],
     queryFn: async () => {
@@ -169,7 +171,6 @@ export function DashboardGSTSection({ dateRange }: DashboardGSTSectionProps) {
         `)
         .eq("org_id", effectiveOrgId)
         .neq("document_type", "quotation")
-        .eq("status", "paid")
         .order("invoice_date", { ascending: false });
 
       if (error) throw error;
@@ -178,8 +179,8 @@ export function DashboardGSTSection({ dateRange }: DashboardGSTSectionProps) {
     enabled: !!effectiveOrgId,
   });
 
-  // Fetch ALL paid billing_documents for GST Pending to Dept (ignores date range)
-  const { data: allBillingDocsPaid } = useQuery({
+  // Fetch ALL billing_documents for GST Pending to Dept (ignores date range)
+  const { data: allBillingDocs } = useQuery({
     queryKey: ["all-gst-billing-docs", effectiveOrgId],
     queryFn: async () => {
       if (!effectiveOrgId) return [];
@@ -188,7 +189,7 @@ export function DashboardGSTSection({ dateRange }: DashboardGSTSectionProps) {
         .select("id, doc_number, doc_type, doc_date, client_name, total_amount, total_tax, subtotal, amount_paid, balance_due, status")
         .eq("org_id", effectiveOrgId)
         .in("doc_type", ["invoice", "proforma"])
-        .eq("status", "paid")
+        .not("status", "in", "(draft,cancelled)")
         .order("doc_date", { ascending: false });
 
       if (error) throw error;
@@ -197,18 +198,18 @@ export function DashboardGSTSection({ dateRange }: DashboardGSTSectionProps) {
     enabled: !!effectiveOrgId,
   });
 
-  // Merge all paid invoices from both sources
+  // Merge all invoices from both sources (paid + unpaid) for GST liability tracking
   const allInvoices = useMemo(() => {
-    const mapped = (allBillingDocsPaid || []).map((d: any) => ({
+    const mapped = (allBillingDocs || []).map((d: any) => ({
       id: d.id,
       invoice_number: d.doc_number,
       invoice_date: d.doc_date,
       amount: d.subtotal || 0,
       tax_amount: d.total_tax || 0,
       tds_amount: 0,
-      status: "paid",
-      payment_received_date: d.doc_date,
-      actual_payment_received: d.total_amount,
+      status: d.status,
+      payment_received_date: d.status === "paid" ? d.doc_date : null,
+      actual_payment_received: d.status === "paid" ? d.total_amount : null,
       net_received_amount: null,
       due_date: null,
       document_type: d.doc_type === "proforma" ? "proforma" : "invoice",
@@ -216,7 +217,7 @@ export function DashboardGSTSection({ dateRange }: DashboardGSTSectionProps) {
       _source: "billing",
     }));
     return [...(allClientInvoices || []), ...mapped];
-  }, [allClientInvoices, allBillingDocsPaid]);
+  }, [allClientInvoices, allBillingDocs]);
 
   // Fetch GST payment tracking records
   const { data: gstPayments } = useQuery({
@@ -350,7 +351,10 @@ export function DashboardGSTSection({ dateRange }: DashboardGSTSectionProps) {
     const monthMap = new Map<string, GSTMonthData>();
 
     allInvoices.forEach((inv) => {
-      const dateToUse = inv.payment_received_date || inv.invoice_date;
+      // GST liability accrues on invoice date for regular taxpayers,
+      // regardless of when the client pays.
+      const dateToUse = inv.invoice_date;
+      if (!dateToUse) return;
       const parsedDate = parseISO(dateToUse);
       const monthKey = format(parsedDate, "yyyy-MM");
       const monthLabel = format(parsedDate, "MMM yyyy");
@@ -811,7 +815,7 @@ export function DashboardGSTSection({ dateRange }: DashboardGSTSectionProps) {
           </CardHeader>
           <CardContent>
             <div className="text-xl font-bold text-yellow-600">{formatCurrency(summaryMetrics.pendingToDept)}</div>
-            <p className="text-xs text-muted-foreground">Collected but not paid</p>
+            <p className="text-xs text-muted-foreground">Liability not yet remitted</p>
           </CardContent>
         </Card>
 
