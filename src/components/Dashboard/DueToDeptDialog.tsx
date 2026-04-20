@@ -56,21 +56,33 @@ export function DueToDeptDialog({ open, onClose }: DueToDeptDialogProps) {
   const [paymentReference, setPaymentReference] = useState("");
   const [paymentNotes, setPaymentNotes] = useState("");
 
-  // Fetch all paid invoices with GST
+  // Fetch all invoices with GST — both client_invoices and billing_documents,
+  // regardless of client-payment status (GST liability accrues on invoice date).
   const { data: paidInvoices, isLoading: invoicesLoading } = useQuery({
     queryKey: ["due-to-dept-invoices", effectiveOrgId],
     queryFn: async () => {
       if (!effectiveOrgId) return [];
-      const { data, error } = await supabase
-        .from("client_invoices")
-        .select("tax_amount, payment_received_date, invoice_date")
-        .eq("org_id", effectiveOrgId)
-        .eq("status", "paid")
-        .neq("document_type", "quotation")
-        .order("payment_received_date", { ascending: false });
-      
-      if (error) throw error;
-      return data || [];
+      const [clientInv, billingDocs] = await Promise.all([
+        supabase
+          .from("client_invoices")
+          .select("tax_amount, payment_received_date, invoice_date")
+          .eq("org_id", effectiveOrgId)
+          .neq("document_type", "quotation"),
+        supabase
+          .from("billing_documents")
+          .select("total_tax, doc_date, status")
+          .eq("org_id", effectiveOrgId)
+          .in("doc_type", ["invoice", "proforma"])
+          .not("status", "in", "(draft,cancelled)"),
+      ]);
+      if (clientInv.error) throw clientInv.error;
+      if (billingDocs.error) throw billingDocs.error;
+      const mappedBilling = (billingDocs.data || []).map((d: any) => ({
+        tax_amount: d.total_tax || 0,
+        payment_received_date: null,
+        invoice_date: d.doc_date,
+      }));
+      return [...(clientInv.data || []), ...mappedBilling];
     },
     enabled: open && !!effectiveOrgId,
   });
@@ -169,7 +181,8 @@ export function DueToDeptDialog({ open, onClose }: DueToDeptDialogProps) {
     const monthMap = new Map<string, MonthBreakdown>();
 
     paidInvoices.forEach((inv) => {
-      const dateToUse = inv.payment_received_date || inv.invoice_date;
+      // GST liability accrues on invoice date, not payment date.
+      const dateToUse = inv.invoice_date;
       if (!dateToUse) return;
       
       const parsedDate = parseISO(dateToUse);

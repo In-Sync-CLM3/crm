@@ -8,9 +8,10 @@ interface RevenueStats {
   totalPending: number;
   totalGST: number;
   totalTDS: number;
+  gstDueToDept: number;
 }
 
-export type RevenueCardType = "invoiced" | "received" | "pending" | "gst" | "tds";
+export type RevenueCardType = "invoiced" | "received" | "pending" | "gst" | "tds" | "gst_due_dept";
 
 interface DashboardRevenueCardsProps {
   revenueStats: RevenueStats;
@@ -26,7 +27,7 @@ export const DashboardRevenueCards = memo(function DashboardRevenueCards({ reven
   };
 
   return (
-    <div className="grid gap-2 sm:gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+    <div className="grid gap-2 sm:gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
       <Card 
         className="p-3 sm:p-4 cursor-pointer hover:shadow-md transition-shadow hover:border-primary/50 active:scale-[0.98]"
         onClick={() => handleClick("invoiced")}
@@ -75,8 +76,8 @@ export const DashboardRevenueCards = memo(function DashboardRevenueCards({ reven
         <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5 sm:mt-1 hidden sm:block">Collected this period</p>
       </Card>
 
-      <Card 
-        className="p-3 sm:p-4 cursor-pointer hover:shadow-md transition-shadow hover:border-purple-500/50 active:scale-[0.98] col-span-2 sm:col-span-1"
+      <Card
+        className="p-3 sm:p-4 cursor-pointer hover:shadow-md transition-shadow hover:border-purple-500/50 active:scale-[0.98]"
         onClick={() => handleClick("tds")}
       >
         <div className="flex items-center justify-between">
@@ -85,6 +86,20 @@ export const DashboardRevenueCards = memo(function DashboardRevenueCards({ reven
         </div>
         <div className="text-lg sm:text-2xl font-bold text-purple-600 mt-1 sm:mt-2 truncate">{formatCurrency(revenueStats.totalTDS)}</div>
         <p className="text-[10px] sm:text-xs text-muted-foreground mt-0.5 sm:mt-1 hidden sm:block">Total TDS deducted</p>
+      </Card>
+
+      <Card
+        className="p-3 sm:p-4 cursor-pointer hover:shadow-md transition-shadow hover:border-orange-500/50 active:scale-[0.98] bg-gradient-to-br from-orange-50 to-background border-orange-200 col-span-2 sm:col-span-1"
+        onClick={() => handleClick("gst_due_dept")}
+      >
+        <div className="flex items-center justify-between">
+          <span className="text-xs sm:text-sm font-medium text-orange-600">GST Due to Dept</span>
+          <div className="p-1.5 bg-orange-100 rounded-md">
+            <IndianRupee className="h-4 w-4 sm:h-5 sm:w-5 text-orange-600" />
+          </div>
+        </div>
+        <div className="text-lg sm:text-2xl font-bold text-orange-700 mt-1 sm:mt-2 truncate">{formatCurrency(revenueStats.gstDueToDept)}</div>
+        <p className="text-[10px] sm:text-xs text-orange-500 mt-0.5 sm:mt-1 hidden sm:block">All-time unpaid</p>
       </Card>
     </div>
   );

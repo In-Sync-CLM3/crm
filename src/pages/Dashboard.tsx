@@ -16,6 +16,7 @@ import { TrendingUp, PhoneCall, IndianRupee, ArrowLeft, RefreshCw, Percent } fro
 import { DashboardStatsCards } from "@/components/Dashboard/DashboardStatsCards";
 import { DashboardRevenueCards, type RevenueCardType } from "@/components/Dashboard/DashboardRevenueCards";
 import { RevenueCardDialog } from "@/components/Dashboard/RevenueCardDialog";
+import { DueToDeptDialog } from "@/components/Dashboard/DueToDeptDialog";
 import { DashboardRevenueChart } from "@/components/Dashboard/DashboardRevenueChart";
 import { DashboardPipelineChart } from "@/components/Dashboard/DashboardPipelineChart";
 import { DashboardActivityChart } from "@/components/Dashboard/DashboardActivityChart";
@@ -53,6 +54,7 @@ interface RevenueStats {
   totalPending: number;
   totalGST: number;
   totalTDS: number;
+  gstDueToDept: number;
 }
 
 interface MonthlyRevenueData {
@@ -82,6 +84,7 @@ export default function Dashboard() {
   // Dialog state for revenue card drill-down
   const [revenueCardDialogOpen, setRevenueCardDialogOpen] = useState(false);
   const [selectedCardType, setSelectedCardType] = useState<RevenueCardType>("invoiced");
+  const [dueToDeptDialogOpen, setDueToDeptDialogOpen] = useState(false);
 
   // Removed goal state - no longer needed with new MonthlyGoalTracker
 
@@ -337,6 +340,42 @@ export default function Dashboard() {
     enabled: !!effectiveOrgId,
   });
 
+  // All-time GST liability minus what's already been remitted to the dept.
+  // Ignores the date filter — it's a cumulative "you still owe this much" number.
+  const { data: gstDueSummary } = useQuery({
+    queryKey: ["gst-due-summary", effectiveOrgId],
+    queryFn: async () => {
+      if (!effectiveOrgId) throw new Error("No organization context");
+      const [invoicesResult, billingDocsResult, trackingResult] = await Promise.all([
+        supabase
+          .from("client_invoices")
+          .select("tax_amount")
+          .eq("org_id", effectiveOrgId)
+          .neq("document_type", "quotation"),
+        supabase
+          .from("billing_documents")
+          .select("total_tax")
+          .eq("org_id", effectiveOrgId)
+          .in("doc_type", ["invoice", "proforma"])
+          .not("status", "in", "(draft,cancelled)"),
+        supabase
+          .from("gst_payment_tracking")
+          .select("amount_paid, payment_status")
+          .eq("org_id", effectiveOrgId),
+      ]);
+      if (invoicesResult.error) throw invoicesResult.error;
+      if (billingDocsResult.error) throw billingDocsResult.error;
+      if (trackingResult.error) throw trackingResult.error;
+      return {
+        invoiceGst: invoicesResult.data || [],
+        billingDocGst: billingDocsResult.data || [],
+        remittance: trackingResult.data || [],
+      };
+    },
+    enabled: !!effectiveOrgId,
+    staleTime: 60000,
+  });
+
   // Fetch current goal - MOVED BEFORE EARLY RETURN
   // Fetch pipeline stages to get contacts by stage for MonthlyGoalTracker
   const { data: pipelineStages = [] } = useQuery({
@@ -519,6 +558,20 @@ export default function Dashboard() {
       }));
   }, [emailCampaigns, whatsappCampaigns, smsCampaigns, callLogs, dateRange]);
 
+  // All-time unpaid GST to department (liability minus remittance)
+  const gstDueToDept = useMemo(() => {
+    const totalLiability =
+      (gstDueSummary?.invoiceGst?.reduce((sum: number, r: any) => sum + (r.tax_amount || 0), 0) || 0) +
+      (gstDueSummary?.billingDocGst?.reduce((sum: number, r: any) => sum + (r.total_tax || 0), 0) || 0);
+    const totalRemitted = gstDueSummary?.remittance?.reduce((sum: number, r: any) => {
+      if (r.payment_status === "paid" || r.payment_status === "partial") {
+        return sum + (r.amount_paid || 0);
+      }
+      return sum;
+    }, 0) || 0;
+    return Math.max(0, totalLiability - totalRemitted);
+  }, [gstDueSummary]);
+
   // Process revenue stats - invoiced/pending from invoice_date, payments from payment_received_date
   // Includes both client_invoices and billing_documents
   const revenueStats: RevenueStats = useMemo(() => {
@@ -587,8 +640,8 @@ export default function Dashboard() {
       totalTDS += p.tds_amount || 0;
     });
 
-    return { totalInvoiced, totalReceived, totalPending, totalGST, totalTDS };
-  }, [invoicedData, paymentsData, billingDocsData, billingDocsPaidData, billingPaymentsData]);
+    return { totalInvoiced, totalReceived, totalPending, totalGST, totalTDS, gstDueToDept };
+  }, [invoicedData, paymentsData, billingDocsData, billingDocsPaidData, billingPaymentsData, gstDueToDept]);
 
   // Process monthly revenue data by client for trend chart
   const { clientRevenueData, uniqueClients } = useMemo(() => {
@@ -1000,6 +1053,10 @@ export default function Dashboard() {
 
   // Handle revenue card click to show drill-down dialog
   const handleRevenueCardClick = (cardType: RevenueCardType) => {
+    if (cardType === "gst_due_dept") {
+      setDueToDeptDialogOpen(true);
+      return;
+    }
     setSelectedCardType(cardType);
     setRevenueCardDialogOpen(true);
   };
@@ -1237,6 +1294,12 @@ export default function Dashboard() {
               dateRangeLabel={`${format(dateRange.from, "MMM d, yyyy")} - ${format(dateRange.to, "MMM d, yyyy")}`}
             />
 
+            {/* GST Due to Dept (all-time) breakdown */}
+            <DueToDeptDialog
+              open={dueToDeptDialogOpen}
+              onClose={() => setDueToDeptDialogOpen(false)}
+            />
+
             {/* Progression Chart - Full Page Animated */}
             <ProgressionChart monthlyActuals={monthlyActuals} />
 
@@ -1280,8 +1343,8 @@ export default function Dashboard() {
             />
 
             {/* Revenue Metrics */}
-            <DashboardRevenueCards 
-              revenueStats={revenueStats} 
+            <DashboardRevenueCards
+              revenueStats={revenueStats}
               formatCurrency={formatCurrency}
               onCardClick={handleRevenueCardClick}
             />
@@ -1293,6 +1356,12 @@ export default function Dashboard() {
               cardType={selectedCardType}
               invoices={getRevenueCardInvoices}
               dateRangeLabel={`${format(dateRange.from, "MMM d, yyyy")} - ${format(dateRange.to, "MMM d, yyyy")}`}
+            />
+
+            {/* GST Due to Dept (all-time) breakdown */}
+            <DueToDeptDialog
+              open={dueToDeptDialogOpen}
+              onClose={() => setDueToDeptDialogOpen(false)}
             />
 
             {/* Monthly Revenue by Client Chart */}
