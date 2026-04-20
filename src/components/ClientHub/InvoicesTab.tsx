@@ -84,8 +84,7 @@ export function InvoicesTab() {
           .select(`
             id, org_id, doc_type, doc_number, doc_date, due_date, status,
             subtotal, total_tax, total_amount, amount_paid, balance_due,
-            notes, client_id, client_name, client_billing_snapshot,
-            client:clients(id, first_name, last_name, company)
+            notes, client_id, client_name, client_billing_snapshot
           `)
           .eq("org_id", effectiveOrgId),
       ]);
@@ -99,9 +98,8 @@ export function InvoicesTab() {
       }));
 
       const billingRows = (billingDocsRes.data || []).map((d: any) => {
-        // Prefer resolved client; fall back to snapshot for name-only display
         const snapshot = d.client_billing_snapshot || null;
-        const fallbackClient = !d.client && (snapshot || d.client_name)
+        const clientDisplay = snapshot || d.client_name
           ? {
               id: d.client_id || null,
               first_name: snapshot?.first_name || d.client_name || "",
@@ -127,7 +125,7 @@ export function InvoicesTab() {
           client_id: d.client_id,
           contact_id: null,
           external_entity_id: null,
-          client: d.client || fallbackClient,
+          client: clientDisplay,
           contact: null,
           external_entity: null,
           tds_amount: 0,
