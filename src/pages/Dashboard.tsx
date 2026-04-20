@@ -626,17 +626,18 @@ export default function Dashboard() {
       totalReceived += actualReceived;
     });
 
-    // Add paid billing_documents to received
+    // billing_documents contribute GST by invoice month (doc_date) — this is
+    // the liability period, not the cash period.
     const billingDocsPaid = billingDocsPaidData || [];
     billingDocsPaid.forEach((doc: any) => {
-      totalReceived += doc.amount_paid || doc.total_amount || 0;
       totalGST += doc.total_tax || 0;
     });
 
-    // TDS deducted on billing_payments in range — TDS isn't stored on the
-    // billing_documents row, only on each payment entry.
+    // Received (cash) + TDS are keyed off billing_payments.payment_date, so a
+    // March invoice paid in April lands in April's Received total.
     const billingPayments = billingPaymentsData || [];
     billingPayments.forEach((p: any) => {
+      totalReceived += p.amount || 0;
       totalTDS += p.tds_amount || 0;
     });
 
@@ -1109,7 +1110,7 @@ export default function Dashboard() {
       case "invoiced":
         return [...(invoicedData || []).map(mapInvoice), ...billingDocs.map(mapBillingDoc)];
       case "received":
-        return [...(paymentsData || []).map(mapInvoice), ...billingDocsPaid.map(mapBillingDoc)];
+        return [...(paymentsData || []).map(mapInvoice), ...billingPayments.map(mapBillingPayment)];
       case "pending":
         return [
           ...(invoicedData || []).filter((inv: any) => inv.status !== "paid").map(mapInvoice),
