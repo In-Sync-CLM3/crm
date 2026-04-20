@@ -434,8 +434,22 @@ export function useBillingData() {
       const currentSettings = latestSettings || settings;
       const fy = getCurrentFinancialYear();
       const prefix = targetType === "proforma" ? (currentSettings.proforma_prefix || "PI") : (currentSettings.invoice_prefix || "INV");
-      const nextNum = targetType === "proforma" ? (currentSettings.next_proforma_number || 1) : (currentSettings.next_invoice_number || 1);
 
+      // Derive next number from actual docs in this FY so each financial year
+      // starts at 0001 regardless of the legacy shared counter.
+      const pfx = `${prefix}-${fy}-`;
+      const { data: existingInFy } = await supabase
+        .from("billing_documents")
+        .select("doc_number")
+        .eq("org_id", effectiveOrgId)
+        .eq("doc_type", targetType)
+        .like("doc_number", `${pfx}%`);
+      const maxInFy = (existingInFy || []).reduce((mx, r: any) => {
+        const m = /-(\d+)$/.exec(r.doc_number || "");
+        const n = m ? parseInt(m[1], 10) : 0;
+        return n > mx ? n : mx;
+      }, 0);
+      const nextNum = maxInFy + 1;
       const newDocNumber = `${prefix}-${fy}-${String(nextNum).padStart(4, "0")}`;
 
       // Check for duplicate document number
@@ -575,9 +589,19 @@ export function useBillingData() {
   const getNextDocNumber = useCallback((docType: BillingDocumentType) => {
     const fy = getCurrentFinancialYear();
     const prefix = docType === "proforma" ? settings.proforma_prefix : docType === "credit_note" ? settings.credit_note_prefix : settings.invoice_prefix;
-    const nextNum = docType === "proforma" ? settings.next_proforma_number : docType === "credit_note" ? settings.next_credit_note_number : settings.next_invoice_number;
-    return `${prefix}-${fy}-${String(nextNum).padStart(4, "0")}`;
-  }, [settings]);
+    // Derive next number per-FY from existing docs so each financial year
+    // restarts at 0001. Counter fields in billing_settings are kept in sync
+    // elsewhere but are not authoritative.
+    const pfx = `${prefix}-${fy}-`;
+    const maxInFy = documents
+      .filter(d => d.doc_type === docType && d.doc_number?.startsWith(pfx))
+      .reduce((mx, d) => {
+        const m = /-(\d+)$/.exec(d.doc_number || "");
+        const n = m ? parseInt(m[1], 10) : 0;
+        return n > mx ? n : mx;
+      }, 0);
+    return `${prefix}-${fy}-${String(maxInFy + 1).padStart(4, "0")}`;
+  }, [settings, documents]);
 
   // ─── Settings ───
   const updateSettings = useCallback(async (s: BillingSettings) => {
