@@ -27,7 +27,7 @@ interface ChannelLimits {
 }
 
 const DEFAULT_LIMITS: ChannelLimits = {
-  email_per_day: 200,
+  email_per_day: 2000,
   whatsapp_per_day: 100,
   call_per_day: 50,
   sms_per_day: 100,
@@ -43,39 +43,30 @@ export async function getNextChannel(
 ): Promise<ChannelResult> {
   const supabase = getSupabaseClient();
 
-  // 1. Check if lead has opted out of this channel
-  const optedOut = await isOptedOut(lead.org_id, lead, step.channel);
-  if (optedOut) {
-    // Try fallback channel
-    const fallback = getFallbackChannel(step.channel);
-    if (fallback) {
-      const fallbackOptedOut = await isOptedOut(lead.org_id, lead, fallback);
-      if (!fallbackOptedOut && hasContactInfo(lead, fallback)) {
-        return { channel: fallback, allowed: true, reason: `Fallback from ${step.channel} (opted out)` };
-      }
-    }
-    return { channel: step.channel, allowed: false, reason: `Opted out of ${step.channel}` };
+  // Helper: try a specific channel for this lead
+  async function tryChannel(ch: string, fallbackReason?: string): Promise<ChannelResult | null> {
+    if (await isOptedOut(lead.org_id, lead, ch)) return null;
+    if (!hasContactInfo(lead, ch)) return null;
+    if (await isDailyLimitExceeded(lead.org_id, ch)) return null;
+    return { channel: ch, allowed: true, reason: fallbackReason };
   }
 
-  // 2. Check if lead has the required contact info for this channel
-  if (!hasContactInfo(lead, step.channel)) {
-    const fallback = getFallbackChannel(step.channel);
-    if (fallback && hasContactInfo(lead, fallback)) {
-      const fallbackOptedOut = await isOptedOut(lead.org_id, lead, fallback);
-      if (!fallbackOptedOut) {
-        return { channel: fallback, allowed: true, reason: `Fallback from ${step.channel} (no contact info)` };
-      }
-    }
-    return { channel: step.channel, allowed: false, reason: `No ${step.channel} contact info` };
+  // 1. Try preferred channel first
+  const preferred = await tryChannel(step.channel);
+  if (preferred) return preferred;
+
+  // 2. Walk fallback chain: email → whatsapp → call (or whatsapp → email → call, etc.)
+  for (const fb of getFallbackChain(step.channel)) {
+    const result = await tryChannel(fb, `Fallback from ${step.channel}`);
+    if (result) return result;
   }
 
-  // 3. Check daily send limits
-  const limitExceeded = await isDailyLimitExceeded(lead.org_id, step.channel);
-  if (limitExceeded) {
+  // 3. Check if daily limit was the blocker on the preferred channel (signal to stop batch)
+  if (await isDailyLimitExceeded(lead.org_id, step.channel)) {
     return { channel: step.channel, allowed: false, reason: `Daily ${step.channel} limit exceeded` };
   }
 
-  return { channel: step.channel, allowed: true };
+  return { channel: step.channel, allowed: false, reason: `No reachable channel for ${step.channel}` };
 }
 
 /**
@@ -102,7 +93,8 @@ async function isOptedOut(
     query = query.eq('lead_id', lead.id);
   }
 
-  const { data } = await query.limit(1);
+  const { data, error } = await query.limit(1);
+  if (error) throw new Error(`isOptedOut DB error for lead ${lead.id}: ${error.message}`);
   return (data?.length || 0) > 0;
 }
 
@@ -129,16 +121,17 @@ function hasContactInfo(lead: Lead, channel: string): boolean {
 }
 
 /**
- * Get fallback channel when preferred channel is unavailable.
+ * Ordered fallback chain when preferred channel is unavailable.
+ * Tries each in sequence until one is reachable.
  */
-function getFallbackChannel(channel: string): string | null {
-  const fallbacks: Record<string, string> = {
-    email: 'whatsapp',
-    whatsapp: 'email',
-    call: 'email',
-    sms: 'whatsapp',
+function getFallbackChain(channel: string): string[] {
+  const chains: Record<string, string[]> = {
+    email:    ['whatsapp', 'call'],
+    whatsapp: ['email', 'call'],
+    call:     ['whatsapp', 'email'],
+    sms:      ['whatsapp', 'email'],
   };
-  return fallbacks[channel] || null;
+  return chains[channel] || [];
 }
 
 /**
@@ -158,7 +151,7 @@ async function isDailyLimitExceeded(
   // Count today's sends for this channel
   const today = new Date().toISOString().split('T')[0];
 
-  const { count } = await supabase
+  const { count, error } = await supabase
     .from('mkt_sequence_actions')
     .select('id', { count: 'exact', head: true })
     .eq('org_id', orgId)
@@ -166,6 +159,7 @@ async function isDailyLimitExceeded(
     .in('status', ['sent', 'delivered', 'pending'])
     .gte('created_at', `${today}T00:00:00Z`);
 
+  if (error) throw new Error(`isDailyLimitExceeded DB error for ${channel}: ${error.message}`);
   return (count || 0) >= maxPerDay;
 }
 

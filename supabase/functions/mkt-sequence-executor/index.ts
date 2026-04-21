@@ -17,19 +17,6 @@ const corsHeaders = {
 // their old next_action_at (in the past) and are auto-recovered on the next cron tick.
 const BATCH_SIZE = 25;
 
-// ── Bounce-rate guard ─────────────────────────────────────────────────────────
-// Probe phase: send PROBE_SIZE emails first, then wait PROBE_WAIT_MS for Resend
-// to report bounces before opening the full send. This catches bad lists before
-// they can damage domain reputation at scale.
-//
-// Circuit breaker: if the rolling bounce rate for a campaign's step-1 exceeds
-// BOUNCE_RATE_LIMIT (2%) once we have a statistically meaningful sample, the
-// campaign is auto-paused. Resend suspends sending accounts at 5%; we stop at 2%
-// to stay well clear of that threshold.
-const PROBE_SIZE        = 100;           // emails to send before evaluating
-const PROBE_WAIT_MS     = 4 * 3_600_000; // 4 h — time for bounces to arrive
-const BOUNCE_RATE_LIMIT = 0.02;          // 2 % ceiling
-const BOUNCE_MIN_SAMPLE = 50;            // don't evaluate until at least 50 sent
 
 // Campaign sequence order is read from mkt_campaigns.sequence_priority at runtime.
 // To change the order or add/remove campaigns, update that column — no code change needed.
@@ -142,77 +129,9 @@ Deno.serve(async (req) => {
       const stepId = step1IdByCampaign.get(cid);
       if (!stepId) continue;
 
-      // ── Count all dispatched step-1 emails (sent + delivered + bounced) ──
-      // Used for: bounce rate denominator + probe-size threshold.
-      const [dispatchedRes, bouncedRes] = await Promise.all([
-        supabase
-          .from('mkt_sequence_actions')
-          .select('id', { count: 'exact', head: true })
-          .eq('step_id', stepId)
-          .in('status', ['sent', 'delivered', 'bounced']),
-        supabase
-          .from('mkt_sequence_actions')
-          .select('id', { count: 'exact', head: true })
-          .eq('step_id', stepId)
-          .eq('status', 'bounced'),
-      ]);
-
-      const dispatched = dispatchedRes.count ?? 0;
-      const bounced    = bouncedRes.count    ?? 0;
-      const bounceRate = dispatched > 0 ? bounced / dispatched : 0;
-
-      // ── 🛑 Circuit breaker: auto-pause if bounce rate exceeds limit ──────
-      if (dispatched >= BOUNCE_MIN_SAMPLE && bounceRate >= BOUNCE_RATE_LIMIT) {
-        await supabase
-          .from('mkt_campaigns')
-          .update({ status: 'paused' })
-          .eq('id', cid);
-        await logger.info('campaign-auto-paused-bounce-rate', {
-          campaign_id:      cid,
-          dispatched,
-          bounced,
-          bounce_rate_pct:  (bounceRate * 100).toFixed(2),
-          threshold_pct:    (BOUNCE_RATE_LIMIT * 100).toFixed(0),
-          action:           'Campaign paused to protect domain reputation',
-        });
-        continue; // skip to next campaign
-      }
-
-      // ── Probe phase: wait for bounce signals before full send ────────────
-      const campaignMeta = (sequencedCampaigns ?? []).find((c) => c.id === cid);
-      const probeSentAt  = campaignMeta?.probe_sent_at as string | null ?? null;
-
-      if (dispatched >= PROBE_SIZE && !probeSentAt) {
-        // Probe batch just completed — start the evaluation clock.
-        await supabase
-          .from('mkt_campaigns')
-          .update({ probe_sent_at: nowIso })
-          .eq('id', cid);
-        await logger.info('probe-batch-complete', {
-          campaign_id: cid,
-          dispatched,
-          bounced,
-          bounce_rate_pct: (bounceRate * 100).toFixed(2),
-          message: `Waiting ${PROBE_WAIT_MS / 3_600_000}h for bounce signals before full send`,
-        });
-        continue; // hold step-1 this run
-      }
-
-      if (probeSentAt) {
-        const waitedMs   = now.getTime() - new Date(probeSentAt).getTime();
-        const waitLeftMs = PROBE_WAIT_MS - waitedMs;
-        if (waitLeftMs > 0) {
-          await logger.info('probe-wait-period', {
-            campaign_id:       cid,
-            wait_left_minutes: Math.round(waitLeftMs / 60_000),
-            dispatched,
-            bounced,
-          });
-          continue; // still in evaluation window
-        }
-      }
-
-      // ── Normal step-1 quota check (successful sends only) ────────────────
+      // ── Step-1 quota check (successful sends only) ───────────────────────
+      // Bounce protection is handled by the webhook (bounced records are deleted
+      // immediately and the contact's email is suppressed). No circuit breaker needed.
       const { count: sentOk } = await supabase
         .from('mkt_sequence_actions')
         .select('id', { count: 'exact', head: true })
@@ -260,8 +179,14 @@ Deno.serve(async (req) => {
     const step1s    = step1PoolResult.data ?? [];
 
     // Combine: follow-ups first, then step-1, total ≤ min(BATCH_SIZE, dailyBudget)
-    const cap         = Math.min(BATCH_SIZE, dailyBudget);
-    const enrollments = [...followups, ...step1s].slice(0, cap);
+    const cap = Math.min(BATCH_SIZE, dailyBudget);
+
+    // When both follow-ups and step-1s are due, reserve half the batch for step-1s
+    // so new campaigns are not permanently starved by a large follow-up backlog.
+    const followupCap = (step1s.length > 0 && followups.length > 0)
+      ? Math.ceil(cap / 2)
+      : cap;
+    const enrollments = [...followups.slice(0, followupCap), ...step1s].slice(0, cap);
 
     if (enrollments.length === 0) {
       return new Response(
@@ -322,7 +247,7 @@ Deno.serve(async (req) => {
         if (result === 'executed')  executed++;
         else if (result === 'skipped')   skipped++;
         else if (result === 'completed') completed++;
-        else if (result === 'stop')      break; // daily limit hit mid-batch — stop cleanly
+        else if (result === 'stop')      { skipped++; } // daily limit for this channel — skip this enrollment, continue batch
       } catch (e) {
         failed++;
         console.error('[mkt-sequence-executor] enrollment failed:', e);
@@ -505,7 +430,17 @@ async function processEnrollment(
         .eq('is_active', true)
         .limit(1)
         .maybeSingle();
-      if (anyWa) effectiveTemplateId = anyWa.id;
+      if (anyWa) {
+        effectiveTemplateId = anyWa.id;
+      } else {
+        // No WhatsApp template found for this product — sending would silently fail.
+        // Mark action skipped and advance so the enrollment doesn't get stuck.
+        await supabase.from('mkt_sequence_actions')
+          .update({ status: 'skipped', failure_reason: `No WhatsApp template for product ${productKey}` })
+          .eq('id', action!.id);
+        await advanceToNextStep(supabase, enrollment, steps, currentStepNum);
+        return 'skipped';
+      }
     }
   }
 
