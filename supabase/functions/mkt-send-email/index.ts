@@ -194,7 +194,7 @@ Deno.serve(async (req) => {
       (match, attrs, url) => {
         if (url.includes('unsubscribe') || url.includes('mkt-email-webhook')) return match;
         const urlWithUtm = buildUtmUrl(url, 'email', campaignName, action_id);
-        const trackedUrl = `${trackingDomain}/functions/v1/mkt-email-webhook?action=click&v=2&id=${trackingPixelId}${vParam}&channel=email&url=${encodeURIComponent(urlWithUtm)}`;
+        const trackedUrl = `${trackingDomain}/functions/v1/mkt-email-webhook?action=click&id=${trackingPixelId}${vParam}&channel=email&url=${encodeURIComponent(urlWithUtm)}`;
         return match.replace(url, trackedUrl);
       }
     );
