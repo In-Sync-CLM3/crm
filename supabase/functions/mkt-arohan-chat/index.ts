@@ -490,13 +490,19 @@ function buildSystemPrompt(
         const e = context.enrollmentMap.get(cid) || {};
         const t = context.todaySendsMap.get(cid) || {};
         const isLive = cid === context.liveCampaignId;
-        const sent    = (a?.sent    as number ?? 0);
-        const delivered = (a?.delivered as number ?? 0);
-        const opened  = (a?.opened  as number ?? 0);
-        const replied = (a?.replied as number ?? 0);
-        const bounced = (a?.bounced as number ?? 0);
-        const converted = (a?.converted as number ?? 0);
-        const enrolled  = (a?.enrolled  as number ?? 0);
+        const sent         = (a?.sent         as number ?? 0);
+        const delivered    = (a?.delivered    as number ?? 0);
+        const opened       = (a?.opened       as number ?? 0);
+        const replied      = (a?.replied      as number ?? 0);
+        const bounced      = (a?.bounced      as number ?? 0);
+        const converted    = (a?.converted    as number ?? 0);
+        const enrolled     = (a?.enrolled     as number ?? 0);
+        const ga4Sessions  = (a?.ga4_sessions as number ?? 0);
+        const ga4Engaged   = (a?.ga4_engaged_sessions as number ?? 0);
+        // GA4 visit rate = real browser landings / emails sent. This is the only non-vanity click metric.
+        // open rate is kept as a secondary signal (useful for subject line quality).
+        const visitRate = sent > 0 && ga4Sessions > 0 ? `${Math.round(ga4Sessions / sent * 100)}%` : '—';
+        const engageRate = ga4Sessions > 0 ? `${Math.round(ga4Engaged / ga4Sessions * 100)}%` : '—';
         const openRate  = sent > 0 ? `${Math.round(opened / sent * 100)}%` : '—';
         const delivRate = sent > 0 ? `${Math.round(delivered / sent * 100)}%` : '—';
         const todayCount = t['total'] || 0;
@@ -505,6 +511,7 @@ function buildSystemPrompt(
           `• ${c.name as string} [${c.channel as string || 'unknown'}, ${c.status as string}]${liveTag}`,
           `  Enrolled: ${enrolled.toLocaleString()} | Active: ${e['active'] || 0} | Completed: ${e['completed'] || 0}`,
           `  All-time: ${sent.toLocaleString()} sent → ${delivRate} delivered → ${openRate} opened → ${replied} replied → ${converted} converted`,
+          `  GA4 (real visits): ${ga4Sessions} sessions | visit rate: ${visitRate} | engaged: ${engageRate} — NOTE: GA4 is the only reliable click signal; open/click rates from email provider are bot-inflated.`,
           `  Bounced: ${bounced} | Today's sends: ${todayCount}`,
         ].join('\n');
       }).join('\n\n')
