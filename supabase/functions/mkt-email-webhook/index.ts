@@ -5,6 +5,7 @@ import {
   hardSuppressContact,
   softBounceContact,
   suppressContactByEmail,
+  suppressEmailRetryOtherChannels,
 } from '../_shared/emailSuppression.ts';
 
 const corsHeaders = {
@@ -474,6 +475,7 @@ async function handleResendWebhook(req: Request): Promise<Response> {
 
     // Update action based on event type
     const updates: Record<string, unknown> = {};
+    let deleteAction = false;
 
     switch (eventType) {
       case 'email.delivered':
@@ -487,8 +489,11 @@ async function handleResendWebhook(req: Request): Promise<Response> {
         break;
 
       case 'email.clicked':
-        updates.clicked_at = new Date().toISOString();
-        await updateEngagementScore(supabase, action.id, 'email_click', 5);
+        // Do NOT set clicked_at or engagement score here.
+        // Resend's email.clicked fires for email security bots (Proofpoint, Defender ATP, etc.)
+        // that scan every link in corporate emails before delivery — not real human clicks.
+        // Real clicks are confirmed by GA4 (requires JS execution in a real browser) and
+        // written back to clicked_at + engagement score by mkt-ga4-sync daily.
         break;
 
       case 'email.delivery_delayed':
@@ -499,35 +504,30 @@ async function handleResendWebhook(req: Request): Promise<Response> {
       case 'email.bounced': {
         const bounceType = (data.bounce_type as string || '').toLowerCase();
         const isHard = bounceType === 'hard' || bounceType === '' || bounceType === 'unknown';
-        updates.status = 'bounced';
-        updates.failed_at = new Date().toISOString();
-        updates.failure_reason = `Bounced (${bounceType || 'unknown'})`;
-
         if (isHard) {
-          await suppressContact(supabase, action, 'hard_bounce', logger);
+          // Suppress email only — re-queue enrollment so executor retries via WhatsApp/call
+          await suppressEmailAndRetry(supabase, action, 'hard_bounce', logger);
         } else {
-          // Soft bounce — increment counter; escalate at threshold
           await handleSoftBounce(supabase, action, logger);
         }
+        deleteAction = true;
         break;
       }
 
       case 'email.complained':
-        updates.status = 'bounced';
-        updates.complained_at = new Date().toISOString();
-        updates.failure_reason = 'Spam complaint';
+        // Spam complaint — suppress all channels and cancel enrollment entirely
         await suppressContact(supabase, action, 'spam_complaint', logger);
+        deleteAction = true;
         break;
 
       default:
         break;
     }
 
-    if (Object.keys(updates).length > 0) {
-      await supabase
-        .from('mkt_sequence_actions')
-        .update(updates)
-        .eq('id', action.id);
+    if (deleteAction) {
+      await supabase.from('mkt_sequence_actions').delete().eq('id', action.id);
+    } else if (Object.keys(updates).length > 0) {
+      await supabase.from('mkt_sequence_actions').update(updates).eq('id', action.id);
     }
 
     // Update A/B test metrics if applicable
@@ -600,7 +600,7 @@ async function updateABTestMetrics(
 
     const metricMap: Record<string, string> = {
       'email.opened': 'opens',
-      'email.clicked': 'clicks',
+      // 'email.clicked' intentionally excluded — bot-polluted; real clicks come from GA4 sync
     };
 
     const metric = metricMap[eventType];
@@ -629,7 +629,27 @@ async function updateABTestMetrics(
 
 // suppressContactByEmail is imported from _shared/emailSuppression.ts
 
-// Thin wrapper: resolves enrollment → contact then delegates to shared hardSuppressContact
+// Email bounce → suppress email channel only, re-queue enrollment for WhatsApp/call retry
+async function suppressEmailAndRetry(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  action: { id: string; enrollment_id: string; org_id: string },
+  reason: string,
+  logger: ReturnType<typeof createEngineLogger>
+): Promise<void> {
+  try {
+    const { data: enrollment } = await supabase
+      .from('mkt_sequence_enrollments').select('lead_id').eq('id', action.enrollment_id).single();
+    if (!enrollment?.lead_id) return;
+    const { data: contact } = await supabase
+      .from('contacts').select('email').eq('id', enrollment.lead_id).single();
+    await suppressEmailRetryOtherChannels(supabase, enrollment.lead_id, action.org_id, contact?.email ?? null, action.enrollment_id, reason);
+    await logger.info('email-bounced-retry-other-channel', { lead_id: enrollment.lead_id, reason });
+  } catch (err) {
+    console.error('[mkt-email-webhook] suppressEmailAndRetry failed:', err);
+  }
+}
+
+// Spam complaint → full suppress across all channels, cancel enrollment
 async function suppressContact(
   supabase: ReturnType<typeof getSupabaseClient>,
   action: { id: string; enrollment_id: string; org_id: string },
@@ -649,7 +669,7 @@ async function suppressContact(
   }
 }
 
-// Thin wrapper: resolves enrollment → contact then delegates to shared softBounceContact
+// Soft bounce: increment counter; on escalation suppresses email and re-queues for retry
 async function handleSoftBounce(
   supabase: ReturnType<typeof getSupabaseClient>,
   action: { id: string; enrollment_id: string; org_id: string },
@@ -661,7 +681,7 @@ async function handleSoftBounce(
     if (!enrollment?.lead_id) return;
     const { data: contact } = await supabase
       .from('contacts').select('email').eq('id', enrollment.lead_id).single();
-    await softBounceContact(supabase, enrollment.lead_id, action.org_id, contact?.email ?? null);
+    await softBounceContact(supabase, enrollment.lead_id, action.org_id, contact?.email ?? null, action.enrollment_id);
     await logger.info('soft-bounce-handled', { lead_id: enrollment.lead_id });
   } catch (err) {
     console.error('[mkt-email-webhook] handleSoftBounce failed:', err);
