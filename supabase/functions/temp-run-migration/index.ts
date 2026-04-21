@@ -1,11 +1,15 @@
--- ============================================================
--- Replace campaign analytics RPCs to include GA4 sessions.
--- GA4 sessions = real browser visits (bots cannot execute JS).
--- This is the only non-vanity click signal in the system.
--- campaign_slug match: utm_campaign = lower(replace(name,' ','_'))
--- ============================================================
+import { Client } from "https://deno.land/x/postgres@v0.17.0/mod.ts";
 
-CREATE OR REPLACE FUNCTION get_all_campaigns_analytics(p_org_id uuid)
+Deno.serve(async () => {
+  const client = new Client(Deno.env.get("SUPABASE_DB_URL")!);
+  await client.connect();
+
+  const sql = `
+-- Drop first because we're changing the return type (adding ga4 columns)
+DROP FUNCTION IF EXISTS get_all_campaigns_analytics(uuid);
+DROP FUNCTION IF EXISTS get_campaign_analytics(uuid);
+
+CREATE FUNCTION get_all_campaigns_analytics(p_org_id uuid)
 RETURNS TABLE (
   campaign_id         uuid,
   campaign_name       text,
@@ -45,20 +49,14 @@ AS $$
     COUNT(*) FILTER (WHERE a.replied_at IS NOT NULL)                         AS replied,
     COUNT(*) FILTER (WHERE a.status = 'failed')                              AS failed,
     COUNT(*) FILTER (WHERE a.complained_at IS NOT NULL)                      AS complained,
-
-    -- GA4: real browser visits attributed to this campaign via utm_campaign slug match.
-    -- campaign_slug in mkt_ga4_traffic = lower(replace(campaign_name, ' ', '_'))
     MAX(COALESCE(g.ga4_sessions, 0))::bigint          AS ga4_sessions,
     MAX(COALESCE(g.ga4_engaged_sessions, 0))::bigint  AS ga4_engaged_sessions,
-
     (SELECT MIN(e2.next_action_at) FROM mkt_sequence_enrollments e2
      WHERE e2.campaign_id = c.id AND e2.status = 'active')                  AS next_fire_at,
     MAX(a.sent_at)                                                            AS last_sent_at
-
   FROM mkt_campaigns c
   LEFT JOIN mkt_sequence_enrollments e ON e.campaign_id = c.id
   LEFT JOIN mkt_sequence_actions a ON a.enrollment_id = e.id
-  -- GA4 traffic aggregated per campaign (all-time, all dates)
   LEFT JOIN (
     SELECT
       org_id,
@@ -76,9 +74,7 @@ AS $$
   ORDER BY c.created_at DESC;
 $$;
 
-
--- Also update the single-campaign variant for consistency
-CREATE OR REPLACE FUNCTION get_campaign_analytics(p_campaign_id uuid)
+CREATE FUNCTION get_campaign_analytics(p_campaign_id uuid)
 RETURNS TABLE (
   enrolled              bigint,
   active_enrollments    bigint,
@@ -107,7 +103,6 @@ AS $$
      WHERE campaign_id = p_campaign_id AND status = 'active')::bigint AS active_enrollments,
     (SELECT COUNT(*) FROM mkt_sequence_enrollments
      WHERE campaign_id = p_campaign_id AND status = 'completed')::bigint AS completed_enrollments,
-
     COUNT(*) FILTER (WHERE a.status IN ('sent','delivered'))                AS sent,
     COUNT(*) FILTER (WHERE a.delivered_at IS NOT NULL)                      AS delivered,
     COUNT(*) FILTER (WHERE a.opened_at IS NOT NULL)                         AS opened,
@@ -116,14 +111,11 @@ AS $$
     COUNT(*) FILTER (WHERE a.status = 'failed')                             AS failed,
     COUNT(*) FILTER (WHERE a.status = 'bounced' AND a.complained_at IS NULL) AS bounced,
     COUNT(*) FILTER (WHERE a.complained_at IS NOT NULL)                     AS complained,
-
     MAX(COALESCE(g.ga4_sessions, 0))::bigint         AS ga4_sessions,
     MAX(COALESCE(g.ga4_engaged_sessions, 0))::bigint AS ga4_engaged_sessions,
-
     (SELECT MIN(e2.next_action_at) FROM mkt_sequence_enrollments e2
      WHERE e2.campaign_id = p_campaign_id AND e2.status = 'active')        AS next_fire_at,
     MAX(a.sent_at)                                                          AS last_sent_at
-
   FROM mkt_sequence_actions a
   JOIN mkt_sequence_enrollments e ON a.enrollment_id = e.id
   LEFT JOIN (
@@ -139,3 +131,19 @@ AS $$
            (SELECT name FROM mkt_campaigns WHERE id = p_campaign_id), '\s+', '_', 'g'))
   WHERE e.campaign_id = p_campaign_id;
 $$;
+`;
+
+  try {
+    await client.queryArray(sql);
+    await client.end();
+    return new Response(JSON.stringify({ ok: true, message: "Migration applied: both RPCs now include ga4_sessions and ga4_engaged_sessions" }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (e) {
+    await client.end();
+    return new Response(JSON.stringify({ error: String(e) }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+});
