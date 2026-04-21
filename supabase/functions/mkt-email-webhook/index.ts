@@ -15,6 +15,29 @@ const corsHeaders = {
 
 const SITE_URL = Deno.env.get('SITE_URL') || 'https://app.in-sync.io';
 
+/**
+ * Resolve the product landing page for an action_id so that error fallbacks
+ * send the prospect to the product page, not the internal app dashboard.
+ */
+async function resolveProductFallback(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  actionId: string | null,
+): Promise<string> {
+  if (!actionId) return SITE_URL;
+  try {
+    const { data } = await supabase
+      .from('mkt_sequence_actions')
+      .select('mkt_sequence_enrollments!inner(campaign_id, mkt_campaigns!inner(mkt_products(product_url)))')
+      .eq('id', actionId)
+      .single();
+    const productUrl = (data as any)
+      ?.mkt_sequence_enrollments?.mkt_campaigns?.mkt_products?.product_url;
+    return productUrl || SITE_URL;
+  } catch {
+    return SITE_URL;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Redirect allowlist — derived from mkt_products (SoT).
 // Domains are cached in-process for 60 s; a new product onboarded to
@@ -176,18 +199,22 @@ async function handleClickTracking(url: URL, req: Request): Promise<Response> {
   const supabase = getSupabaseClient();
   const logger = createEngineLogger('mkt-email-webhook');
 
+  const actionId = trackingId ? extractActionId(trackingId) : null;
+
   let hostname: string;
   try {
     hostname = new URL(decodedUrl).hostname;
   } catch {
     await logger.warn('allowlist-invalid-url', { url: decodedUrl, channel });
-    return new Response(null, { status: 302, headers: { Location: SITE_URL } });
+    const fallback = await resolveProductFallback(supabase, actionId);
+    return new Response(null, { status: 302, headers: { Location: fallback } });
   }
 
   const allowedDomains = await getAllowedDomains(supabase);
   if (!allowedDomains.has(hostname)) {
     await logger.warn('allowlist-rejection', { hostname, url: decodedUrl, channel });
-    return new Response(null, { status: 302, headers: { Location: SITE_URL } });
+    const fallback = await resolveProductFallback(supabase, actionId);
+    return new Response(null, { status: 302, headers: { Location: fallback } });
   }
 
   // ---------------------------------------------------------------------------
@@ -198,18 +225,20 @@ async function handleClickTracking(url: URL, req: Request): Promise<Response> {
     const ts = url.searchParams.get('ts');
     const sig = url.searchParams.get('sig');
     const hmacSecret = Deno.env.get('MKT_CLICK_HMAC_SECRET');
-    const actionIdForSig = trackingId ? extractActionId(trackingId) : null;
+    const actionIdForSig = actionId;
 
     if (!ts || !sig || !actionIdForSig || !hmacSecret) {
       await logger.warn('sig-missing-params', { v, channel });
-      return new Response(null, { status: 302, headers: { Location: SITE_URL } });
+      const fallback = await resolveProductFallback(supabase, actionId);
+      return new Response(null, { status: 302, headers: { Location: fallback } });
     }
 
     // Reject links older than 90 days
     const linkAge = Date.now() - parseInt(ts, 10);
     if (linkAge > 90 * 24 * 60 * 60 * 1000) {
       await logger.warn('sig-expired', { action_id: actionIdForSig, age_days: Math.floor(linkAge / 86400000), channel });
-      return new Response(null, { status: 302, headers: { Location: SITE_URL } });
+      const fallback = await resolveProductFallback(supabase, actionId);
+      return new Response(null, { status: 302, headers: { Location: fallback } });
     }
 
     const key = await crypto.subtle.importKey(
@@ -228,7 +257,8 @@ async function handleClickTracking(url: URL, req: Request): Promise<Response> {
 
     if (sig !== expectedSig) {
       await logger.warn('sig-invalid', { action_id: actionIdForSig, channel });
-      return new Response(null, { status: 302, headers: { Location: SITE_URL } });
+      const fallback = await resolveProductFallback(supabase, actionId);
+      return new Response(null, { status: 302, headers: { Location: fallback } });
     }
   } else {
     // v=1: legacy unsigned link — allow but warn so we know when it's safe to remove fallback
@@ -239,7 +269,6 @@ async function handleClickTracking(url: URL, req: Request): Promise<Response> {
   // Record click — log every event; score only real, non-duplicate clicks.
   // ---------------------------------------------------------------------------
   const clickedAt = new Date();
-  const actionId = trackingId ? extractActionId(trackingId) : null;
 
   // Determine if bot (UA check already run above; add timing heuristic here)
   const uaBot = isSecurityScanner(req);
