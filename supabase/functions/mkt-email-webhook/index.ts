@@ -13,36 +13,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const SITE_URL = Deno.env.get('SITE_URL') || 'https://app.in-sync.io';
-
-/**
- * Resolve the product landing page for an action_id so that error fallbacks
- * send the prospect to the product page, not the internal app dashboard.
- */
-async function resolveProductFallback(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  actionId: string | null,
-): Promise<string> {
-  if (!actionId) return SITE_URL;
-  try {
-    const { data } = await supabase
-      .from('mkt_sequence_actions')
-      .select('mkt_sequence_enrollments!inner(campaign_id, mkt_campaigns!inner(mkt_products(product_url)))')
-      .eq('id', actionId)
-      .single();
-    const productUrl = (data as any)
-      ?.mkt_sequence_enrollments?.mkt_campaigns?.mkt_products?.product_url;
-    return productUrl || SITE_URL;
-  } catch {
-    return SITE_URL;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Redirect allowlist — derived from mkt_products (SoT).
 // Domains are cached in-process for 60 s; a new product onboarded to
 // mkt_products is automatically allowlisted on the next cache refresh.
-// Static entries: the app's own SITE_URL hostname is always included.
 // ---------------------------------------------------------------------------
 let _allowlistCache: { domains: Set<string>; expiresAt: number } | null = null;
 
@@ -54,10 +29,7 @@ async function getAllowedDomains(
 
   const domains = new Set<string>();
 
-  // Always allow our own app domain
-  try { domains.add(new URL(SITE_URL).hostname); } catch { /* ignore */ }
-
-  // Derive from mkt_products — every registered product's URLs are trusted
+  // Derive from mkt_products — only registered product URLs are trusted
   const { data } = await supabase.from('mkt_products').select('product_url, payment_url');
   for (const row of data || []) {
     try { if (row.product_url) domains.add(new URL(row.product_url).hostname); } catch { /* ignore */ }
@@ -206,15 +178,13 @@ async function handleClickTracking(url: URL, req: Request): Promise<Response> {
     hostname = new URL(decodedUrl).hostname;
   } catch {
     await logger.warn('allowlist-invalid-url', { url: decodedUrl, channel });
-    const fallback = await resolveProductFallback(supabase, actionId);
-    return new Response(null, { status: 302, headers: { Location: fallback } });
+    return new Response('Not Found', { status: 404 });
   }
 
   const allowedDomains = await getAllowedDomains(supabase);
   if (!allowedDomains.has(hostname)) {
     await logger.warn('allowlist-rejection', { hostname, url: decodedUrl, channel });
-    const fallback = await resolveProductFallback(supabase, actionId);
-    return new Response(null, { status: 302, headers: { Location: fallback } });
+    return new Response('Not Found', { status: 404 });
   }
 
   // ---------------------------------------------------------------------------
@@ -229,16 +199,14 @@ async function handleClickTracking(url: URL, req: Request): Promise<Response> {
 
     if (!ts || !sig || !actionIdForSig || !hmacSecret) {
       await logger.warn('sig-missing-params', { v, channel });
-      const fallback = await resolveProductFallback(supabase, actionId);
-      return new Response(null, { status: 302, headers: { Location: fallback } });
+      return new Response('Not Found', { status: 404 });
     }
 
     // Reject links older than 90 days
     const linkAge = Date.now() - parseInt(ts, 10);
     if (linkAge > 90 * 24 * 60 * 60 * 1000) {
       await logger.warn('sig-expired', { action_id: actionIdForSig, age_days: Math.floor(linkAge / 86400000), channel });
-      const fallback = await resolveProductFallback(supabase, actionId);
-      return new Response(null, { status: 302, headers: { Location: fallback } });
+      return new Response('Not Found', { status: 404 });
     }
 
     const key = await crypto.subtle.importKey(
@@ -257,8 +225,7 @@ async function handleClickTracking(url: URL, req: Request): Promise<Response> {
 
     if (sig !== expectedSig) {
       await logger.warn('sig-invalid', { action_id: actionIdForSig, channel });
-      const fallback = await resolveProductFallback(supabase, actionId);
-      return new Response(null, { status: 302, headers: { Location: fallback } });
+      return new Response('Not Found', { status: 404 });
     }
   } else {
     // v=1: legacy unsigned link — allow but warn so we know when it's safe to remove fallback

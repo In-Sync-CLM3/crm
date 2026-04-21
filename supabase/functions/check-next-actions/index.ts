@@ -436,7 +436,7 @@ async function createActivityNotificationWithEmail(
   // Send email notification if user has email and RESEND_API_KEY is configured
   if (userProfile?.email && RESEND_API_KEY) {
     try {
-      const siteUrl = Deno.env.get('SITE_URL') || 'https://app.in-sync.io';
+      const siteUrl = Deno.env.get('SITE_URL') || 'https://in-sync.co.in';
       const contactUrl = `${siteUrl}/contacts/${activity.contact_id}`;
       
       const emailSubject = type === 'morning' 
@@ -629,7 +629,7 @@ async function createTaskNotificationWithEmail(
   // Send email notification if user has email and RESEND_API_KEY is configured
   if (userProfile?.email && RESEND_API_KEY) {
     try {
-      const siteUrl = Deno.env.get('SITE_URL') || 'https://app.in-sync.io';
+      const siteUrl = Deno.env.get('SITE_URL') || 'https://in-sync.co.in';
       const taskUrl = `${siteUrl}/tasks`;
       
       const emailSubject = type === 'morning' 
