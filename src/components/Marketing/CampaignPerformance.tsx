@@ -10,7 +10,7 @@ import { EngineHeartbeat } from "./shared/EngineHeartbeat";
 import { HotLeads } from "./shared/HotLeads";
 import { StrategyGrid } from "./views/StrategyGrid";
 import { JourneyLanes } from "./views/JourneyLanes";
-import type { ProductChannelRow } from "./views/StrategyGrid";
+import type { ProductChannelRow, Ga4ProductData } from "./views/StrategyGrid";
 import type { HotLead } from "./views/ThreeDView";
 
 // Lazy-load the 3D view to keep initial bundle lean
@@ -251,17 +251,28 @@ export function CampaignPerformance({ days }: { days: number }) {
     refetchInterval: 60_000,
   });
 
-  const { data: ga4Visits = 0 } = useQuery<number>({
-    queryKey: ["mkt-ga4-visits-total", effectiveOrgId, days],
+  const { data: ga4ByProduct = new Map<string, Ga4ProductData>() } = useQuery<Map<string, Ga4ProductData>>({
+    queryKey: ["mkt-ga4-by-product", effectiveOrgId, days],
     queryFn: async () => {
-      if (!effectiveOrgId) return 0;
+      if (!effectiveOrgId) return new Map();
+      const cutoff = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
       const { data, error } = await supabase
         .from("mkt_ga4_traffic")
-        .select("sessions")
+        .select("product_key, sessions, active_users, engaged_sessions")
         .eq("org_id", effectiveOrgId)
-        .gte("date", new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10));
+        .gte("date", cutoff);
       if (error) throw error;
-      return (data ?? []).reduce((s, r) => s + Number(r.sessions), 0);
+      const map = new Map<string, Ga4ProductData>();
+      for (const r of data ?? []) {
+        const pk = r.product_key as string;
+        const existing = map.get(pk) ?? { sessions: 0, active_users: 0, engaged_sessions: 0 };
+        map.set(pk, {
+          sessions:         existing.sessions         + Number(r.sessions),
+          active_users:     existing.active_users     + Number(r.active_users),
+          engaged_sessions: existing.engaged_sessions + Number(r.engaged_sessions),
+        });
+      }
+      return map;
     },
     enabled: !!effectiveOrgId,
   });
@@ -275,6 +286,8 @@ export function CampaignPerformance({ days }: { days: number }) {
   const totalWa = engineRows
     .filter(r => r.channel === "whatsapp")
     .reduce((s, r) => s + Number(r.sent), 0);
+
+  const ga4Visits = [...ga4ByProduct.values()].reduce((s, r) => s + r.sessions, 0);
 
   const activeCampaigns = campaigns.filter(c => c.status === "active").length;
   const pausedCampaigns = campaigns.filter(c => c.status === "paused").length;
@@ -326,7 +339,7 @@ export function CampaignPerformance({ days }: { days: number }) {
       {/* ── Tab content ──────────────────────────────────────────────────── */}
       <div>
         {tab === "grid" && (
-          <StrategyGrid rows={channelSummary} />
+          <StrategyGrid rows={channelSummary} ga4Data={ga4ByProduct} />
         )}
 
         {tab === "lanes" && (

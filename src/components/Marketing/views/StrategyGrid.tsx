@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Mail, MessageCircle, Phone, Search, BarChart2,
-  Linkedin, FileText, Share2, CheckCircle, Clock, Pause, MinusCircle,
+  Linkedin, FileText, Share2, CheckCircle, Clock, Pause, MinusCircle, TrendingUp,
 } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -21,6 +21,12 @@ export interface ProductChannelRow {
   replies: number;
   last_active_date: string | null;
   daily_7d_avg: number;
+}
+
+export interface Ga4ProductData {
+  sessions: number;
+  active_users: number;
+  engaged_sessions: number;
 }
 
 // ─── Channel config ─────────────────────────────────────────────────────────
@@ -136,66 +142,110 @@ function keyMetric(row: ProductChannelRow): { value: string; label: string } {
 
 // ─── Cell components ─────────────────────────────────────────────────────────
 
-function ActiveCell({ row, ch }: { row: ProductChannelRow; ch: typeof CHANNELS[0] }) {
+function ActiveCell({
+  row,
+  ch,
+  ga4,
+}: {
+  row: ProductChannelRow;
+  ch: typeof CHANNELS[0];
+  ga4?: Ga4ProductData;
+}) {
   const { value, label } = keyMetric(row);
   const avg = Number(row.daily_7d_avg);
+  const sessions = ga4?.sessions ?? 0;
 
   return (
     <TooltipProvider delayDuration={200}>
       <Tooltip>
         <TooltipTrigger asChild>
           <div
-            className={`h-full rounded-lg ${ch.lightBg} border p-2 flex flex-col justify-between cursor-default`}
+            className={`h-full rounded-lg ${ch.lightBg} border p-1.5 flex flex-col gap-1 cursor-default overflow-hidden`}
             style={{ borderColor: `${ch.color}55` }}
           >
-            {/* Status dot + channel icon */}
+            {/* ── STRATEGY tier: icon + start date + live pulse ── */}
             <div className="flex items-center justify-between">
               <span style={{ color: ch.color }}>{ch.icon}</span>
-              <span className="relative flex h-1.5 w-1.5">
-                <span
-                  className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
-                  style={{ backgroundColor: ch.color }}
-                />
-                <span
-                  className="relative inline-flex rounded-full h-1.5 w-1.5"
-                  style={{ backgroundColor: ch.color }}
-                />
-              </span>
+              <div className="flex items-center gap-1">
+                {row.actual_start_date && (
+                  <span className="text-[8px] text-muted-foreground leading-none">
+                    {fmtDate(row.actual_start_date)}
+                  </span>
+                )}
+                <span className="relative flex h-1.5 w-1.5 flex-shrink-0">
+                  <span
+                    className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-60"
+                    style={{ backgroundColor: ch.color }}
+                  />
+                  <span
+                    className="relative inline-flex rounded-full h-1.5 w-1.5"
+                    style={{ backgroundColor: ch.color }}
+                  />
+                </span>
+              </div>
             </div>
 
-            {/* Key metric */}
-            <div>
+            {/* ── EXECUTION tier: key metric + 7d avg bar ── */}
+            <div className="flex-1">
               <div className="text-sm font-bold tabular-nums leading-tight" style={{ color: ch.color }}>
                 {value}
               </div>
-              <div className="text-[9px] text-muted-foreground uppercase tracking-wide">{label}</div>
+              <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-tight">{label}</div>
+              {avg > 0 && (
+                <div className="mt-0.5">
+                  <div className="h-0.5 rounded-full bg-muted overflow-hidden">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${Math.min(100, (avg / 50) * 100)}%`,
+                        backgroundColor: ch.color,
+                        opacity: 0.6,
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* 7d avg capacity bar */}
-            {avg > 0 && (
-              <div className="mt-1">
-                <div className="h-0.5 rounded-full bg-muted overflow-hidden">
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      width: `${Math.min(100, (avg / 50) * 100)}%`,
-                      backgroundColor: ch.color,
-                      opacity: 0.6,
-                    }}
-                  />
+            {/* ── OUTCOME tier: GA4 landing page sessions ── */}
+            <div className="border-t pt-0.5" style={{ borderColor: `${ch.color}20` }}>
+              {sessions > 0 ? (
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-0.5 text-[8px] text-muted-foreground">
+                    <TrendingUp className="h-2 w-2" />
+                    <span>visits</span>
+                  </div>
+                  <span className="text-[10px] font-semibold tabular-nums" style={{ color: ch.color }}>
+                    {sessions >= 1000 ? `${(sessions / 1000).toFixed(1)}k` : sessions}
+                  </span>
                 </div>
-                <div className="text-[8px] text-muted-foreground mt-0.5">{avg}/day avg</div>
-              </div>
-            )}
+              ) : (
+                <div className="text-[8px] text-muted-foreground/40 text-center">no visits</div>
+              )}
+            </div>
           </div>
         </TooltipTrigger>
-        <TooltipContent side="top" className="text-xs">
-          <div className="space-y-0.5">
+        <TooltipContent side="top" className="text-xs max-w-[200px]">
+          <div className="space-y-1">
             <div className="font-semibold">{ch.label}</div>
+            <div className="text-muted-foreground text-[10px] uppercase tracking-wide">Execution</div>
             <div>Sent: {Number(row.sent).toLocaleString()}</div>
-            {row.channel === "email" && <div>Clicks: {Number(row.clicks).toLocaleString()} · Replies: {Number(row.replies).toLocaleString()} · Opens: {Number(row.opens).toLocaleString()}</div>}
-            {row.channel === "whatsapp" && <div>Delivered: {Number(row.delivered).toLocaleString()} · Replies: {Number(row.replies).toLocaleString()}</div>}
-            {row.actual_start_date && <div className="text-muted-foreground">Since {fmtDate(row.actual_start_date)}</div>}
+            {row.channel === "email" && (
+              <div>Clicks: {Number(row.clicks).toLocaleString()} · Opens: {Number(row.opens).toLocaleString()} · Replies: {Number(row.replies).toLocaleString()}</div>
+            )}
+            {row.channel === "whatsapp" && (
+              <div>Delivered: {Number(row.delivered).toLocaleString()} · Replies: {Number(row.replies).toLocaleString()}</div>
+            )}
+            {avg > 0 && <div>{avg}/day 7-day avg</div>}
+            {ga4 && (
+              <>
+                <div className="text-muted-foreground text-[10px] uppercase tracking-wide pt-0.5">Outcome (GA4)</div>
+                <div>Sessions: {ga4.sessions.toLocaleString()} · Users: {ga4.active_users.toLocaleString()} · Engaged: {ga4.engaged_sessions.toLocaleString()}</div>
+              </>
+            )}
+            {row.actual_start_date && (
+              <div className="text-muted-foreground">Since {fmtDate(row.actual_start_date)}</div>
+            )}
           </div>
         </TooltipContent>
       </Tooltip>
@@ -245,9 +295,17 @@ function NACell({ ch }: { ch: typeof CHANNELS[0] }) {
   );
 }
 
-function Cell({ row, ch }: { row: ProductChannelRow | undefined; ch: typeof CHANNELS[0] }) {
+function Cell({
+  row,
+  ch,
+  ga4,
+}: {
+  row: ProductChannelRow | undefined;
+  ch: typeof CHANNELS[0];
+  ga4?: Ga4ProductData;
+}) {
   if (!row) return <NACell ch={ch} />;
-  if (row.plan_status === "active") return <ActiveCell row={row} ch={ch} />;
+  if (row.plan_status === "active") return <ActiveCell row={row} ch={ch} ga4={ga4} />;
   if (row.plan_status === "paused") return <PausedCell row={row} ch={ch} />;
   if (row.plan_status === "not_applicable") return <NACell ch={ch} />;
   return <PlannedCell row={row} ch={ch} />;
@@ -280,7 +338,13 @@ function Legend() {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function StrategyGrid({ rows }: { rows: ProductChannelRow[] }) {
+export function StrategyGrid({
+  rows,
+  ga4Data,
+}: {
+  rows: ProductChannelRow[];
+  ga4Data?: Map<string, Ga4ProductData>;
+}) {
   // Group by product_key
   const productMap = new Map<string, Map<string, ProductChannelRow>>();
   for (const row of rows) {
@@ -346,8 +410,8 @@ export function StrategyGrid({ rows }: { rows: ProductChannelRow[] }) {
                   </td>
                   {CHANNELS.map(ch => (
                     <td key={ch.key} className="px-2 py-2">
-                      <div className="h-[72px]">
-                        <Cell row={channelData.get(ch.key)} ch={ch} />
+                      <div className="h-[96px]">
+                        <Cell row={channelData.get(ch.key)} ch={ch} ga4={ga4Data?.get(productKey)} />
                       </div>
                     </td>
                   ))}
