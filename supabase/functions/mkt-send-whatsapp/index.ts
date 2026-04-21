@@ -64,79 +64,140 @@ Deno.serve(async (req) => {
         templateData = template;
         messageContent = template.body as string;
 
-        // Replace template variables
-        const vars: Record<string, string> = {
-          '{{first_name}}': lead.first_name || 'there',
-          '{{last_name}}': lead.last_name || '',
-          '{{company}}': lead.company || 'your company',
-          '{{job_title}}': lead.job_title || '',
-          '{{1}}': lead.first_name || 'there',
-          '{{2}}': lead.company || 'your company',
-          '{{3}}': lead.job_title || '',
+        // Build variable value map ({{1}}, {{2}}, ... correspond to template.variables array order)
+        const workspaceName = resolveWorkspaceName(template.template_name as string);
+        const varValueMap: Record<string, string> = {
+          first_name:       lead.first_name || 'there',
+          last_name:        lead.last_name  || '',
+          company:          lead.company    || 'your company',
+          job_title:        lead.job_title  || '',
+          workspace_name:   workspaceName,
+          days_left:        '7',
+          days_inactive:    '30',
+          feature_name:     'Smart Vendor Verification',
+          improvement_stat: '40%',
+          new_feature_name: 'Smart Analytics',
         };
 
-        for (const [key, value] of Object.entries(vars)) {
-          messageContent = messageContent.replaceAll(key, value);
-        }
-
-        // Rewrite URLs in message body for click tracking (same webhook, channel=whatsapp)
-        if (messageContent) {
-          const trackingDomain = Deno.env.get('MKT_TRACKING_DOMAIN') || supabaseUrl;
-          const ts = Date.now();
-          const hmacSecret = Deno.env.get('MKT_CLICK_HMAC_SECRET');
-          let clickSig = '';
-          if (hmacSecret) {
-            const key = await crypto.subtle.importKey(
-              'raw',
-              new TextEncoder().encode(hmacSecret),
-              { name: 'HMAC', hash: 'SHA-256' },
-              false,
-              ['sign']
-            );
-            const sigBytes = await crypto.subtle.sign(
-              'HMAC',
-              key,
-              new TextEncoder().encode(`${action_id}|${ts}`)
-            );
-            clickSig = Array.from(new Uint8Array(sigBytes)).map(b => b.toString(16).padStart(2, '0')).join('');
-          }
-          const vParam = clickSig ? `&v=2&ts=${ts}&sig=${clickSig}` : '&v=1';
-          const trackingPixelId = `mkt_${action_id}_${ts}`;
-          const campaignSlug = 'whatsapp_outbound';
-
-          messageContent = messageContent.replace(
-            /https?:\/\/[^\s<>"{}|\\^`[\]]+/g,
-            (rawUrl) => {
-              if (rawUrl.includes('mkt-email-webhook')) return rawUrl;
-              let urlObj: URL;
-              try { urlObj = new URL(rawUrl); } catch { return rawUrl; }
-              urlObj.searchParams.set('utm_source', 'insync_engine');
-              urlObj.searchParams.set('utm_medium', 'whatsapp');
-              urlObj.searchParams.set('utm_campaign', campaignSlug);
-              urlObj.searchParams.set('utm_content', action_id);
-              const urlWithUtm = urlObj.toString();
-              return `${trackingDomain}/functions/v1/mkt-email-webhook?action=click&v=2&id=${trackingPixelId}${vParam}&channel=whatsapp&url=${encodeURIComponent(urlWithUtm)}`;
-            }
-          );
-        }
+        // Replace named placeholders in body (for preview/logging only)
+        const varNames: string[] = (template.variables as string[]) || [];
+        varNames.forEach((name, idx) => {
+          const val = varValueMap[name] || name;
+          messageContent = messageContent
+            .replaceAll(`{{${idx + 1}}}`, val)
+            .replaceAll(`{{${name}}}`, val);
+        });
       }
     }
 
     if (!messageContent) throw new Error('No template content resolved');
 
+    // ── UTM decoration ──────────────────────────────────────────────────────
+    // Look up campaign context to build proper UTM parameters.
+    const { data: actionRow } = await supabase
+      .from('mkt_sequence_actions')
+      .select('enrollment_id, mkt_sequence_enrollments!inner(campaign_id, mkt_campaigns!inner(name, product_key, mkt_products(product_url)))')
+      .eq('id', action_id)
+      .single();
+
+    const campaignName = (actionRow as any)
+      ?.mkt_sequence_enrollments?.mkt_campaigns?.name ?? 'mkt_whatsapp';
+    const productUrl   = (actionRow as any)
+      ?.mkt_sequence_enrollments?.mkt_campaigns?.mkt_products?.product_url ?? null;
+
+    const utmSuffix = `utm_source=insync_engine&utm_medium=whatsapp&utm_campaign=${encodeURIComponent(campaignName.replace(/\s+/g,'_').toLowerCase())}&utm_content=${action_id}`;
+
+    // Append UTMs to any https:// URL in the free-text message body.
+    const urlRegex = /https?:\/\/[^\s"')>]+/g;
+    messageContent = messageContent.replace(urlRegex, (url) => {
+      try {
+        const u = new URL(url);
+        // Only decorate our own domains
+        if (!u.hostname.endsWith('in-sync.co.in') && !u.hostname.endsWith('insync.co.in')) return url;
+        const sep = url.includes('?') ? '&' : '?';
+        return `${url}${sep}${utmSuffix}`;
+      } catch { return url; }
+    });
+
     const formattedPhone = formatPhoneE164(lead.phone);
     const anonKey    = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
     const webhookUrl = `${supabaseUrl}/functions/v1/mkt-whatsapp-webhook?apikey=${anonKey}`;
+
+    // Build Exotel content — use template format for approved templates (bypasses 24hr window),
+    // fall back to free text only if no approval (only works within 24hr session window).
+    let exotelContent: Record<string, unknown>;
+
+    const isApproved =
+      templateData &&
+      (templateData as Record<string, unknown>).approval_status === 'approved' &&
+      (templateData as Record<string, unknown>).template_name;
+
+    if (isApproved) {
+      const tpl = templateData as Record<string, unknown>;
+      const varNames: string[] = (tpl.variables as string[]) || [];
+      const workspaceName = resolveWorkspaceName(tpl.template_name as string);
+      const varValueMap: Record<string, string> = {
+        first_name:       lead.first_name || 'there',
+        last_name:        lead.last_name  || '',
+        company:          lead.company    || 'your company',
+        job_title:        lead.job_title  || '',
+        workspace_name:   workspaceName,
+        days_left:        '7',
+        days_inactive:    '30',
+        feature_name:     'Smart Vendor Verification',
+        improvement_stat: '40%',
+        new_feature_name: 'Smart Analytics',
+      };
+
+      const parameters = varNames.map((name) => ({
+        type: 'text',
+        text: varValueMap[name] || name,
+      }));
+
+      const components: unknown[] = parameters.length > 0
+        ? [{ type: 'body', parameters }]
+        : [];
+
+      // If the template has a CTA button with a dynamic URL, inject UTM-decorated landing page.
+      const buttonUrl: string | null = (tpl.button_url as string) || productUrl;
+      if (buttonUrl) {
+        try {
+          const u = new URL(buttonUrl);
+          const sep = buttonUrl.includes('?') ? '&' : '?';
+          const decoratedUrl = `${buttonUrl}${sep}${utmSuffix}`;
+          // Dynamic URL suffix for Meta call-to-action button (index 0)
+          components.push({
+            type: 'button',
+            sub_type: 'url',
+            index: '0',
+            parameters: [{ type: 'text', text: `${u.search ? '&' : '?'}${utmSuffix}` }],
+          });
+          void decoratedUrl; // available for logging if needed
+        } catch { /* skip if URL invalid */ }
+      }
+
+      exotelContent = {
+        type: 'template',
+        template: {
+          name: tpl.template_name,
+          language: { code: (tpl.language as string) || 'en' },
+          components,
+        },
+      };
+    } else {
+      // Free text — only delivers if lead has messaged us in the last 24 hours
+      exotelContent = {
+        recipient_type: 'individual',
+        type: 'text',
+        text: { preview_url: false, body: messageContent },
+      };
+    }
 
     // Build and send
     const payload = buildExotelPayload({
       sourceNumber: exotelSettings.whatsapp_source_number,
       toNumber: formattedPhone,
-      content: {
-        recipient_type: 'individual',
-        type: 'text',
-        text: { preview_url: false, body: messageContent },
-      },
+      content: exotelContent,
       customData: JSON.stringify({ action_id, lead_id, enrollment_id: body.enrollment_id }),
       statusCallback: webhookUrl,
     });
@@ -216,3 +277,15 @@ Deno.serve(async (req) => {
     return errorResponse(error);
   }
 });
+
+/**
+ * Infer a human-readable workspace/product name from the template name prefix.
+ * Used to fill the {{workspace_name}} variable in welcome templates.
+ */
+function resolveWorkspaceName(templateName: string): string {
+  if (templateName.startsWith('globalcrm')) return 'GlobalCRM';
+  if (templateName.startsWith('fieldsync')) return 'Fieldsync';
+  if (templateName.startsWith('vendorverification')) return 'VendorVerification';
+  if (templateName.startsWith('worksync')) return 'WorkSync';
+  return 'In-Sync';
+}

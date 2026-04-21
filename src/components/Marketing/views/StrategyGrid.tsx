@@ -126,15 +126,17 @@ function fmtDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 }
 
-function keyMetric(row: ProductChannelRow): { value: string; label: string } {
+function keyMetric(row: ProductChannelRow, ga4?: Ga4ProductData): { value: string; label: string } {
   const sent = Number(row.sent);
-  const clicks = Number(row.clicks);
   const delivered = Number(row.delivered);
-  if (row.channel === "email") {
-    return { value: ratePct(clicks, sent), label: "click rate" };
-  }
-  if (row.channel === "whatsapp") {
-    return { value: ratePct(delivered, sent), label: "delivered" };
+  const sessions = ga4?.sessions ?? 0;
+  if (row.channel === "email" || row.channel === "whatsapp") {
+    // GA4 sessions = real browser visits (bots can't execute JS). True click metric.
+    if (sessions > 0 && sent > 0) return { value: ratePct(sessions, sent), label: "visit rate" };
+    // Fallback before GA4 data arrives
+    if (row.channel === "whatsapp") return { value: ratePct(delivered, sent), label: "delivered" };
+    if (sent > 0) return { value: sent.toLocaleString(), label: "sent" };
+    return { value: "—", label: "sent" };
   }
   if (sent > 0) return { value: sent.toLocaleString(), label: "sent" };
   return { value: "—", label: "sent" };
@@ -151,7 +153,7 @@ function ActiveCell({
   ch: typeof CHANNELS[0];
   ga4?: Ga4ProductData;
 }) {
-  const { value, label } = keyMetric(row);
+  const { value, label } = keyMetric(row, ga4);
   const avg = Number(row.daily_7d_avg);
   const sessions = ga4?.sessions ?? 0;
 
@@ -230,12 +232,8 @@ function ActiveCell({
             <div className="font-semibold">{ch.label}</div>
             <div className="text-muted-foreground text-[10px] uppercase tracking-wide">Execution</div>
             <div>Sent: {Number(row.sent).toLocaleString()}</div>
-            {row.channel === "email" && (
-              <div>Clicks: {Number(row.clicks).toLocaleString()} · Opens: {Number(row.opens).toLocaleString()} · Replies: {Number(row.replies).toLocaleString()}</div>
-            )}
-            {row.channel === "whatsapp" && (
-              <div>Delivered: {Number(row.delivered).toLocaleString()} · Replies: {Number(row.replies).toLocaleString()}</div>
-            )}
+            {row.channel === "email" && <div>Opens: {Number(row.opens).toLocaleString()} · Replies: {Number(row.replies).toLocaleString()}</div>}
+            {row.channel === "whatsapp" && <div>Delivered: {Number(row.delivered).toLocaleString()} · Replies: {Number(row.replies).toLocaleString()}</div>}
             {avg > 0 && <div>{avg}/day 7-day avg</div>}
             {ga4 && (
               <>
