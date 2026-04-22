@@ -17,8 +17,10 @@ import {
   Users,
   Radio,
   Megaphone,
+  CalendarDays,
 } from "lucide-react";
 import { BreakpointBanner } from "@/components/Marketing/BreakpointBanner";
+import { DailyReport } from "@/components/Marketing/DailyReport";
 import { MarketingOverview } from "@/components/Marketing/MarketingOverview";
 import { FinancialIntelligence } from "@/components/Marketing/FinancialIntelligence";
 import { CampaignPerformance } from "@/components/Marketing/CampaignPerformance";
@@ -45,6 +47,8 @@ export default function MarketingDashboard() {
     await queryClient.invalidateQueries({ queryKey: ["mkt-dashboard-channels"] });
     await queryClient.invalidateQueries({ queryKey: ["mkt-engine-metrics-weekly"] });
     await queryClient.invalidateQueries({ queryKey: ["mkt-breakpoints"] });
+    await queryClient.invalidateQueries({ queryKey: ["daily-report-campaigns"] });
+    await queryClient.invalidateQueries({ queryKey: ["daily-report-actions"] });
     setRefreshing(false);
   }, [queryClient]);
 
@@ -113,6 +117,10 @@ export default function MarketingDashboard() {
               <Target className="h-3.5 w-3.5" />
               <span>ICP Intelligence</span>
             </TabsTrigger>
+            <TabsTrigger value="daily" className="gap-1.5">
+              <CalendarDays className="h-3.5 w-3.5" />
+              <span>Today's Report</span>
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview">
@@ -140,6 +148,10 @@ export default function MarketingDashboard() {
 
           <TabsContent value="icp">
             <ICPIntelligenceTab />
+          </TabsContent>
+
+          <TabsContent value="daily">
+            <DailyReport />
           </TabsContent>
         </Tabs>
       </div>
