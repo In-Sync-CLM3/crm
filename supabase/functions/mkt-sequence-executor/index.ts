@@ -110,35 +110,68 @@ Deno.serve(async (req) => {
       campaignsByProduct.set(pk, arr);
     }
 
-    // Count today's step-1 delivered per product (cap is on delivery, not send)
-    // Include 'sent' (in-flight, not yet confirmed) to avoid overshooting while
-    // Resend/WhatsApp delivery webhooks are still pending.
-    const step1SentTodayByProduct = new Map<string, number>();
+    // Daily cap is on DELIVERIES (delivered_at IS NOT NULL), not on sends.
+    // We track two counts per product:
+    //   deliveredToday  — confirmed deliveries (delivered_at set)
+    //   inFlightToday   — sent but not yet confirmed (status=sent, delivered_at null)
+    // Cap logic: stop sending new step-1 once deliveredToday >= DAILY_OUTREACH_LIMIT.
+    // Safety ceiling: never let totalSent (delivered + in-flight) exceed
+    // DAILY_OUTREACH_LIMIT * MAX_SEND_MULTIPLIER to prevent runaway sends if
+    // webhooks are delayed.
+    const MAX_SEND_MULTIPLIER = 1.5; // send at most 150 to get 100 delivered
+
+    const step1SentTodayByProduct   = new Map<string, number>(); // in-flight sends
+    const step1DlvdTodayByProduct   = new Map<string, number>(); // confirmed deliveries
+
     for (const [productKey, campIds] of campaignsByProduct.entries()) {
       const stepIds = campIds.map((cid) => step1IdByCampaign.get(cid)).filter(Boolean) as string[];
-      if (stepIds.length === 0) { step1SentTodayByProduct.set(productKey, 0); continue; }
+      if (stepIds.length === 0) {
+        step1SentTodayByProduct.set(productKey, 0);
+        step1DlvdTodayByProduct.set(productKey, 0);
+        continue;
+      }
 
-      const { count } = await supabase
+      // Confirmed deliveries
+      const { count: dlvdCount } = await supabase
         .from('mkt_sequence_actions')
         .select('id', { count: 'exact', head: true })
         .in('step_id', stepIds)
-        .in('status', ['delivered', 'sent'])
+        .not('delivered_at', 'is', null)
         .gte('created_at', `${today}T00:00:00Z`);
 
-      step1SentTodayByProduct.set(productKey, count ?? 0);
+      // In-flight (sent, no delivery confirmation yet)
+      const { count: inFlightCount } = await supabase
+        .from('mkt_sequence_actions')
+        .select('id', { count: 'exact', head: true })
+        .in('step_id', stepIds)
+        .in('status', ['sent', 'pending'])
+        .is('delivered_at', null)
+        .gte('created_at', `${today}T00:00:00Z`);
+
+      step1DlvdTodayByProduct.set(productKey, dlvdCount ?? 0);
+      step1SentTodayByProduct.set(productKey, inFlightCount ?? 0);
     }
 
-    // Build step-1 pool: for each product not yet at limit, pull due enrollments
+    // Build step-1 pool: for each product not yet at delivery limit, pull due enrollments
     const step1Pool: Array<Record<string, unknown>> = [];
-    const productBudgetLog: Record<string, number> = {};
+    const productBudgetLog: Record<string, { delivered: number; inFlight: number; remaining: number }> = {};
 
     for (const [productKey, campIds] of campaignsByProduct.entries()) {
-      const sentToday = step1SentTodayByProduct.get(productKey) ?? 0;
-      const remaining = Math.max(0, DAILY_OUTREACH_LIMIT - sentToday);
-      productBudgetLog[productKey] = remaining;
+      const delivered  = step1DlvdTodayByProduct.get(productKey) ?? 0;
+      const inFlight   = step1SentTodayByProduct.get(productKey) ?? 0;
+      const totalSent  = delivered + inFlight;
+      const safetyMax  = Math.floor(DAILY_OUTREACH_LIMIT * MAX_SEND_MULTIPLIER);
+
+      // Stop if delivery target met OR safety ceiling hit
+      const remaining = delivered >= DAILY_OUTREACH_LIMIT || totalSent >= safetyMax
+        ? 0
+        : Math.max(0, DAILY_OUTREACH_LIMIT - totalSent);
+
+      productBudgetLog[productKey] = { delivered, inFlight, remaining };
       if (remaining === 0) continue;
 
       // Distribute remaining slots evenly across campaigns in this product
+      const { remaining } = productBudgetLog[productKey]!;
       const slotsEach = Math.max(1, Math.ceil(remaining / campIds.length));
 
       for (const cid of campIds) {
