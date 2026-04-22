@@ -156,7 +156,99 @@ GRANT EXECUTE ON FUNCTION public.mkt_hot_leads(uuid,int) TO authenticated;`,
   ADD COLUMN IF NOT EXISTS probe_sent_at TIMESTAMPTZ;
 UPDATE public.mkt_campaigns
 SET probe_sent_at = created_at
-WHERE probe_sent_at IS NULL;`
+WHERE probe_sent_at IS NULL;`,
+
+  // 8. GA4 property ID per product (shared property across all products)
+  `ALTER TABLE public.mkt_products ADD COLUMN IF NOT EXISTS ga4_property_id TEXT;
+UPDATE public.mkt_products SET ga4_property_id = '533494217';`,
+
+  // 9. Template pool column on campaign steps (for WhatsApp template rotation)
+  `ALTER TABLE public.mkt_campaign_steps ADD COLUMN IF NOT EXISTS template_ids uuid[];`,
+
+  // 10. Insert WA welcome template variants B, C, D (skip if already present)
+  `INSERT INTO public.mkt_whatsapp_templates (org_id, name, template_name, body, variables, buttons, language, category, approval_status, is_active)
+SELECT org_id,
+       'WhatsApp Welcome B',
+       'whatsapp_welcome_b_260421',
+       'Hi {{1}}! Your In-Sync workspace is ready.' || chr(10) || chr(10) ||
+       'In-Sync helps businesses cut coordination time by connecting your teams, workflows, and data in one place. No more chasing updates across apps.' || chr(10) || chr(10) ||
+       'Log in now and set up your first workspace in under 5 minutes.',
+       '["first_name"]'::jsonb,
+       '[{"type":"URL","text":"Open Workspace","url":"https://wa.in-sync.co.in"}]'::jsonb,
+       'en', 'marketing', 'pending', true
+FROM public.mkt_whatsapp_templates
+WHERE template_name = 'whatsapp_welcome_260414'
+  AND NOT EXISTS (SELECT 1 FROM public.mkt_whatsapp_templates WHERE template_name = 'whatsapp_welcome_b_260421')
+LIMIT 1;
+
+INSERT INTO public.mkt_whatsapp_templates (org_id, name, template_name, body, variables, buttons, language, category, approval_status, is_active)
+SELECT org_id,
+       'WhatsApp Welcome C',
+       'whatsapp_welcome_c_260421',
+       'Hello {{1}}! Welcome aboard.' || chr(10) || chr(10) ||
+       'Hundreds of teams across India use In-Sync to stay aligned, move faster, and close more business. Your account is now live and ready to go.' || chr(10) || chr(10) ||
+       'Your dashboard is waiting. Take the first step today.',
+       '["first_name"]'::jsonb,
+       '[{"type":"URL","text":"Go to Dashboard","url":"https://wa.in-sync.co.in"}]'::jsonb,
+       'en', 'marketing', 'pending', true
+FROM public.mkt_whatsapp_templates
+WHERE template_name = 'whatsapp_welcome_260414'
+  AND NOT EXISTS (SELECT 1 FROM public.mkt_whatsapp_templates WHERE template_name = 'whatsapp_welcome_c_260421')
+LIMIT 1;
+
+INSERT INTO public.mkt_whatsapp_templates (org_id, name, template_name, body, variables, buttons, language, category, approval_status, is_active)
+SELECT org_id,
+       'WhatsApp Welcome D',
+       'whatsapp_welcome_d_260421',
+       'Great to connect, {{1}}!' || chr(10) || chr(10) ||
+       'In-Sync is your business command center. Manage your team, track work, and communicate all from one place.' || chr(10) || chr(10) ||
+       'Tap below to activate your account and see what In-Sync can do for you.',
+       '["first_name"]'::jsonb,
+       '[{"type":"URL","text":"Activate Account","url":"https://wa.in-sync.co.in"}]'::jsonb,
+       'en', 'marketing', 'pending', true
+FROM public.mkt_whatsapp_templates
+WHERE template_name = 'whatsapp_welcome_260414'
+  AND NOT EXISTS (SELECT 1 FROM public.mkt_whatsapp_templates WHERE template_name = 'whatsapp_welcome_d_260421')
+LIMIT 1;`,
+
+  // 11. Wire all 4 welcome templates into the WA step's pool
+  `UPDATE public.mkt_campaign_steps cs
+SET template_ids = (
+  SELECT ARRAY_AGG(t.id ORDER BY t.created_at)
+  FROM public.mkt_whatsapp_templates t
+  WHERE t.template_name IN (
+    'whatsapp_welcome_260414',
+    'whatsapp_welcome_b_260421',
+    'whatsapp_welcome_c_260421',
+    'whatsapp_welcome_d_260421'
+  )
+  AND t.org_id = (
+    SELECT org_id FROM public.mkt_whatsapp_templates WHERE template_name = 'whatsapp_welcome_260414' LIMIT 1
+  )
+)
+WHERE cs.template_id = (
+  SELECT id FROM public.mkt_whatsapp_templates WHERE template_name = 'whatsapp_welcome_260414' LIMIT 1
+);`,
+
+  // 12. Daily campaign stats RPC — server-side aggregation to avoid 1000-row client limit
+  `CREATE OR REPLACE FUNCTION public.mkt_daily_campaign_stats(p_org_id uuid, p_date date DEFAULT CURRENT_DATE)
+RETURNS TABLE (campaign_id uuid, channel text, sent bigint, delivered bigint, opens bigint, clicks bigint)
+LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT e.campaign_id, a.channel,
+    COUNT(*) FILTER (WHERE a.status IN ('sent','delivered','bounced')) AS sent,
+    COUNT(*) FILTER (WHERE a.delivered_at IS NOT NULL)                 AS delivered,
+    COUNT(*) FILTER (WHERE a.opened_at   IS NOT NULL)                  AS opens,
+    COUNT(*) FILTER (WHERE a.clicked_at  IS NOT NULL)                  AS clicks
+  FROM public.mkt_sequence_actions a
+  JOIN public.mkt_sequence_enrollments e ON e.id = a.enrollment_id
+  JOIN public.mkt_campaigns c ON c.id = e.campaign_id
+  WHERE c.org_id = p_org_id
+    AND a.channel IN ('email','whatsapp')
+    AND a.created_at >= p_date::timestamptz
+    AND a.created_at <  (p_date + 1)::timestamptz
+  GROUP BY e.campaign_id, a.channel;
+$$;
+GRANT EXECUTE ON FUNCTION public.mkt_daily_campaign_stats(uuid,date) TO authenticated;`
 ];
 
 serve(async (_req) => {

@@ -14,13 +14,13 @@ interface CampaignRow {
   status: string;
 }
 
-interface ActionRow {
-  channel: string;
-  status: string;
+interface StatRow {
   campaign_id: string;
-  delivered_at: string | null;
-  opened_at: string | null;
-  clicked_at: string | null;
+  channel: string;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
 }
 
 interface ChannelCounts {
@@ -93,50 +93,42 @@ export function DailyReport() {
     refetchInterval: 60_000,
   });
 
-  const { data: actions = [], isLoading: actionsLoading } = useQuery<ActionRow[]>({
-    queryKey: ["daily-report-actions", effectiveOrgId, today],
+  // Use server-side aggregation RPC to avoid the 1000-row client limit
+  const { data: stats = [], isLoading: statsLoading } = useQuery<StatRow[]>({
+    queryKey: ["daily-report-stats", effectiveOrgId, today],
     queryFn: async () => {
       if (!effectiveOrgId) return [];
-      // Fetch all sent/delivered actions for today, plus any with opens or clicks
-      // (opens/clicks imply delivery so status will be 'delivered')
-      const { data, error } = await supabase
-        .from("mkt_sequence_actions")
-        .select("channel, status, delivered_at, opened_at, clicked_at, mkt_sequence_enrollments!inner(campaign_id, mkt_campaigns!inner(org_id))")
-        .eq("mkt_sequence_enrollments.mkt_campaigns.org_id", effectiveOrgId)
-        .in("status", ["sent", "delivered"])
-        .in("channel", ["email", "whatsapp"])
-        .gte("created_at", `${today}T00:00:00Z`);
+      const { data, error } = await supabase.rpc("mkt_daily_campaign_stats", {
+        p_org_id: effectiveOrgId,
+        p_date: today,
+      });
       if (error) throw error;
       return (data ?? []).map((r: any) => ({
+        campaign_id: r.campaign_id,
         channel: r.channel,
-        status: r.status,
-        campaign_id: r.mkt_sequence_enrollments?.campaign_id,
-        delivered_at: r.delivered_at ?? null,
-        opened_at: r.opened_at ?? null,
-        clicked_at: r.clicked_at ?? null,
+        sent: Number(r.sent) || 0,
+        delivered: Number(r.delivered) || 0,
+        opens: Number(r.opens) || 0,
+        clicks: Number(r.clicks) || 0,
       }));
     },
     enabled: !!effectiveOrgId,
     refetchInterval: 60_000,
   });
 
-  const isLoading = campLoading || actionsLoading;
+  const isLoading = campLoading || statsLoading;
 
-  // Aggregate by campaign + channel
+  // Pivot RPC results into a Map<campaign_id, { email, whatsapp }>
   const countsByCampaign = new Map<string, { email: ChannelCounts; whatsapp: ChannelCounts }>();
-  for (const a of actions) {
-    if (!a.campaign_id) continue;
-    const existing = countsByCampaign.get(a.campaign_id) ?? {
+  for (const s of stats) {
+    const existing = countsByCampaign.get(s.campaign_id) ?? {
       email:    { sent: 0, delivered: 0, opens: 0, clicks: 0 },
       whatsapp: { sent: 0, delivered: 0, opens: 0, clicks: 0 },
     };
-    const ch = a.channel as "email" | "whatsapp";
-    if (ch !== "email" && ch !== "whatsapp") continue;
-    existing[ch].sent++;
-    if (a.delivered_at) existing[ch].delivered++;
-    if (a.opened_at)    existing[ch].opens++;
-    if (a.clicked_at)   existing[ch].clicks++;
-    countsByCampaign.set(a.campaign_id, existing);
+    if (s.channel === "email" || s.channel === "whatsapp") {
+      existing[s.channel] = { sent: s.sent, delivered: s.delivered, opens: s.opens, clicks: s.clicks };
+    }
+    countsByCampaign.set(s.campaign_id, existing);
   }
 
   const rows: CampaignSend[] = campaigns.map((c) => {
@@ -203,7 +195,7 @@ export function DailyReport() {
               {totEmail.delivered.toLocaleString()} dlvd
               {totEmail.delivered > 0 && (
                 <span className="ml-1">
-                  · {totEmail.opens.toLocaleString()} open ({totEmail.delivered > 0 ? Math.round((totEmail.opens / totEmail.delivered) * 100) : 0}%)
+                  · {totEmail.opens.toLocaleString()} open ({totEmail.sent > 0 ? Math.round((totEmail.opens / totEmail.sent) * 100) : 0}%)
                   · {totEmail.clicks.toLocaleString()} click
                 </span>
               )}
