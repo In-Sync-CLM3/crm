@@ -49,15 +49,69 @@ Deno.serve(async (req) => {
     if (!exotelSettings) throw new Error('WhatsApp not configured for this organization');
     if (!exotelSettings.whatsapp_source_number) throw new Error('WhatsApp source number not configured');
 
+    // ── Template pool rotation ───────────────────────────────────────────────
+    // If the step has a template_ids pool, pick the least-recently-cycled approved
+    // template (round-robin by total sends mod pool size).
+    // Falls back to the single template_id param for backward compatibility.
+    let resolvedTemplateId: string | undefined = template_id;
+
+    if (body.step_id) {
+      const { data: stepData } = await supabase
+        .from('mkt_campaign_steps')
+        .select('template_ids')
+        .eq('id', body.step_id)
+        .single();
+
+      const poolIds: string[] = stepData?.template_ids ?? [];
+
+      if (poolIds.length > 0) {
+        const { data: poolRows } = await supabase
+          .from('mkt_whatsapp_templates')
+          .select('id, approval_status')
+          .in('id', poolIds);
+
+        const approved = (poolRows ?? [])
+          .filter((t) => t.approval_status === 'approved')
+          .map((t) => t.id as string);
+
+        if (approved.length > 0) {
+          // Count total sends so far for this step to get a rotation index
+          const { count: sentCount } = await supabase
+            .from('mkt_sequence_actions')
+            .select('id', { count: 'exact', head: true })
+            .eq('step_id', body.step_id)
+            .in('status', ['sent', 'delivered', 'pending']);
+
+          resolvedTemplateId = approved[(sentCount ?? 0) % approved.length];
+
+          // Warn when the pool is running low
+          if (approved.length < 2) {
+            await logger.warn('template-pool-low', {
+              step_id: body.step_id,
+              approved_count: approved.length,
+              total_pool: poolIds.length,
+            });
+          }
+        } else if (poolIds.length > 0) {
+          // Pool exists but no approved templates yet (all submitted/paused) — stop here
+          throw new Error(
+            `No approved WhatsApp templates in pool for step ${body.step_id}. ` +
+            `Pool has ${poolIds.length} template(s) but none are approved by Meta yet.`
+          );
+        }
+        // If pool is empty, fall through to original template_id param
+      }
+    }
+
     // Fetch WhatsApp template
     let templateData: Record<string, unknown> | null = null;
     let messageContent = '';
 
-    if (template_id) {
+    if (resolvedTemplateId) {
       const { data: template } = await supabase
         .from('mkt_whatsapp_templates')
         .select('*')
-        .eq('id', template_id)
+        .eq('id', resolvedTemplateId)
         .single();
 
       if (template) {
@@ -159,7 +213,8 @@ Deno.serve(async (req) => {
         : [];
 
       // If the template has a CTA button with a dynamic URL, inject UTM-decorated landing page.
-      const buttonUrl: string | null = (tpl.button_url as string) || productUrl;
+      const tplButtons = (tpl.buttons as Array<{ url?: string }>) || [];
+      const buttonUrl: string | null = tplButtons[0]?.url || productUrl;
       if (buttonUrl) {
         try {
           const u = new URL(buttonUrl);
