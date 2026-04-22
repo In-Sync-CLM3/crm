@@ -38,41 +38,31 @@ Deno.serve(async (req) => {
     const today  = nowIso.split('T')[0];
 
 
-    // 1. Load campaign sequence order + org_id from mkt_campaigns.
-    //    sequence_priority (nullable int) defines position; NULL = not in sequence.
-    //    Single source of truth: update that column to reorder campaigns.
+    // 1. Load campaign sequence order + org_id + product_key from mkt_campaigns.
     const { data: sequencedCampaigns } = await supabase
       .from('mkt_campaigns')
-      .select('id, org_id, status, probe_sent_at')
+      .select('id, org_id, status, product_key')
       .not('sequence_priority', 'is', null)
       .order('sequence_priority', { ascending: true });
 
-    // campaignOrder: ALL sequenced campaigns (for step1 counting).
-    // activeCampaignOrder: only 'active' campaigns — paused/inactive campaigns are
-    // skipped when finding the current activeCampaignId so their absent enrollments
-    // don't block lower-priority active campaigns from being selected.
-    const campaignOrder       = (sequencedCampaigns ?? []).map((c) => c.id as string);
-    const activeCampaignOrder = (sequencedCampaigns ?? []).filter((c) => c.status === 'active').map((c) => c.id as string);
+    const activeCampaigns = (sequencedCampaigns ?? []).filter((c) => c.status === 'active');
+    const activeCampaignIds = activeCampaigns.map((c) => c.id as string);
     const orgId = (sequencedCampaigns ?? [])[0]?.org_id as string;
 
-    if (campaignOrder.length === 0) {
+    if (activeCampaignIds.length === 0) {
       return new Response(
-        JSON.stringify({ message: 'No campaigns with sequence_priority set', executed: 0 }),
+        JSON.stringify({ message: 'No active campaigns with sequence_priority set', executed: 0 }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    // 2. Resolve all org-level config in one round.
-    //    Sending window, daily cap, and step-1 target are all single sources of truth here.
-    const [limitsRow, seqSettingsRow, windowRow] = await Promise.all([
-      supabase.from('mkt_engine_config').select('config_value').eq('org_id', orgId).eq('config_key', 'channel_limits').maybeSingle(),
-      supabase.from('mkt_engine_config').select('config_value').eq('org_id', orgId).eq('config_key', 'sequence_settings').maybeSingle(),
-      supabase.from('mkt_engine_config').select('config_value').eq('org_id', orgId).eq('config_key', 'sending_window').maybeSingle(),
-    ]);
-    const dailyEmailCap: number =
-      (limitsRow.data?.config_value as Record<string, number> | null)?.email_per_day ?? 2000;
-    const step1Target: number =
-      (seqSettingsRow.data?.config_value as Record<string, number> | null)?.step1_target ?? 1000;
+    // 2. Load sending window config only.
+    const windowRow = await supabase
+      .from('mkt_engine_config')
+      .select('config_value')
+      .eq('org_id', orgId)
+      .eq('config_key', 'sending_window')
+      .maybeSingle();
 
     // Parse sending window — defaults to 03:30–13:30 UTC (09:00–19:00 IST)
     const winCfg = (windowRow.data?.config_value as Record<string, string> | null) ?? {};
@@ -91,29 +81,18 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Count today's emails for this org only.
-    const { count: emailsSentToday } = await supabase
-      .from('mkt_sequence_actions')
-      .select('id', { count: 'exact', head: true })
-      .eq('org_id', orgId)
-      .eq('channel', 'email')
-      .in('status', ['sent', 'delivered', 'pending'])
-      .gte('created_at', `${today}T00:00:00Z`);
+    // 4. Per-product daily outreach limit: 100 delivered+sent per product per day.
+    //    Applies to step-1 (new outreach) only. Follow-ups are always unlimited.
+    //
+    //    "Delivered" = confirmed by Resend webhook. "Sent" = in-flight (not yet confirmed).
+    //    Counting both prevents oversending while Resend delivery webhooks are still pending.
+    const DAILY_OUTREACH_LIMIT = 100;
 
-    const dailyBudget = dailyEmailCap - (emailsSentToday || 0);
-    if (dailyBudget <= 0) {
-      return new Response(
-        JSON.stringify({ message: `Daily email cap (${dailyEmailCap}) reached`, executed: 0 }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      );
-    }
-
-    // 4. Find the active campaign.
-    //    Fetch step-1 step IDs for all sequenced campaigns, then count all-time sent/delivered.
+    // Load step-1 IDs for all active campaigns
     const { data: step1Rows } = await supabase
       .from('mkt_campaign_steps')
       .select('id, campaign_id')
-      .in('campaign_id', campaignOrder)
+      .in('campaign_id', activeCampaignIds)
       .eq('step_number', 1)
       .eq('is_active', true);
 
@@ -122,38 +101,63 @@ Deno.serve(async (req) => {
       step1IdByCampaign.set(row.campaign_id as string, row.id as string);
     }
 
-    let activeCampaignId: string | null   = null;
-    let step1AlreadySent                  = 0;
+    // Group campaigns by product_key
+    const campaignsByProduct = new Map<string, string[]>(); // product_key → campaign_ids
+    for (const c of activeCampaigns) {
+      const pk = (c.product_key as string) || '_unkeyed';
+      const arr = campaignsByProduct.get(pk) ?? [];
+      arr.push(c.id as string);
+      campaignsByProduct.set(pk, arr);
+    }
 
-    for (const cid of activeCampaignOrder) {
-      const stepId = step1IdByCampaign.get(cid);
-      if (!stepId) continue;
+    // Count today's step-1 sent+delivered per product
+    const step1SentTodayByProduct = new Map<string, number>();
+    for (const [productKey, campIds] of campaignsByProduct.entries()) {
+      const stepIds = campIds.map((cid) => step1IdByCampaign.get(cid)).filter(Boolean) as string[];
+      if (stepIds.length === 0) { step1SentTodayByProduct.set(productKey, 0); continue; }
 
-      // ── Step-1 quota check (successful sends only) ───────────────────────
-      // Bounce protection is handled by the webhook (bounced records are deleted
-      // immediately and the contact's email is suppressed). No circuit breaker needed.
-      const { count: sentOk } = await supabase
+      const { count } = await supabase
         .from('mkt_sequence_actions')
         .select('id', { count: 'exact', head: true })
-        .eq('step_id', stepId)
-        .in('status', ['sent', 'delivered']);
+        .in('step_id', stepIds)
+        .in('status', ['sent', 'delivered', 'pending'])
+        .gte('created_at', `${today}T00:00:00Z`);
 
-      if ((sentOk ?? 0) < step1Target) {
-        activeCampaignId  = cid;
-        step1AlreadySent  = sentOk ?? 0;
-        break;
+      step1SentTodayByProduct.set(productKey, count ?? 0);
+    }
+
+    // Build step-1 pool: for each product not yet at limit, pull due enrollments
+    const step1Pool: Array<Record<string, unknown>> = [];
+    const productBudgetLog: Record<string, number> = {};
+
+    for (const [productKey, campIds] of campaignsByProduct.entries()) {
+      const sentToday = step1SentTodayByProduct.get(productKey) ?? 0;
+      const remaining = Math.max(0, DAILY_OUTREACH_LIMIT - sentToday);
+      productBudgetLog[productKey] = remaining;
+      if (remaining === 0) continue;
+
+      // Distribute remaining slots evenly across campaigns in this product
+      const slotsEach = Math.max(1, Math.ceil(remaining / campIds.length));
+
+      for (const cid of campIds) {
+        const stepId = step1IdByCampaign.get(cid);
+        if (!stepId) continue;
+
+        const { data: pool } = await supabase
+          .from('mkt_sequence_enrollments')
+          .select('id, org_id, lead_id, campaign_id, current_step, status')
+          .eq('status', 'active')
+          .eq('current_step', 1)
+          .eq('campaign_id', cid)
+          .lte('next_action_at', nowIso)
+          .order('next_action_at', { ascending: true })
+          .limit(Math.min(remaining, slotsEach));
+
+        step1Pool.push(...(pool ?? []));
       }
     }
 
-    const step1Quota = activeCampaignId ? step1Target - step1AlreadySent : 0;
-
-    // 4. Fetch due enrollments — two independent pools:
-    //
-    //    a) Follow-ups (step > 1, any campaign, due now) — time-sensitive, always run.
-    //    b) Step-1 (step = 1, active campaign only, due now) — capped at step1Quota.
-    //
-    //    Follow-ups are processed first. Total batch capped at BATCH_SIZE and daily budget.
-
+    // 4b. Follow-ups (step > 1) — always run, no daily cap
     const { data: followupPool } = await supabase
       .from('mkt_sequence_enrollments')
       .select('id, org_id, lead_id, campaign_id, current_step, status')
@@ -163,46 +167,23 @@ Deno.serve(async (req) => {
       .order('next_action_at', { ascending: true })
       .limit(BATCH_SIZE);
 
-    const step1PoolResult = (activeCampaignId && step1Quota > 0)
-      ? await supabase
-          .from('mkt_sequence_enrollments')
-          .select('id, org_id, lead_id, campaign_id, current_step, status')
-          .eq('status', 'active')
-          .eq('current_step', 1)
-          .eq('campaign_id', activeCampaignId)
-          .lte('next_action_at', nowIso)
-          .order('next_action_at', { ascending: true })
-          .limit(Math.min(step1Quota, BATCH_SIZE))
-      : { data: [] };
-
     const followups = followupPool ?? [];
-    const step1s    = step1PoolResult.data ?? [];
 
-    // Combine: follow-ups first, then step-1, total ≤ min(BATCH_SIZE, dailyBudget)
-    const cap = Math.min(BATCH_SIZE, dailyBudget);
-
-    // When both follow-ups and step-1s are due, reserve half the batch for step-1s
-    // so new campaigns are not permanently starved by a large follow-up backlog.
-    const followupCap = (step1s.length > 0 && followups.length > 0)
-      ? Math.ceil(cap / 2)
-      : cap;
-    const enrollments = [...followups.slice(0, followupCap), ...step1s].slice(0, cap);
+    // Combine: follow-ups first (time-sensitive), then step-1. Total ≤ BATCH_SIZE.
+    const enrollments = [...followups, ...step1Pool].slice(0, BATCH_SIZE);
 
     if (enrollments.length === 0) {
       return new Response(
-        JSON.stringify({ message: 'No enrollments due', active_campaign: activeCampaignId, executed: 0 }),
+        JSON.stringify({ message: 'No enrollments due', product_budgets: productBudgetLog, executed: 0 }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
     await logger.info('executor-start', {
-      active_campaign:   activeCampaignId,
-      step1_sent:        step1AlreadySent,
-      step1_quota:       step1Quota,
+      product_budgets:   productBudgetLog,
       followups_due:     followups.length,
-      step1_due:         step1s.length,
+      step1_due:         step1Pool.length,
       batch:             enrollments.length,
-      daily_budget_left: dailyBudget,
     });
 
     // 5. Batch-fetch related data
@@ -256,8 +237,18 @@ Deno.serve(async (req) => {
 
     await logger.info('executor-complete', { executed, skipped, completed, failed });
 
+    // Self-chain: if work was done and window is still open, immediately kick off the next batch.
+    // Each batch advances next_action_at before we chain, so there is no double-send risk.
+    const minuteOfDayAfter = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+    if (executed > 0 && minuteOfDayAfter < windowEndMin) {
+      fetch(`${supabaseUrl}/functions/v1/mkt-sequence-executor`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json' },
+      }).catch(() => {}); // fire-and-forget
+    }
+
     return new Response(
-      JSON.stringify({ message: 'Sequence execution complete', executed, skipped, completed, failed, active_campaign: activeCampaignId }),
+      JSON.stringify({ message: 'Sequence execution complete', executed, skipped, completed, failed, product_budgets: productBudgetLog }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
 
@@ -349,18 +340,17 @@ async function processEnrollment(
       return 'stop';
     }
 
-    // Permanent skip: no contact info available for this channel or any fallback.
-    await supabase.from('mkt_sequence_actions').insert({
-      org_id:       enrollment.org_id as string,
-      enrollment_id: enrollment.id as string,
-      step_id:      step.id as string,
-      step_number:  currentStepNum,
-      channel:      step.channel as string,
-      status:       'skipped',
-      failure_reason: channelResult.reason,
-      scheduled_at: new Date().toISOString(),
-    });
-    await advanceToNextStep(supabase, enrollment, steps, currentStepNum);
+    // No reachable channel on any fallback — contact is unreachable permanently.
+    // Cancel the enrollment immediately instead of stepping through every remaining
+    // step just to skip each one (hard bounce + no phone = dead end).
+    await supabase
+      .from('mkt_sequence_enrollments')
+      .update({
+        status:       'cancelled',
+        cancelled_at: new Date().toISOString(),
+        cancel_reason: channelResult.reason ?? 'No reachable channel',
+      })
+      .eq('id', enrollment.id as string);
     return 'skipped';
   }
 
