@@ -18,11 +18,16 @@ interface ActionRow {
   channel: string;
   status: string;
   campaign_id: string;
+  delivered_at: string | null;
+  opened_at: string | null;
+  clicked_at: string | null;
 }
 
 interface ChannelCounts {
-  sent: number;      // sent + delivered (total outbound)
-  delivered: number; // delivered only
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
 }
 
 interface CampaignSend {
@@ -36,18 +41,32 @@ interface CampaignSend {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function CountCell({ counts, color }: { counts: ChannelCounts; color: string }) {
-  if (counts.sent === 0) return <span className="text-muted-foreground text-xs">—</span>;
-  const pct = counts.sent > 0 ? Math.round((counts.delivered / counts.sent) * 100) : 0;
+function Dash() {
+  return <span className="text-muted-foreground text-xs">—</span>;
+}
+
+function NumCell({
+  value,
+  total,
+  color,
+  showPct = false,
+}: {
+  value: number;
+  total: number;
+  color: string;
+  showPct?: boolean;
+}) {
+  if (total === 0) return <Dash />;
   return (
     <div className="text-right">
-      <div className={`tabular-nums text-xs font-semibold ${color}`}>
-        {counts.sent.toLocaleString()}
-      </div>
-      <div className="tabular-nums text-[10px] text-muted-foreground">
-        {counts.delivered.toLocaleString()} dlvd
-        {counts.sent > 0 && <span className="ml-1 opacity-70">({pct}%)</span>}
-      </div>
+      <span className={`tabular-nums text-xs font-medium ${value > 0 ? color : "text-muted-foreground"}`}>
+        {value > 0 ? value.toLocaleString() : "0"}
+      </span>
+      {showPct && total > 0 && (
+        <div className="text-[9px] text-muted-foreground tabular-nums">
+          {Math.round((value / total) * 100)}%
+        </div>
+      )}
     </div>
   );
 }
@@ -78,9 +97,11 @@ export function DailyReport() {
     queryKey: ["daily-report-actions", effectiveOrgId, today],
     queryFn: async () => {
       if (!effectiveOrgId) return [];
+      // Fetch all sent/delivered actions for today, plus any with opens or clicks
+      // (opens/clicks imply delivery so status will be 'delivered')
       const { data, error } = await supabase
         .from("mkt_sequence_actions")
-        .select("channel, status, mkt_sequence_enrollments!inner(campaign_id, mkt_campaigns!inner(org_id))")
+        .select("channel, status, delivered_at, opened_at, clicked_at, mkt_sequence_enrollments!inner(campaign_id, mkt_campaigns!inner(org_id))")
         .eq("mkt_sequence_enrollments.mkt_campaigns.org_id", effectiveOrgId)
         .in("status", ["sent", "delivered"])
         .in("channel", ["email", "whatsapp"])
@@ -90,6 +111,9 @@ export function DailyReport() {
         channel: r.channel,
         status: r.status,
         campaign_id: r.mkt_sequence_enrollments?.campaign_id,
+        delivered_at: r.delivered_at ?? null,
+        opened_at: r.opened_at ?? null,
+        clicked_at: r.clicked_at ?? null,
       }));
     },
     enabled: !!effectiveOrgId,
@@ -98,37 +122,43 @@ export function DailyReport() {
 
   const isLoading = campLoading || actionsLoading;
 
-  // Aggregate by campaign + channel + status
+  // Aggregate by campaign + channel
   const countsByCampaign = new Map<string, { email: ChannelCounts; whatsapp: ChannelCounts }>();
   for (const a of actions) {
     if (!a.campaign_id) continue;
     const existing = countsByCampaign.get(a.campaign_id) ?? {
-      email:    { sent: 0, delivered: 0 },
-      whatsapp: { sent: 0, delivered: 0 },
+      email:    { sent: 0, delivered: 0, opens: 0, clicks: 0 },
+      whatsapp: { sent: 0, delivered: 0, opens: 0, clicks: 0 },
     };
     const ch = a.channel as "email" | "whatsapp";
     if (ch !== "email" && ch !== "whatsapp") continue;
     existing[ch].sent++;
-    if (a.status === "delivered") existing[ch].delivered++;
+    if (a.delivered_at) existing[ch].delivered++;
+    if (a.opened_at)    existing[ch].opens++;
+    if (a.clicked_at)   existing[ch].clicks++;
     countsByCampaign.set(a.campaign_id, existing);
   }
 
   const rows: CampaignSend[] = campaigns.map((c) => {
     const counts = countsByCampaign.get(c.id) ?? {
-      email:    { sent: 0, delivered: 0 },
-      whatsapp: { sent: 0, delivered: 0 },
+      email:    { sent: 0, delivered: 0, opens: 0, clicks: 0 },
+      whatsapp: { sent: 0, delivered: 0, opens: 0, clicks: 0 },
     };
     return { campaign_id: c.id, name: c.name, product_key: c.product_key, status: c.status, ...counts };
   });
 
   // Summary totals
-  const totEmail = { sent: 0, delivered: 0 };
-  const totWa    = { sent: 0, delivered: 0 };
+  const totEmail = { sent: 0, delivered: 0, opens: 0, clicks: 0 };
+  const totWa    = { sent: 0, delivered: 0, opens: 0, clicks: 0 };
   for (const r of rows) {
     totEmail.sent      += r.email.sent;
     totEmail.delivered += r.email.delivered;
+    totEmail.opens     += r.email.opens;
+    totEmail.clicks    += r.email.clicks;
     totWa.sent         += r.whatsapp.sent;
     totWa.delivered    += r.whatsapp.delivered;
+    totWa.opens        += r.whatsapp.opens;
+    totWa.clicks       += r.whatsapp.clicks;
   }
   const grandSent      = totEmail.sent + totWa.sent;
   const grandDelivered = totEmail.delivered + totWa.delivered;
@@ -162,6 +192,7 @@ export function DailyReport() {
           </p>
         </div>
         <div className="flex items-center gap-6">
+          {/* Email summary */}
           <div>
             <div className="flex items-center gap-1.5 mb-0.5">
               <Mail className="h-3.5 w-3.5 text-blue-500" />
@@ -169,9 +200,16 @@ export function DailyReport() {
             </div>
             <p className="text-sm font-bold tabular-nums">{totEmail.sent.toLocaleString()}</p>
             <p className="text-[10px] text-muted-foreground tabular-nums">
-              {totEmail.delivered.toLocaleString()} delivered
+              {totEmail.delivered.toLocaleString()} dlvd
+              {totEmail.delivered > 0 && (
+                <span className="ml-1">
+                  · {totEmail.opens.toLocaleString()} open ({totEmail.delivered > 0 ? Math.round((totEmail.opens / totEmail.delivered) * 100) : 0}%)
+                  · {totEmail.clicks.toLocaleString()} click
+                </span>
+              )}
             </p>
           </div>
+          {/* WhatsApp summary */}
           <div>
             <div className="flex items-center gap-1.5 mb-0.5">
               <MessageCircle className="h-3.5 w-3.5 text-emerald-500" />
@@ -186,14 +224,14 @@ export function DailyReport() {
       </div>
 
       {/* Table */}
-      <div className="rounded-xl border overflow-hidden">
+      <div className="rounded-xl border overflow-hidden overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b bg-muted/40">
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground" rowSpan={2}>Campaign</th>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground hidden sm:table-cell" rowSpan={2}>Product</th>
               <th className="text-center px-4 py-2.5 text-xs font-medium text-muted-foreground" rowSpan={2}>Status</th>
-              <th className="text-center px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 border-l" colSpan={2}>
+              <th className="text-center px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 border-l" colSpan={4}>
                 <Mail className="h-3 w-3 inline mr-1" />Email
               </th>
               <th className="text-center px-3 py-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 border-l" colSpan={2}>
@@ -202,9 +240,11 @@ export function DailyReport() {
             </tr>
             <tr className="border-b bg-muted/30">
               <th className="text-right px-3 py-1 text-[10px] font-medium text-muted-foreground border-l">Sent</th>
-              <th className="text-right px-3 py-1 text-[10px] font-medium text-muted-foreground">Delivered</th>
+              <th className="text-right px-3 py-1 text-[10px] font-medium text-muted-foreground">Dlvd</th>
+              <th className="text-right px-3 py-1 text-[10px] font-medium text-muted-foreground">Opens</th>
+              <th className="text-right px-3 py-1 text-[10px] font-medium text-muted-foreground">Clicks</th>
               <th className="text-right px-3 py-1 text-[10px] font-medium text-muted-foreground border-l">Sent</th>
-              <th className="text-right px-3 py-1 text-[10px] font-medium text-muted-foreground">Delivered</th>
+              <th className="text-right px-3 py-1 text-[10px] font-medium text-muted-foreground">Dlvd</th>
             </tr>
           </thead>
           <tbody>
@@ -241,39 +281,25 @@ export function DailyReport() {
                       <Badge className="bg-emerald-500 hover:bg-emerald-500 text-white text-[10px] h-5 px-1.5">active</Badge>
                     )}
                   </td>
-                  {/* Email sent */}
+                  {/* Email columns */}
                   <td className="px-3 py-2.5 text-right border-l">
-                    <span className={`tabular-nums text-xs font-medium ${row.email.sent > 0 ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground"}`}>
-                      {row.email.sent > 0 ? row.email.sent.toLocaleString() : "—"}
-                    </span>
+                    <NumCell value={row.email.sent} total={row.email.sent} color="text-blue-600 dark:text-blue-400" />
                   </td>
-                  {/* Email delivered */}
                   <td className="px-3 py-2.5 text-right">
-                    <span className={`tabular-nums text-xs font-medium ${row.email.delivered > 0 ? "text-blue-500 dark:text-blue-300" : "text-muted-foreground"}`}>
-                      {row.email.sent > 0 ? row.email.delivered.toLocaleString() : "—"}
-                    </span>
-                    {row.email.sent > 0 && (
-                      <div className="text-[9px] text-muted-foreground tabular-nums">
-                        {Math.round((row.email.delivered / row.email.sent) * 100)}%
-                      </div>
-                    )}
+                    <NumCell value={row.email.delivered} total={row.email.sent} color="text-blue-500 dark:text-blue-300" showPct />
                   </td>
-                  {/* WA sent */}
+                  <td className="px-3 py-2.5 text-right">
+                    <NumCell value={row.email.opens} total={row.email.delivered} color="text-violet-600 dark:text-violet-400" showPct />
+                  </td>
+                  <td className="px-3 py-2.5 text-right">
+                    <NumCell value={row.email.clicks} total={row.email.delivered} color="text-orange-600 dark:text-orange-400" showPct />
+                  </td>
+                  {/* WhatsApp columns */}
                   <td className="px-3 py-2.5 text-right border-l">
-                    <span className={`tabular-nums text-xs font-medium ${row.whatsapp.sent > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}`}>
-                      {row.whatsapp.sent > 0 ? row.whatsapp.sent.toLocaleString() : "—"}
-                    </span>
+                    <NumCell value={row.whatsapp.sent} total={row.whatsapp.sent} color="text-emerald-600 dark:text-emerald-400" />
                   </td>
-                  {/* WA delivered */}
                   <td className="px-3 py-2.5 text-right">
-                    <span className={`tabular-nums text-xs font-medium ${row.whatsapp.delivered > 0 ? "text-emerald-500 dark:text-emerald-300" : "text-muted-foreground"}`}>
-                      {row.whatsapp.sent > 0 ? row.whatsapp.delivered.toLocaleString() : "—"}
-                    </span>
-                    {row.whatsapp.sent > 0 && (
-                      <div className="text-[9px] text-muted-foreground tabular-nums">
-                        {Math.round((row.whatsapp.delivered / row.whatsapp.sent) * 100)}%
-                      </div>
-                    )}
+                    <NumCell value={row.whatsapp.delivered} total={row.whatsapp.sent} color="text-emerald-500 dark:text-emerald-300" showPct />
                   </td>
                 </tr>
               );
@@ -287,6 +313,12 @@ export function DailyReport() {
               </td>
               <td className="px-3 py-2 text-right text-xs font-bold text-blue-500 dark:text-blue-300 tabular-nums">
                 {totEmail.delivered.toLocaleString()}
+              </td>
+              <td className="px-3 py-2 text-right text-xs font-bold text-violet-600 dark:text-violet-400 tabular-nums">
+                {totEmail.opens.toLocaleString()}
+              </td>
+              <td className="px-3 py-2 text-right text-xs font-bold text-orange-600 dark:text-orange-400 tabular-nums">
+                {totEmail.clicks.toLocaleString()}
               </td>
               <td className="px-3 py-2 text-right text-xs font-bold text-emerald-600 dark:text-emerald-400 tabular-nums border-l">
                 {totWa.sent.toLocaleString()}

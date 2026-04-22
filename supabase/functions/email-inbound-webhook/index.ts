@@ -184,6 +184,7 @@ Deno.serve(async (req) => {
           const mktUpdates: any = {};
           switch (payload.type) {
             case 'email.delivered':
+              mktUpdates.status = 'delivered';
               mktUpdates.delivered_at = now;
               break;
             case 'email.bounced':
