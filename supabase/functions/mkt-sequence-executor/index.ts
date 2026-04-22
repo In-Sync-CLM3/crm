@@ -110,7 +110,9 @@ Deno.serve(async (req) => {
       campaignsByProduct.set(pk, arr);
     }
 
-    // Count today's step-1 sent+delivered per product
+    // Count today's step-1 delivered per product (cap is on delivery, not send)
+    // Include 'sent' (in-flight, not yet confirmed) to avoid overshooting while
+    // Resend/WhatsApp delivery webhooks are still pending.
     const step1SentTodayByProduct = new Map<string, number>();
     for (const [productKey, campIds] of campaignsByProduct.entries()) {
       const stepIds = campIds.map((cid) => step1IdByCampaign.get(cid)).filter(Boolean) as string[];
@@ -120,7 +122,7 @@ Deno.serve(async (req) => {
         .from('mkt_sequence_actions')
         .select('id', { count: 'exact', head: true })
         .in('step_id', stepIds)
-        .in('status', ['sent', 'delivered', 'pending'])
+        .in('status', ['delivered', 'sent'])
         .gte('created_at', `${today}T00:00:00Z`);
 
       step1SentTodayByProduct.set(productKey, count ?? 0);
