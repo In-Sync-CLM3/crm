@@ -166,13 +166,18 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
     const amountPaidWithAdvance = advanceReplacesAmountPaid
       ? advanceAmount
       : (editDoc?.amount_paid || 0) + advanceAmount;
+    // Derive status from the current payment state — the clicked button
+     // ("draft" vs "sent") only matters when there's no advance to classify it.
+    const paymentStatus: BillingDocument["status"] | null =
+      amountPaidWithAdvance >= totals.grandTotal && amountPaidWithAdvance > 0
+        ? "paid"
+        : amountPaidWithAdvance > 0
+          ? "partially_paid"
+          : null;
     const derivedStatus: BillingDocument["status"] = editDoc
-      ? (status === "sent" ? status : editDoc.status)
-      : (advanceAmount > 0 && advanceAmount >= totals.grandTotal
-          ? "paid"
-          : advanceAmount > 0
-            ? "partially_paid"
-            : status);
+      ? (paymentStatus
+          ?? (status === "sent" && editDoc.status === "draft" ? "sent" : editDoc.status))
+      : (paymentStatus ?? status);
     const newDoc: BillingDocument = {
       id: editDoc?.id || `d${Date.now()}`,
       org_id: settings.org_id || "",

@@ -210,7 +210,12 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
                     <TableCell className="font-semibold text-primary">{d.doc_number}</TableCell>
                     <TableCell><Badge variant="secondary" className={DOC_TYPE_COLORS[d.doc_type]}>{DOC_TYPE_LABELS[d.doc_type]}</Badge></TableCell>
                     <TableCell>{d.client_name}</TableCell>
-                    <TableCell className="text-right font-semibold">{formatCurrencyINR(d.total_amount)}</TableCell>
+                    <TableCell className="text-right">
+                      <div className="font-semibold">{formatCurrencyINR(d.total_amount)}</div>
+                      {d.amount_paid > 0 && d.status !== "paid" && d.status !== "cancelled" && (
+                        <div className="text-xs font-semibold text-amber-600">Due: {formatCurrencyINR(d.balance_due)}</div>
+                      )}
+                    </TableCell>
                     <TableCell><Badge variant="secondary" className={STATUS_COLORS[d.status]}>{statusLabel(d.status)}</Badge></TableCell>
                     <TableCell className="text-muted-foreground">{d.doc_date}</TableCell>
                   </TableRow>
@@ -256,7 +261,12 @@ export function BillingDashboard({ documents, onCreateInvoice, onViewDocument, o
                       <TableCell className="text-xs font-medium text-primary">{d.doc_number}</TableCell>
                       <TableCell className="text-xs">{d.client_name || "-"}</TableCell>
                       <TableCell className="text-xs">{d.doc_date}</TableCell>
-                      <TableCell className="text-xs text-right font-medium">{formatCurrencyINR(d.total_amount)}</TableCell>
+                      <TableCell className="text-xs text-right">
+                        <div className="font-medium">{formatCurrencyINR(d.total_amount)}</div>
+                        {d.amount_paid > 0 && d.status !== "paid" && d.status !== "cancelled" && (
+                          <div className="text-[10px] font-semibold text-amber-600">Due: {formatCurrencyINR(d.balance_due)}</div>
+                        )}
+                      </TableCell>
                       <TableCell><Badge variant="secondary" className={`text-xs ${STATUS_COLORS[d.status]}`}>{statusLabel(d.status)}</Badge></TableCell>
                     </TableRow>
                   ))}
