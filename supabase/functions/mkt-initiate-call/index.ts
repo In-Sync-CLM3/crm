@@ -81,23 +81,11 @@ Deno.serve(async (req) => {
 
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
 
-    // Fetch lead — try contacts first, then mkt_leads for backward compat
-    let lead: Record<string, unknown> | null = null;
-    const { data: contact } = await supabase
+    const { data: lead } = await supabase
       .from('contacts')
       .select('*')
       .eq('id', lead_id)
       .single();
-    lead = contact;
-
-    if (!lead) {
-      const { data: mktLead } = await supabase
-        .from('mkt_leads')
-        .select('*')
-        .eq('id', lead_id)
-        .single();
-      lead = mktLead;
-    }
 
     if (!lead) throw new Error(`Lead not found: ${lead_id}`);
     if (!lead.phone) throw new Error(`Lead ${lead_id} has no phone number`);
@@ -191,7 +179,8 @@ Deno.serve(async (req) => {
     }
 
     // -------------------------------------------------------------------------
-    // Format phone to E.164
+    // Format phone to E.164 (Vapi requires this — number translation to Exotel
+    // local format happens at the Kamailio relay layer: +91XXXXXXXXXX → 0XXXXXXXXXX)
     // -------------------------------------------------------------------------
     let phone = (lead.phone as string).replace(/[^\d+]/g, '');
     if (!phone.startsWith('+')) {
@@ -220,9 +209,9 @@ Deno.serve(async (req) => {
         assistantId,
         assistantOverrides: {
           model: {
-            provider: 'openai',
-            model: 'gpt-4o',
-            systemPrompt,
+            provider: 'groq',
+            model: 'llama-3.3-70b-versatile',
+            messages: [{ role: 'system', content: systemPrompt }],
           },
           firstMessage,
           maxDurationSeconds: (script.max_duration_seconds as number) || 300,

@@ -138,11 +138,11 @@ Deno.serve(async (req) => {
                            webhookData.content.image?.caption || 
                            '';
         
-        // Find existing contact by phone number
+        // Find existing contact by phone number (E.164 — confirmed storage format)
         const { data: contacts } = await supabaseClient
           .from('contacts')
           .select('id, org_id')
-          .or(`phone.eq.${phoneNumber},phone.eq.${phoneNumber.replace('+', '')}`)
+          .eq('phone', phoneNumber)
           .limit(1);
         
         let contactId = contacts?.[0]?.id;

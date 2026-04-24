@@ -94,14 +94,13 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Normalise phone — try with and without leading +
-    const phoneVariants = [phone, phone.replace(/^\+/, ''), `+${phone.replace(/^\+/, '')}`];
+    // Normalise to E.164 (+91XXXXXXXXXX) — the confirmed storage format
+    const e164Phone = `+${phone.replace(/[^\d]/g, '')}`;
 
-    // Find lead by phone
     const { data: lead } = await supabase
       .from('mkt_leads')
       .select('id, org_id, first_name, email, status, intent_score')
-      .or(phoneVariants.map(p => `phone.eq.${p}`).join(','))
+      .eq('phone', e164Phone)
       .limit(1)
       .maybeSingle();
 

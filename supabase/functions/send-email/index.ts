@@ -56,7 +56,6 @@ interface SendEmailRequest {
   to: string;
   subject: string;
   htmlContent?: string;
-  html?: string;
   contactId?: string;
   conversationId?: string;
   trackingPixelId?: string;
@@ -139,7 +138,6 @@ serve(async (req) => {
       to,
       subject,
       htmlContent,
-      html,
       contactId,
       conversationId,
       trackingPixelId,
@@ -147,7 +145,7 @@ serve(async (req) => {
       cc,
     }: SendEmailRequest = await req.json();
 
-    const emailHtml = htmlContent || html || '';
+    const emailHtml = htmlContent || '';
 
     if (!emailHtml) {
       throw new Error('Email content is required');

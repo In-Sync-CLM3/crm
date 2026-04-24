@@ -179,18 +179,17 @@ async function handleInboundMessage(
   logger: ReturnType<typeof createEngineLogger>
 ): Promise<void> {
   const from = message.from as string;
-  const text = (message.text as Record<string, string>)?.body ||
-               (message.body as string) ||
-               '';
+  const text = (message.text as Record<string, string>)?.body || '';
 
   if (!from || !text) return;
 
-  const normalizedPhone = normalizePhone(from);
+  // Exotel sends `from` in E.164 (+91XXXXXXXXXX). Normalise to that for the lookup.
+  const e164Phone = `+${normalizePhone(from)}`;
 
   const { data: lead } = await supabase
     .from('mkt_leads')
     .select('id, org_id, campaign_id')
-    .or(`phone.eq.${normalizedPhone},phone.eq.+${normalizedPhone},phone.eq.+91${normalizedPhone}`)
+    .eq('phone', e164Phone)
     .limit(1)
     .single();
 
