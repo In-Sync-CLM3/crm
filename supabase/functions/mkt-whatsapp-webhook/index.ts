@@ -25,9 +25,8 @@ const corsHeaders = {
  *   Inbound replies:
  *     payload.whatsapp.messages[] → text messages from leads
  *
- * NOTE: f179188 incorrectly assumed DLRs arrive as payload.whatsapp.messages[]
- * with callback_type==='dlr'. That format does not match live Exotel behaviour.
- * This file restores the 2391fd4 structure which was verified working.
+ * DLR path 2 (custom_data root-level) was removed — statuses[] is the confirmed
+ * working path. f179188's messages[]/callback_type assumption was also removed.
  */
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -47,15 +46,13 @@ Deno.serve(async (req) => {
     const statuses: Record<string, unknown>[] = payload?.whatsapp?.statuses || payload?.statuses || [];
 
     await logger.info('webhook-received', {
-      has_statuses: statuses.length > 0,
-      has_messages: messages.length > 0,
-      has_custom_data: !!payload.custom_data,
-      root_status: payload.status ?? null,
+      status_count: statuses.length,
+      message_count: messages.length,
       first_status: statuses[0] ?? null,
       first_message: messages[0] ?? null,
     });
 
-    // DLR path 1: status objects keyed by message SID
+    // DLRs: keyed by message SID via statuses[]
     for (const status of statuses) {
       await handleStatusUpdate(supabase, status, logger);
     }
@@ -63,31 +60,6 @@ Deno.serve(async (req) => {
     // Inbound replies from leads
     for (const message of messages) {
       await handleInboundMessage(supabase, supabaseUrl, serviceRoleKey, message, logger);
-    }
-
-    // DLR path 2: root-level custom_data with action_id
-    if (payload.custom_data) {
-      try {
-        const customData = typeof payload.custom_data === 'string'
-          ? JSON.parse(payload.custom_data as string)
-          : payload.custom_data;
-
-        if (customData.action_id) {
-          const callbackStatus: string | null =
-            payload.status ??
-            payload.whatsapp?.statuses?.[0]?.status ??
-            payload.statuses?.[0]?.status ??
-            null;
-
-          if (callbackStatus) {
-            await handleStatusByActionId(supabase, customData, String(callbackStatus).toLowerCase(), logger);
-          } else {
-            await logger.info('custom-data-no-status', { action_id: customData.action_id });
-          }
-        }
-      } catch {
-        // custom_data is not JSON — ignore
-      }
     }
 
     return new Response(
@@ -157,52 +129,6 @@ async function handleStatusUpdate(
   if (Object.keys(updates).length > 0) {
     await supabase.from('mkt_sequence_actions').update(updates).eq('id', action.id);
     await logger.info('status-updated', { action_id: action.id, status: statusType, message_sid: messageSid });
-  }
-}
-
-/**
- * Handle a DLR arriving via root-level payload.custom_data (action_id-based lookup).
- */
-async function handleStatusByActionId(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  customData: { action_id: string; lead_id?: string; enrollment_id?: string },
-  status: string,
-  logger: ReturnType<typeof createEngineLogger>
-): Promise<void> {
-  const updates: Record<string, unknown> = {};
-  const now = new Date().toISOString();
-
-  switch (status) {
-    case 'delivered':
-    case 'sent':
-      updates.status       = 'delivered';
-      updates.delivered_at = now;
-      break;
-    case 'read':
-      updates.opened_at = now;
-      break;
-    case 'failed':
-    case 'undeliverable': {
-      updates.status    = 'failed';
-      updates.failed_at = now;
-
-      // Check if action exists and handle non-WA contact suppression
-      const { data: action } = await supabase
-        .from('mkt_sequence_actions')
-        .select('id, enrollment_id, step_number')
-        .eq('id', customData.action_id)
-        .maybeSingle();
-
-      if (action) {
-        await suppressAndAdvance(supabase, action, logger);
-      }
-      break;
-    }
-  }
-
-  if (Object.keys(updates).length > 0) {
-    await supabase.from('mkt_sequence_actions').update(updates).eq('id', customData.action_id);
-    await logger.info('status-by-action-id-updated', { action_id: customData.action_id, status });
   }
 }
 
