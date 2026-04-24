@@ -1,9 +1,11 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { RefreshCw, Mail, MessageCircle, Pause, CheckCircle2, Clock } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { RefreshCw, Mail, MessageCircle, Pause, CheckCircle2, Clock, ChevronLeft, ChevronRight } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -75,7 +77,15 @@ function NumCell({
 
 export function DailyReport() {
   const { effectiveOrgId } = useOrgContext();
-  const today = new Date().toISOString().slice(0, 10);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [selectedDate, setSelectedDate] = useState(todayStr);
+
+  function shiftDay(delta: number) {
+    const d = new Date(selectedDate + "T00:00:00");
+    d.setDate(d.getDate() + delta);
+    const next = d.toISOString().slice(0, 10);
+    if (next <= todayStr) setSelectedDate(next);
+  }
 
   const { data: campaigns = [], isLoading: campLoading } = useQuery<CampaignRow[]>({
     queryKey: ["daily-report-campaigns", effectiveOrgId],
@@ -95,12 +105,12 @@ export function DailyReport() {
 
   // Use server-side aggregation RPC to avoid the 1000-row client limit
   const { data: stats = [], isLoading: statsLoading } = useQuery<StatRow[]>({
-    queryKey: ["daily-report-stats", effectiveOrgId, today],
+    queryKey: ["daily-report-stats", effectiveOrgId, selectedDate],
     queryFn: async () => {
       if (!effectiveOrgId) return [];
       const { data, error } = await supabase.rpc("mkt_daily_campaign_stats", {
         p_org_id: effectiveOrgId,
-        p_date: today,
+        p_date: selectedDate,
       });
       if (error) throw error;
       return (data ?? []).map((r: any) => ({
@@ -156,9 +166,10 @@ export function DailyReport() {
   const grandDelivered = totEmail.delivered + totWa.delivered;
   const deliveryPct    = grandSent > 0 ? Math.round((grandDelivered / grandSent) * 100) : 0;
 
-  const dateLabel = new Date().toLocaleDateString("en-IN", {
+  const dateLabel = new Date(selectedDate + "T00:00:00").toLocaleDateString("en-IN", {
     weekday: "short", day: "numeric", month: "short", year: "numeric",
   });
+  const isToday = selectedDate === todayStr;
 
   if (isLoading) {
     return (
@@ -172,10 +183,38 @@ export function DailyReport() {
   return (
     <div className="space-y-4 pt-2">
 
+      {/* Date picker */}
+      <div className="flex items-center gap-2">
+        <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => shiftDay(-1)}>
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </Button>
+        <input
+          type="date"
+          value={selectedDate}
+          max={todayStr}
+          onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
+          className="h-7 rounded-md border bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+        <Button
+          variant="outline"
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => shiftDay(1)}
+          disabled={isToday}
+        >
+          <ChevronRight className="h-3.5 w-3.5" />
+        </Button>
+        {!isToday && (
+          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setSelectedDate(todayStr)}>
+            Today
+          </Button>
+        )}
+      </div>
+
       {/* Summary bar */}
       <div className="flex flex-wrap items-center gap-4 rounded-xl border bg-muted/30 px-4 py-3">
         <div className="flex-1 min-w-0">
-          <p className="text-xs text-muted-foreground">Today — {dateLabel}</p>
+          <p className="text-xs text-muted-foreground">{isToday ? "Today" : "Date"} — {dateLabel}</p>
           <p className="text-lg font-bold tabular-nums mt-0.5">
             {grandSent.toLocaleString()} sent
             <span className="text-sm font-normal text-muted-foreground ml-2">
