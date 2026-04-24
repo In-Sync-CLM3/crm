@@ -33,6 +33,11 @@ export function BillingDocumentList({ documents, docType, onView, onCreate, onCo
     return true;
   });
 
+  const receivable = filtered.reduce((s, d) => {
+    if (["paid", "cancelled", "draft"].includes(d.status)) return s;
+    return s + (d.balance_due || 0);
+  }, 0);
+
   const statuses = docType === "proforma"
     ? ["all", "draft", "sent", "paid", "cancelled"]
     : docType === "credit_note"
@@ -44,7 +49,12 @@ export function BillingDocumentList({ documents, docType, onView, onCreate, onCo
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold">{typeLabel}s</h2>
-          <p className="text-sm text-muted-foreground mt-0.5">{docs.length} total</p>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            {docs.length} total
+            {receivable > 0 && (
+              <> • <span className="text-amber-600 font-semibold">{formatCurrencyINR(receivable)} receivable</span></>
+            )}
+          </p>
         </div>
         <Button onClick={onCreate}><Plus className="h-4 w-4 mr-1" />Create {typeLabel}</Button>
       </div>
@@ -78,13 +88,14 @@ export function BillingDocumentList({ documents, docType, onView, onCreate, onCo
               <TableHead className="text-right">Subtotal</TableHead>
               <TableHead className="text-right">Tax</TableHead>
               <TableHead className="text-right">Total</TableHead>
+              <TableHead className="text-right">Balance Due</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="w-[120px]">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.length === 0 ? (
-              <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-8">No {typeLabel.toLowerCase()}s found</TableCell></TableRow>
+              <TableRow><TableCell colSpan={9} className="text-center text-muted-foreground py-8">No {typeLabel.toLowerCase()}s found</TableCell></TableRow>
             ) : (
               filtered.map(d => (
                 <TableRow key={d.id} className="hover:bg-muted/50">
@@ -94,6 +105,15 @@ export function BillingDocumentList({ documents, docType, onView, onCreate, onCo
                   <TableCell className="text-right">{formatCurrencyINR(d.subtotal)}</TableCell>
                   <TableCell className="text-right text-muted-foreground">{formatCurrencyINR(d.total_tax)}</TableCell>
                   <TableCell className="text-right font-bold">{formatCurrencyINR(d.total_amount)}</TableCell>
+                  <TableCell className="text-right">
+                    {d.status === "paid" || d.status === "cancelled" ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : d.amount_paid > 0 ? (
+                      <span className="font-bold text-amber-600">{formatCurrencyINR(d.balance_due)}</span>
+                    ) : (
+                      <span className="text-muted-foreground">{formatCurrencyINR(d.total_amount)}</span>
+                    )}
+                  </TableCell>
                   <TableCell><Badge variant="secondary" className={STATUS_COLORS[d.status]}>{statusLabel(d.status)}</Badge></TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1">

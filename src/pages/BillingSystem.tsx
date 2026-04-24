@@ -182,16 +182,19 @@ export default function BillingSystem() {
     }
 
     if (createDocType) {
-      const existingAdvanceTotal = editDoc
+      const advanceInfo = editDoc
         ? (() => {
             const fromPayments = getDocumentPayments(editDoc.id)
               .filter(p => p.payment_mode === "advance")
               .reduce((s, p) => s + (p.amount || 0), 0);
-            if (fromPayments > 0) return fromPayments;
+            if (fromPayments > 0) return { total: fromPayments, hasPaymentRecord: true };
             // Proformas carry advance in amount_paid when no payment record exists
-            return editDoc.doc_type === "proforma" ? (editDoc.amount_paid || 0) : 0;
+            const fromDoc = editDoc.doc_type === "proforma" ? (editDoc.amount_paid || 0) : 0;
+            return { total: fromDoc, hasPaymentRecord: false };
           })()
-        : 0;
+        : { total: 0, hasPaymentRecord: false };
+      const existingAdvanceTotal = advanceInfo.total;
+      const advanceHasPaymentRecord = advanceInfo.hasPaymentRecord;
       return (
         <BillingCreateDocument
           docType={createDocType}
@@ -215,6 +218,7 @@ export default function BillingSystem() {
             } as any);
           }}
           existingAdvanceTotal={existingAdvanceTotal}
+          advanceHasPaymentRecord={advanceHasPaymentRecord}
         />
       );
     }

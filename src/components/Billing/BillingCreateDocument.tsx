@@ -24,6 +24,7 @@ interface BillingCreateDocumentProps {
   onUpdateSettings?: (settings: BillingSettings) => void;
   onRecordAdvance?: (payload: { document_id: string; amount: number; payment_date: string; reference_number?: string; notes?: string; org_id: string }) => Promise<void> | void;
   existingAdvanceTotal?: number;
+  advanceHasPaymentRecord?: boolean;
 }
 
 interface RawItem {
@@ -42,10 +43,17 @@ function getDefaultTerms(settings: BillingSettings, docType: BillingDocumentType
   return settings.default_terms || "";
 }
 
-export function BillingCreateDocument({ docType, clients, settings, getNextDocNumber, onSave, onBack, editDoc, onUpdateSettings, onRecordAdvance, existingAdvanceTotal = 0 }: BillingCreateDocumentProps) {
+export function BillingCreateDocument({ docType, clients, settings, getNextDocNumber, onSave, onBack, editDoc, onUpdateSettings, onRecordAdvance, existingAdvanceTotal = 0, advanceHasPaymentRecord = false }: BillingCreateDocumentProps) {
   const { getClientBillingDetails, saveClientBillingDetails } = useBillingClientCache();
   const isEdit = !!editDoc;
-  const advanceLocked = isEdit && existingAdvanceTotal > 0;
+  // Lock the advance field only when a payment record backs it (edits there
+  // must go through the payment workflow). When the advance only lives on
+  // doc.amount_paid (legacy / no record yet), keep it editable so the user
+  // can correct the amount.
+  const advanceLocked = isEdit && existingAdvanceTotal > 0 && advanceHasPaymentRecord;
+  // True when the form's advance value should REPLACE doc.amount_paid on save
+  // (rather than be added to it) — the legacy proforma case.
+  const advanceReplacesAmountPaid = isEdit && existingAdvanceTotal > 0 && !advanceHasPaymentRecord;
 
   const [form, setForm] = useState({
     doc_number: editDoc?.doc_number || getNextDocNumber(docType),
@@ -155,7 +163,9 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
   const handleSave = async (status: "draft" | "sent") => {
     if (saving) return;
     const advanceAmount = advanceLocked ? 0 : Math.max(0, parseFloat(form.advance_amount) || 0);
-    const amountPaidWithAdvance = (editDoc?.amount_paid || 0) + advanceAmount;
+    const amountPaidWithAdvance = advanceReplacesAmountPaid
+      ? advanceAmount
+      : (editDoc?.amount_paid || 0) + advanceAmount;
     const derivedStatus: BillingDocument["status"] = editDoc
       ? (status === "sent" ? status : editDoc.status)
       : (advanceAmount > 0 && advanceAmount >= totals.grandTotal
@@ -212,12 +222,12 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
         toast.error(result.error || "Failed to save document");
         return;
       }
-      // If user entered an advance, persist it as an advance payment so it
-      // appears in payment history + analytics. Fires on new docs, and also on
-      // edits where no advance was recorded yet (existingAdvanceTotal === 0).
+      // Persist advance as a payment record whenever one doesn't already exist
+      // for this doc (new doc, or edit of a legacy proforma that stored the
+      // advance only on amount_paid).
       const newId = result && "id" in result ? result.id : undefined;
       const docId = newId || editDoc?.id;
-      if (advanceAmount > 0 && docId && onRecordAdvance && existingAdvanceTotal === 0) {
+      if (advanceAmount > 0 && docId && onRecordAdvance && !advanceHasPaymentRecord) {
         await onRecordAdvance({
           document_id: docId,
           amount: advanceAmount,
