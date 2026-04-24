@@ -171,7 +171,6 @@ Deno.serve(async (req) => {
       if (remaining === 0) continue;
 
       // Distribute remaining slots evenly across campaigns in this product
-      const { remaining } = productBudgetLog[productKey]!;
       const slotsEach = Math.max(1, Math.ceil(remaining / campIds.length));
 
       for (const cid of campIds) {
@@ -267,6 +266,13 @@ Deno.serve(async (req) => {
       } catch (e) {
         failed++;
         console.error('[mkt-sequence-executor] enrollment failed:', e);
+        // Backoff: prevent tight retry on persistent infra errors (DB down, etc.)
+        try {
+          await supabase
+            .from('mkt_sequence_enrollments')
+            .update({ next_action_at: new Date(Date.now() + 3_600_000).toISOString() })
+            .eq('id', (enrollment as Record<string, unknown>).id as string);
+        } catch { /* ignore */ }
       }
     }
 
@@ -409,6 +415,16 @@ async function processEnrollment(
     }
   }
 
+  // Clean up orphaned pending actions from previous runs that threw before reaching the sender.
+  // Without this, a crash between action-insert and sender-call leaves the action stuck in
+  // 'pending' forever; the failure count query would miss it on future retries.
+  await supabase
+    .from('mkt_sequence_actions')
+    .update({ status: 'failed', failed_at: new Date().toISOString(), failure_reason: 'Orphaned pending — cleaned up on retry' })
+    .eq('enrollment_id', enrollment.id as string)
+    .eq('step_number', currentStepNum)
+    .eq('status', 'pending');
+
   // Create action record
   const { data: action, error: actionError } = await supabase
     .from('mkt_sequence_actions')
@@ -500,11 +516,32 @@ async function processEnrollment(
       throw new Error(`Sender ${senderFn} returned ${res.status}: ${errText}`);
     }
   } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
     await supabase
       .from('mkt_sequence_actions')
-      .update({ status: 'failed', failed_at: new Date().toISOString(), failure_reason: error instanceof Error ? error.message : String(error) })
+      .update({ status: 'failed', failed_at: new Date().toISOString(), failure_reason: errMsg })
       .eq('id', action!.id);
-    throw error;
+
+    // Count total failures on this step — after MAX_STEP_RETRIES, advance so the
+    // enrollment doesn't loop forever. Otherwise back off 1 hour and retry.
+    const MAX_STEP_RETRIES = 3;
+    const { data: failedRows } = await supabase
+      .from('mkt_sequence_actions')
+      .select('id')
+      .eq('enrollment_id', enrollment.id as string)
+      .eq('step_number', currentStepNum)
+      .eq('status', 'failed')
+      .limit(MAX_STEP_RETRIES + 1);
+
+    if ((failedRows?.length ?? 0) >= MAX_STEP_RETRIES) {
+      await advanceToNextStep(supabase, enrollment, steps, currentStepNum);
+    } else {
+      await supabase
+        .from('mkt_sequence_enrollments')
+        .update({ next_action_at: new Date(Date.now() + 3_600_000).toISOString() })
+        .eq('id', enrollment.id as string);
+    }
+    return 'skipped';
   }
 
   await advanceToNextStep(supabase, enrollment, steps, currentStepNum);

@@ -449,6 +449,65 @@ async function processOrg(
   // 2. Build org context
   const ctx = await buildOrgContext(supabase, orgId, rows);
 
+  // Check for explicit grace period config (takes precedence over org age)
+  const { data: graceConfig } = await supabase
+    .from('mkt_engine_config')
+    .select('config_value')
+    .eq('org_id', orgId)
+    .eq('config_key', 'breakpoint_grace_until')
+    .maybeSingle();
+
+  const graceUntilDate = graceConfig?.config_value?.date
+    ? new Date(graceConfig.config_value.date)
+    : null;
+  const now = new Date();
+
+  let checked = 0;
+  let triggered = 0;
+  let resolved = 0;
+
+  // Grace period: all breakpoint gates are disabled until the configured date (or first 90 days by org age)
+  const gracePeriod = (graceUntilDate && now <= graceUntilDate) || !ctx.isAfterMonth3;
+  if (gracePeriod) {
+    const gracePeriodUntil = graceUntilDate?.toISOString().split('T')[0] ?? '(org < 90 days)';
+    await logger.info('grace-period-active', {
+      org_id: orgId,
+      message: 'All breakpoint gates disabled during grace period',
+      grace_until: gracePeriodUntil,
+    });
+
+    // Auto-resolve any breakpoints that fired prematurely
+    const { data: openBPs } = await supabase
+      .from('mkt_engine_logs')
+      .select('id')
+      .eq('org_id', orgId)
+      .eq('log_type', 'breakpoint')
+      .is('resolved_at', null);
+
+    if (openBPs && openBPs.length > 0) {
+      await supabase
+        .from('mkt_engine_logs')
+        .update({ resolved_at: new Date().toISOString(), resolved_by: 'grace-period' })
+        .in('id', openBPs.map((b) => b.id));
+
+      const { data: resumed } = await supabase
+        .from('mkt_campaigns')
+        .update({ status: 'active', paused_reason: null, paused_at: null })
+        .eq('org_id', orgId)
+        .eq('status', 'paused')
+        .select('id, name');
+
+      resolved = openBPs.length;
+      await logger.info('grace-period-resumed-campaigns', {
+        org_id: orgId,
+        campaigns_resumed: resumed?.length ?? 0,
+        campaign_names: resumed?.map((c) => c.name) ?? [],
+        breakpoints_resolved: openBPs.length,
+      });
+    }
+  }
+
+  if (!gracePeriod) {
   // 3. Fetch currently active breakpoints for this org
   const { data: activeBreakpoints } = await supabase
     .from('mkt_engine_logs')
@@ -461,10 +520,6 @@ async function processOrg(
   for (const bp of activeBreakpoints || []) {
     activeByName.set(bp.action, { id: bp.id, action: bp.action });
   }
-
-  let checked = 0;
-  let triggered = 0;
-  let resolved = 0;
 
   // 4. Evaluate each breakpoint definition
   for (const def of BREAKPOINT_DEFS) {
@@ -568,6 +623,8 @@ async function processOrg(
       });
     }
   }
+
+  } // end if (!gracePeriod)
 
   // -----------------------------------------------------------------------
   // A. Milestone checking — check contact-count milestones

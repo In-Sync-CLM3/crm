@@ -48,53 +48,31 @@ Deno.serve(async (req) => {
 
     // Pre-flight: check if this contact is hard-suppressed
     if ((lead as Record<string, unknown>).email_bounce_type === 'hard') {
-      // Mark action as skipped (not failed) — don't retry
       await supabase
         .from('mkt_sequence_actions')
         .update({ status: 'skipped', failure_reason: 'Email suppressed (hard bounce or spam complaint)' })
         .eq('id', action_id);
+
+      // If contact also has no phone, no channel can reach them — cancel the enrollment.
+      if (!lead.phone) {
+        const { enrollment_id } = body;
+        if (enrollment_id) {
+          await supabase
+            .from('mkt_sequence_enrollments')
+            .update({
+              status:       'cancelled',
+              cancelled_at: new Date().toISOString(),
+              cancel_reason: 'Hard bounce — no fallback channel available',
+            })
+            .eq('id', enrollment_id)
+            .eq('status', 'active');
+        }
+      }
+
       return new Response(
         JSON.stringify({ success: true, action_id, skipped: 'suppressed' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
-    }
-
-    // Check warmup cap
-    const { data: configRows } = await supabase
-      .from('mkt_engine_config')
-      .select('config_value')
-      .eq('config_key', 'warmup_state')
-      .eq('org_id', orgId)
-      .single();
-
-    const warmupState = configRows?.config_value as Record<string, unknown> | null;
-    if (warmupState?.active) {
-      const dailyCap = (warmupState.daily_cap as number) || 50;
-      const today = new Date().toISOString().split('T')[0];
-      const { count } = await supabase
-        .from('mkt_sequence_actions')
-        .select('id', { count: 'exact', head: true })
-        .eq('org_id', orgId)
-        .eq('channel', 'email')
-        .eq('status', 'sent')
-        .gte('sent_at', today);
-
-      if ((count || 0) >= dailyCap) {
-        // Reschedule for tomorrow instead of failing
-        await supabase
-          .from('mkt_sequence_actions')
-          .update({
-            status: 'pending',
-            scheduled_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-            metadata: { ...body, warmup_deferred: true },
-          })
-          .eq('id', action_id);
-
-        return new Response(
-          JSON.stringify({ success: true, action_id, deferred: 'warmup_cap_reached' }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
     }
 
     // Resolve template (handle A/B testing)
@@ -331,23 +309,6 @@ Deno.serve(async (req) => {
     );
   } catch (error) {
     await logger.error('send-email-failed', error);
-
-    // Try to mark action as failed
-    try {
-      const { action_id } = await req.clone().json();
-      if (action_id) {
-        const supabase = getSupabaseClient();
-        await supabase
-          .from('mkt_sequence_actions')
-          .update({
-            status: 'failed',
-            failed_at: new Date().toISOString(),
-            failure_reason: error instanceof Error ? error.message : String(error),
-          })
-          .eq('id', action_id);
-      }
-    } catch { /* ignore */ }
-
     return new Response(
       JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

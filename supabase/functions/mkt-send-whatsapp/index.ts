@@ -312,23 +312,6 @@ Deno.serve(async (req) => {
     return jsonResponse({ success: true, action_id, message_sid: result.messageSid });
   } catch (error) {
     await logger.error('send-whatsapp-failed', error);
-
-    // Mark action as failed
-    try {
-      const { action_id } = await req.clone().json();
-      if (action_id) {
-        const supabase = getSupabaseClient();
-        await supabase
-          .from('mkt_sequence_actions')
-          .update({
-            status: 'failed',
-            failed_at: new Date().toISOString(),
-            failure_reason: error instanceof Error ? error.message : String(error),
-          })
-          .eq('id', action_id);
-      }
-    } catch { /* ignore */ }
-
     return errorResponse(error);
   }
 });
