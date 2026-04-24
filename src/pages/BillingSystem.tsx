@@ -183,9 +183,14 @@ export default function BillingSystem() {
 
     if (createDocType) {
       const existingAdvanceTotal = editDoc
-        ? getDocumentPayments(editDoc.id)
-            .filter(p => p.payment_mode === "advance")
-            .reduce((s, p) => s + (p.amount || 0), 0)
+        ? (() => {
+            const fromPayments = getDocumentPayments(editDoc.id)
+              .filter(p => p.payment_mode === "advance")
+              .reduce((s, p) => s + (p.amount || 0), 0);
+            if (fromPayments > 0) return fromPayments;
+            // Proformas carry advance in amount_paid when no payment record exists
+            return editDoc.doc_type === "proforma" ? (editDoc.amount_paid || 0) : 0;
+          })()
         : 0;
       return (
         <BillingCreateDocument
