@@ -33,6 +33,18 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
   const [downloading, setDownloading] = useState(false);
   const invoiceRef = useRef<HTMLDivElement>(null);
 
+  const totalTds = payments.reduce((sum, p) => sum + (p.tds_amount || 0), 0);
+  const advanceFromPayments = payments
+    .filter(p => p.payment_mode === "advance")
+    .reduce((sum, p) => sum + (p.amount || 0), 0);
+  // For proformas where the advance was entered on the document but not yet
+  // persisted as a payment record (e.g. added via edit), fall back to amount_paid.
+  const totalAdvance = advanceFromPayments > 0
+    ? advanceFromPayments
+    : (doc.doc_type === "proforma" ? (doc.amount_paid || 0) : 0);
+  const hasDeductions = totalTds > 0 || totalAdvance > 0;
+  const amountPayable = Math.max(0, doc.total_amount - totalTds - totalAdvance);
+
   const handleDownloadPDF = useCallback(async () => {
     if (!invoiceRef.current) return;
     setDownloading(true);
@@ -265,34 +277,24 @@ export function BillingDocumentView({ doc, payments, settings, onBack, onRecordP
               )}
               <div className="h-px bg-border my-2" />
               <div className="flex justify-between text-base font-bold text-primary"><span>Grand Total</span><span>{formatCurrencyINR(doc.total_amount)}</span></div>
-              {(() => {
-                const totalTds = payments.reduce((sum, p) => sum + (p.tds_amount || 0), 0);
-                const totalAdvance = payments
-                  .filter(p => p.payment_mode === "advance")
-                  .reduce((sum, p) => sum + (p.amount || 0), 0);
-                if (totalTds > 0 || totalAdvance > 0) {
-                  const netPayable = doc.total_amount - totalTds - totalAdvance;
-                  return (
-                    <>
-                      <div className="h-px bg-border my-2" />
-                      {totalAdvance > 0 && (
-                        <div className="flex justify-between text-sm"><span className="text-muted-foreground">Less: Advance Adjusted</span><span className="text-emerald-600">-{formatCurrencyINR(totalAdvance)}</span></div>
-                      )}
-                      {totalTds > 0 && (
-                        <div className="flex justify-between text-sm"><span className="text-muted-foreground">Less: TDS Deducted</span><span className="text-red-600">-{formatCurrencyINR(totalTds)}</span></div>
-                      )}
-                      <div className="flex justify-between text-base font-bold text-emerald-700"><span>Net Payable</span><span>{formatCurrencyINR(Math.max(0, netPayable))}</span></div>
-                    </>
-                  );
-                }
-                return null;
-              })()}
+              {hasDeductions && (
+                <>
+                  <div className="h-px bg-border my-2" />
+                  {totalAdvance > 0 && (
+                    <div className="flex justify-between text-sm"><span className="text-muted-foreground">Less: Advance Received</span><span className="text-emerald-600">-{formatCurrencyINR(totalAdvance)}</span></div>
+                  )}
+                  {totalTds > 0 && (
+                    <div className="flex justify-between text-sm"><span className="text-muted-foreground">Less: TDS Deducted</span><span className="text-red-600">-{formatCurrencyINR(totalTds)}</span></div>
+                  )}
+                  <div className="flex justify-between text-base font-bold text-emerald-700"><span>Amount Payable</span><span>{formatCurrencyINR(amountPayable)}</span></div>
+                </>
+              )}
             </div>
           </div>
 
           {/* Amount in words */}
           <div className="bg-muted/50 rounded-lg p-3 mb-6">
-            <p className="text-xs text-muted-foreground"><span className="font-semibold">Amount in Words:</span> {numberToWords(doc.total_amount)}</p>
+            <p className="text-xs text-muted-foreground"><span className="font-semibold">{hasDeductions ? "Amount Payable in Words:" : "Amount in Words:"}</span> {numberToWords(hasDeductions ? amountPayable : doc.total_amount)}</p>
           </div>
 
           {/* Bank + Signature */}

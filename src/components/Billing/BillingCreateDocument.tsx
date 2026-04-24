@@ -212,12 +212,14 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
         toast.error(result.error || "Failed to save document");
         return;
       }
-      // If user entered an advance and the doc was newly created, persist it
-      // as an advance payment so it appears in payment history + analytics.
+      // If user entered an advance, persist it as an advance payment so it
+      // appears in payment history + analytics. Fires on new docs, and also on
+      // edits where no advance was recorded yet (existingAdvanceTotal === 0).
       const newId = result && "id" in result ? result.id : undefined;
-      if (!editDoc && advanceAmount > 0 && newId && onRecordAdvance) {
+      const docId = newId || editDoc?.id;
+      if (advanceAmount > 0 && docId && onRecordAdvance && existingAdvanceTotal === 0) {
         await onRecordAdvance({
-          document_id: newId,
+          document_id: docId,
           amount: advanceAmount,
           payment_date: form.advance_date,
           reference_number: form.advance_reference || undefined,
