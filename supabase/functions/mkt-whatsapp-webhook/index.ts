@@ -10,16 +10,24 @@ const corsHeaders = {
 /**
  * Receives Exotel WhatsApp status callbacks and inbound messages.
  *
- * Exotel callback structure (confirmed via live testing 2026-04-18):
- *   payload.whatsapp.messages[] — contains BOTH outbound DLRs and inbound replies
- *   message.callback_type === 'dlr' → delivery receipt for a message we sent
- *   message.callback_type !== 'dlr' (or absent) → inbound message from user
- *   message.custom_data → the custom_data string we passed when sending (JSON: { action_id, lead_id, enrollment_id })
- *   message.exo_status_code → 0=delivered, 1=sent, non-zero=failed
- *   message.exo_detailed_status → 'DELIVERED', 'READ', 'SENT', 'FAILED', 'EX_REENGAGEMENT_ERROR', etc.
- *   message.sid → message SID (matches external_id stored at send time)
+ * Exotel DLR payload structure (confirmed via live testing 2026-04-18, commit 2391fd4):
  *
- * Note: payload.whatsapp.statuses[] is NOT used by Exotel — always empty.
+ *   DLR path 1 — SID-based (payload.whatsapp.statuses[]):
+ *     status.id / status.sid → matches external_id stored at send time
+ *     status.status          → 'delivered' | 'read' | 'failed'
+ *     status.errors[]        → failure details
+ *
+ *   DLR path 2 — action_id-based (payload.custom_data at root):
+ *     payload.custom_data    → JSON: { action_id, lead_id, enrollment_id }
+ *     payload.status         → status string (root level)
+ *     payload.whatsapp.statuses[0].status → status string (nested fallback)
+ *
+ *   Inbound replies:
+ *     payload.whatsapp.messages[] → text messages from leads
+ *
+ * NOTE: f179188 incorrectly assumed DLRs arrive as payload.whatsapp.messages[]
+ * with callback_type==='dlr'. That format does not match live Exotel behaviour.
+ * This file restores the 2391fd4 structure which was verified working.
  */
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -35,25 +43,50 @@ Deno.serve(async (req) => {
 
     const payload = await req.json();
 
-    // All callbacks (DLR + inbound) come via whatsapp.messages[]
-    const messages: Record<string, unknown>[] =
-      payload?.whatsapp?.messages || payload?.messages || [];
+    const messages: Record<string, unknown>[] = payload?.whatsapp?.messages || payload?.messages || [];
+    const statuses: Record<string, unknown>[] = payload?.whatsapp?.statuses || payload?.statuses || [];
 
     await logger.info('webhook-received', {
-      message_count: messages.length,
-      dlr_count: messages.filter((m) => m.callback_type === 'dlr').length,
-      inbound_count: messages.filter((m) => m.callback_type !== 'dlr').length,
-      payload_keys: Object.keys(payload),
+      has_statuses: statuses.length > 0,
+      has_messages: messages.length > 0,
+      has_custom_data: !!payload.custom_data,
+      root_status: payload.status ?? null,
+      first_status: statuses[0] ?? null,
       first_message: messages[0] ?? null,
     });
 
+    // DLR path 1: status objects keyed by message SID
+    for (const status of statuses) {
+      await handleStatusUpdate(supabase, status, logger);
+    }
+
+    // Inbound replies from leads
     for (const message of messages) {
-      if (message.callback_type === 'dlr') {
-        // Delivery report for a message we sent
-        await handleDlr(supabase, message, logger);
-      } else {
-        // Inbound reply from the user
-        await handleInboundMessage(supabase, supabaseUrl, serviceRoleKey, message, logger);
+      await handleInboundMessage(supabase, supabaseUrl, serviceRoleKey, message, logger);
+    }
+
+    // DLR path 2: root-level custom_data with action_id
+    if (payload.custom_data) {
+      try {
+        const customData = typeof payload.custom_data === 'string'
+          ? JSON.parse(payload.custom_data as string)
+          : payload.custom_data;
+
+        if (customData.action_id) {
+          const callbackStatus: string | null =
+            payload.status ??
+            payload.whatsapp?.statuses?.[0]?.status ??
+            payload.statuses?.[0]?.status ??
+            null;
+
+          if (callbackStatus) {
+            await handleStatusByActionId(supabase, customData, String(callbackStatus).toLowerCase(), logger);
+          } else {
+            await logger.info('custom-data-no-status', { action_id: customData.action_id });
+          }
+        }
+      } catch {
+        // custom_data is not JSON — ignore
       }
     }
 
@@ -71,120 +104,142 @@ Deno.serve(async (req) => {
 });
 
 /**
- * Handle a DLR (Delivery Report) for an outbound message.
- *
- * Exotel DLR message shape:
- *   { sid, to, timestamp, callback_type: 'dlr', custom_data: '{"action_id":"..."}',
- *     exo_status_code: 0, exo_detailed_status: 'DELIVERED', description: '...' }
- *
- * exo_status_code: 0 = delivered, 1 = sent (accepted), non-zero = failed
- * exo_detailed_status: 'READ' = read receipt
+ * Handle a DLR arriving via payload.whatsapp.statuses[] (SID-based lookup).
  */
-async function handleDlr(
+async function handleStatusUpdate(
   supabase: ReturnType<typeof getSupabaseClient>,
-  message: Record<string, unknown>,
+  status: Record<string, unknown>,
   logger: ReturnType<typeof createEngineLogger>
 ): Promise<void> {
-  const sid = message.sid as string | undefined;
-  const exoCode = message.exo_status_code as number | undefined;
-  const exoStatus = ((message.exo_detailed_status as string) || '').toUpperCase();
-  const description = message.description as string | undefined;
+  const messageSid = (status.id as string) || (status.sid as string);
+  if (!messageSid) return;
 
-  // Extract action_id from custom_data (JSON string we passed at send time)
-  let actionId: string | null = null;
-  if (message.custom_data) {
-    try {
-      const cd =
-        typeof message.custom_data === 'string'
-          ? JSON.parse(message.custom_data as string)
-          : message.custom_data;
-      actionId = (cd as Record<string, string>).action_id || null;
-    } catch { /* custom_data may not be JSON */ }
+  const statusType = ((status.status as string) || '').toLowerCase();
+
+  const { data: action } = await supabase
+    .from('mkt_sequence_actions')
+    .select('id, enrollment_id, step_number')
+    .eq('external_id', messageSid)
+    .maybeSingle();
+
+  if (!action) {
+    await logger.info('status-no-action-match', { message_sid: messageSid, status: statusType });
+    return;
   }
-
-  await logger.info('dlr-received', {
-    sid,
-    action_id: actionId,
-    exo_status_code: exoCode,
-    exo_detailed_status: exoStatus,
-    description,
-  });
 
   const updates: Record<string, unknown> = {};
   const now = new Date().toISOString();
-  const descLower = (description || '').toLowerCase();
 
-  // Exotel quirk: some delivery receipts arrive with non-zero exo_status_code but
-  // description clearly indicates success ("message delivered", "message seen").
-  // Check description keywords before treating non-zero codes as failures.
-  const descIsDelivered = descLower.includes('delivered');
-  const descIsSeen      = descLower.includes('seen') || descLower.includes('read');
+  switch (statusType) {
+    case 'delivered':
+      updates.status       = 'delivered';
+      updates.delivered_at = now;
+      break;
+    case 'read':
+      updates.opened_at = now;
+      break;
+    case 'failed':
+    case 'undeliverable': {
+      updates.status         = 'failed';
+      updates.failed_at      = now;
+      updates.failure_reason = (status.errors as Array<{ title: string }>)?.[0]?.title || 'Delivery failed';
 
-  if (exoStatus === 'READ' || descIsSeen) {
-    updates.opened_at = now;
-    // Also mark delivered if not already (READ implies delivered)
-    updates.status       = 'delivered';
-    updates.delivered_at = now;
-  } else if (exoCode === 0 || exoStatus === 'DELIVERED' || descIsDelivered) {
-    updates.status       = 'delivered';
-    updates.delivered_at = now;
-  } else if (exoCode === 1 || exoStatus === 'SENT') {
-    // Message accepted by WA network — already marked sent at dispatch; no change needed
-  } else {
-    // Confirmed failure — record it
-    updates.status         = 'failed';
-    updates.failed_at      = now;
-    updates.failure_reason = description || exoStatus || `Exotel error ${exoCode}`;
-
-    // Issue 7: contact not registered on WhatsApp — suppress them from WA channel
-    // so the engine stops retrying via WhatsApp for this contact.
-    const notOnWa = descLower.includes('not able to receive') || descLower.includes('not registered');
-    if (notOnWa && actionId) {
-      const { data: action } = await supabase
-        .from('mkt_sequence_actions')
-        .select('enrollment_id')
-        .eq('id', actionId)
-        .single();
-
-      if (action?.enrollment_id) {
-        const { data: enrollment } = await supabase
-          .from('mkt_sequence_enrollments')
-          .select('lead_id, org_id')
-          .eq('id', action.enrollment_id)
-          .single();
-
-        if (enrollment) {
-          // Add to mkt_unsubscribes for whatsapp channel so channelRouter skips WA for this lead
-          await supabase.from('mkt_unsubscribes').upsert({
-            org_id:  enrollment.org_id,
-            lead_id: enrollment.lead_id,
-            channel: 'whatsapp',
-            reason:  'Not registered on WhatsApp',
-          }, { onConflict: 'org_id,lead_id,channel', ignoreDuplicates: true });
-
-          await logger.info('wa-suppressed', {
-            lead_id: enrollment.lead_id,
-            reason: 'Not registered on WhatsApp',
-          });
-        }
+      // Suppress + advance if contact is not registered on WhatsApp
+      const reason = ((updates.failure_reason as string) || '').toLowerCase();
+      const notOnWa = reason.includes('not able to receive') || reason.includes('not registered');
+      if (notOnWa) {
+        await suppressAndAdvance(supabase, action, logger);
       }
+      break;
     }
   }
 
-  if (Object.keys(updates).length === 0) return;
-
-  // Update by action_id (preferred) or fall back to message SID
-  if (actionId) {
-    await supabase
-      .from('mkt_sequence_actions')
-      .update(updates)
-      .eq('id', actionId);
-  } else if (sid) {
-    await supabase
-      .from('mkt_sequence_actions')
-      .update(updates)
-      .eq('external_id', sid);
+  if (Object.keys(updates).length > 0) {
+    await supabase.from('mkt_sequence_actions').update(updates).eq('id', action.id);
+    await logger.info('status-updated', { action_id: action.id, status: statusType, message_sid: messageSid });
   }
+}
+
+/**
+ * Handle a DLR arriving via root-level payload.custom_data (action_id-based lookup).
+ */
+async function handleStatusByActionId(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  customData: { action_id: string; lead_id?: string; enrollment_id?: string },
+  status: string,
+  logger: ReturnType<typeof createEngineLogger>
+): Promise<void> {
+  const updates: Record<string, unknown> = {};
+  const now = new Date().toISOString();
+
+  switch (status) {
+    case 'delivered':
+    case 'sent':
+      updates.status       = 'delivered';
+      updates.delivered_at = now;
+      break;
+    case 'read':
+      updates.opened_at = now;
+      break;
+    case 'failed':
+    case 'undeliverable': {
+      updates.status    = 'failed';
+      updates.failed_at = now;
+
+      // Check if action exists and handle non-WA contact suppression
+      const { data: action } = await supabase
+        .from('mkt_sequence_actions')
+        .select('id, enrollment_id, step_number')
+        .eq('id', customData.action_id)
+        .maybeSingle();
+
+      if (action) {
+        await suppressAndAdvance(supabase, action, logger);
+      }
+      break;
+    }
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await supabase.from('mkt_sequence_actions').update(updates).eq('id', customData.action_id);
+    await logger.info('status-by-action-id-updated', { action_id: customData.action_id, status });
+  }
+}
+
+/**
+ * Suppress a contact from the WhatsApp channel and immediately advance their enrollment.
+ * Called when we receive a failure indicating the contact is not on WhatsApp.
+ */
+async function suppressAndAdvance(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  action: { id: string; enrollment_id: string; step_number: number },
+  logger: ReturnType<typeof createEngineLogger>
+): Promise<void> {
+  const { data: enrollment } = await supabase
+    .from('mkt_sequence_enrollments')
+    .select('lead_id, org_id')
+    .eq('id', action.enrollment_id)
+    .single();
+
+  if (!enrollment) return;
+
+  await supabase.from('mkt_unsubscribes').upsert({
+    org_id:  enrollment.org_id,
+    lead_id: enrollment.lead_id,
+    channel: 'whatsapp',
+    reason:  'Not registered on WhatsApp',
+  }, { onConflict: 'org_id,lead_id,channel', ignoreDuplicates: true });
+
+  await supabase.rpc('advance_enrollment_step', {
+    p_enrollment_id: action.enrollment_id,
+    p_current_step:  action.step_number,
+  });
+
+  await logger.info('wa-suppressed-and-advanced', {
+    lead_id:     enrollment.lead_id,
+    step_number: action.step_number,
+    reason:      'Not registered on WhatsApp',
+  });
 }
 
 /**
