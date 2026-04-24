@@ -43,6 +43,12 @@ function getDefaultTerms(settings: BillingSettings, docType: BillingDocumentType
   return settings.default_terms || "";
 }
 
+function getDefaultNotes(settings: BillingSettings, docType: BillingDocumentType): string {
+  if (docType === "proforma" && settings.default_proforma_notes) return settings.default_proforma_notes;
+  if (docType === "credit_note" && settings.default_credit_note_notes) return settings.default_credit_note_notes;
+  return settings.default_notes || "We value your business and trust.";
+}
+
 export function BillingCreateDocument({ docType, clients, settings, getNextDocNumber, onSave, onBack, editDoc, onUpdateSettings, onRecordAdvance, existingAdvanceTotal = 0, advanceHasPaymentRecord = false }: BillingCreateDocumentProps) {
   const { getClientBillingDetails, saveClientBillingDetails } = useBillingClientCache();
   const isEdit = !!editDoc;
@@ -56,13 +62,14 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
   const advanceReplacesAmountPaid = isEdit && existingAdvanceTotal > 0 && !advanceHasPaymentRecord;
 
   const defaultTerms = getDefaultTerms(settings, docType);
+  const defaultNotes = getDefaultNotes(settings, docType);
   // Existing docs stored the same string in both `notes` and `terms_and_conditions`.
-  // When editing, treat `notes` as the terms field if it matches (or if T&C is empty),
-  // and leave the new notes field blank so the user can fill it in.
+  // When editing, treat `notes` as the terms field if it matches (or if T&C is empty).
+  // For new docs and legacy-duplicated edits, seed notes from settings defaults.
   const initialTerms = editDoc?.terms_and_conditions || editDoc?.notes || defaultTerms;
   const initialNotes = editDoc
-    ? (editDoc.notes && editDoc.notes !== editDoc.terms_and_conditions ? editDoc.notes : "")
-    : "";
+    ? (editDoc.notes && editDoc.notes !== editDoc.terms_and_conditions ? editDoc.notes : defaultNotes)
+    : defaultNotes;
 
   const [form, setForm] = useState({
     doc_number: editDoc?.doc_number || getNextDocNumber(docType),
@@ -530,12 +537,31 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
 
       {/* Notes */}
       <Card className="p-6">
-        <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Notes</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Notes</h3>
+          {onUpdateSettings && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs text-muted-foreground hover:text-primary inline-flex items-center gap-1.5"
+              onClick={() => {
+                const key = docType === "proforma" ? "default_proforma_notes"
+                  : docType === "credit_note" ? "default_credit_note_notes"
+                  : "default_notes";
+                onUpdateSettings({ ...settings, [key]: form.notes });
+                toast.success(`Default notes saved for all ${DOC_TYPE_LABELS[docType]}s`);
+              }}
+            >
+              <Save className="h-3.5 w-3.5 shrink-0" />
+              <span>Save as default for all {DOC_TYPE_LABELS[docType]}s</span>
+            </Button>
+          )}
+        </div>
         <Textarea
           value={form.notes}
           onChange={e => setForm({ ...form, notes: e.target.value })}
           rows={3}
-          placeholder="Additional notes for this document (optional)"
+          placeholder="Additional notes for this document"
         />
       </Card>
 

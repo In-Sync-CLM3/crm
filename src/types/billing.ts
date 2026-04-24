@@ -117,6 +117,9 @@ export interface BillingSettings {
   bank_upi_id: string;
   default_terms: string;
   default_proforma_terms?: string;
+  default_notes?: string;
+  default_proforma_notes?: string;
+  default_credit_note_notes?: string;
   default_tax_rate: number;
   default_due_days: number;
   default_hsn: string;

@@ -174,6 +174,18 @@ export function BillingSettingsPanel({ settings: initial, onSave }: BillingSetti
             <Label>Default Terms & Conditions (Credit Notes)</Label>
             <Textarea value={s.default_credit_note_terms || ""} onChange={e => u("default_credit_note_terms", e.target.value)} rows={3} placeholder="Leave blank to use invoice terms" />
           </div>
+          <div className="col-span-3 space-y-1.5">
+            <Label>Default Notes (Invoices)</Label>
+            <Textarea value={s.default_notes || ""} onChange={e => u("default_notes", e.target.value)} rows={3} />
+          </div>
+          <div className="col-span-3 space-y-1.5">
+            <Label>Default Notes (Proforma Invoices)</Label>
+            <Textarea value={s.default_proforma_notes || ""} onChange={e => u("default_proforma_notes", e.target.value)} rows={3} placeholder="Leave blank to use invoice notes" />
+          </div>
+          <div className="col-span-3 space-y-1.5">
+            <Label>Default Notes (Credit Notes)</Label>
+            <Textarea value={s.default_credit_note_notes || ""} onChange={e => u("default_credit_note_notes", e.target.value)} rows={3} placeholder="Leave blank to use invoice notes" />
+          </div>
         </div>
       </Card>
 
