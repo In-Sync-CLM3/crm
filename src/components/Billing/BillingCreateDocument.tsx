@@ -55,12 +55,22 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
   // (rather than be added to it) — the legacy proforma case.
   const advanceReplacesAmountPaid = isEdit && existingAdvanceTotal > 0 && !advanceHasPaymentRecord;
 
+  const defaultTerms = getDefaultTerms(settings, docType);
+  // Existing docs stored the same string in both `notes` and `terms_and_conditions`.
+  // When editing, treat `notes` as the terms field if it matches (or if T&C is empty),
+  // and leave the new notes field blank so the user can fill it in.
+  const initialTerms = editDoc?.terms_and_conditions || editDoc?.notes || defaultTerms;
+  const initialNotes = editDoc
+    ? (editDoc.notes && editDoc.notes !== editDoc.terms_and_conditions ? editDoc.notes : "")
+    : "";
+
   const [form, setForm] = useState({
     doc_number: editDoc?.doc_number || getNextDocNumber(docType),
     client_id: editDoc?.client_id || "",
     doc_date: editDoc?.doc_date || new Date().toISOString().split("T")[0],
     due_date: editDoc?.due_date || "",
-    notes: editDoc?.notes || getDefaultTerms(settings, docType),
+    terms: initialTerms,
+    notes: initialNotes,
     advance_amount: existingAdvanceTotal > 0 ? String(existingAdvanceTotal) : "",
     advance_date: new Date().toISOString().split("T")[0],
     advance_reference: "",
@@ -209,7 +219,7 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
       balance_due: Math.max(0, totals.grandTotal - amountPaidWithAdvance),
       status: derivedStatus,
       notes: form.notes,
-      terms_and_conditions: form.notes,
+      terms_and_conditions: form.terms,
       original_invoice_id: editDoc?.original_invoice_id,
       original_invoice_number: editDoc?.original_invoice_number,
       items: calcItems,
@@ -506,7 +516,7 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
                 const key = docType === "proforma" ? "default_proforma_terms"
                   : docType === "credit_note" ? "default_credit_note_terms"
                   : "default_terms";
-                onUpdateSettings({ ...settings, [key]: form.notes });
+                onUpdateSettings({ ...settings, [key]: form.terms });
                 toast.success(`Default terms saved for all ${DOC_TYPE_LABELS[docType]}s`);
               }}
             >
@@ -515,7 +525,18 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
             </Button>
           )}
         </div>
-        <Textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={3} />
+        <Textarea value={form.terms} onChange={e => setForm({ ...form, terms: e.target.value })} rows={3} />
+      </Card>
+
+      {/* Notes */}
+      <Card className="p-6">
+        <h3 className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-3">Notes</h3>
+        <Textarea
+          value={form.notes}
+          onChange={e => setForm({ ...form, notes: e.target.value })}
+          rows={3}
+          placeholder="Additional notes for this document (optional)"
+        />
       </Card>
 
       {/* Actions */}
