@@ -143,6 +143,8 @@ const BREAKPOINT_DEFS: BreakpointDef[] = [
       if (rows.length < 1) return null;
       const margin = rows[0].gross_margin_pct;
       if (margin === null || margin === undefined) return null;
+      // Pre-revenue: margin is 0% by definition when MRR=0. Not a collapse.
+      if ((rows[0].mrr_total ?? 0) === 0) return null;
       if (Number(margin) >= 60) return null;
       return {
         triggered: true,
@@ -163,6 +165,9 @@ const BREAKPOINT_DEFS: BreakpointDef[] = [
       if (!ctx.isAfterMonth3 || rows.length < 1) return null;
       const cost = rows[0].cost_total ?? 0;
       const revenue = rows[0].mrr_total ?? 0;
+      // Pre-revenue: any cost exceeds zero revenue. Not a breach — the engine
+      // hasn't launched commercially yet. Fire only once revenue exists.
+      if (revenue === 0) return null;
       if (cost <= revenue) return null;
       return {
         triggered: true,
