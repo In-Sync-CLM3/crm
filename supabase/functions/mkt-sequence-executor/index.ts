@@ -326,25 +326,7 @@ async function processEnrollment(
     return 'skipped';
   }
 
-  // Freeze for 4 h if the product has been toggled off
   const productKey = campaign.product_key as string | undefined;
-
-  if (productKey) {
-    const { data: product } = await supabase
-      .from('mkt_products')
-      .select('active')
-      .eq('org_id', enrollment.org_id as string)
-      .eq('product_key', productKey)
-      .single();
-
-    if (product && !product.active) {
-      await supabase
-        .from('mkt_sequence_enrollments')
-        .update({ next_action_at: new Date(Date.now() + 4 * 3600_000).toISOString() })
-        .eq('id', enrollment.id as string);
-      return 'skipped';
-    }
-  }
 
   // Cancel if lead is disqualified
   if (!lead || lead.status === 'disqualified') {
@@ -393,26 +375,6 @@ async function processEnrollment(
       })
       .eq('id', enrollment.id as string);
     return 'skipped';
-  }
-
-  // Check step conditions
-  const conditions = (step.conditions ?? {}) as Record<string, boolean>;
-  if (conditions.require_previous_opened || conditions.skip_if_replied) {
-    const check = await checkStepConditions(supabase, enrollment, currentStepNum, conditions);
-    if (check === 'skip') {
-      await supabase.from('mkt_sequence_actions').insert({
-        org_id:       enrollment.org_id as string,
-        enrollment_id: enrollment.id as string,
-        step_id:      step.id as string,
-        step_number:  currentStepNum,
-        channel:      channelResult.channel,
-        status:       'skipped',
-        failure_reason: 'Conditions not met',
-        scheduled_at: new Date().toISOString(),
-      });
-      await advanceToNextStep(supabase, enrollment, steps, currentStepNum);
-      return 'skipped';
-    }
   }
 
   // Clean up orphaned pending actions from previous runs that threw before reaching the sender.
@@ -562,24 +524,3 @@ async function advanceToNextStep(
   });
 }
 
-async function checkStepConditions(
-  supabase:    ReturnType<typeof getSupabaseClient>,
-  enrollment:  Record<string, unknown>,
-  currentStep: number,
-  conditions:  Record<string, boolean>,
-): Promise<'proceed' | 'skip'> {
-  const { data: prev } = await supabase
-    .from('mkt_sequence_actions')
-    .select('step_number, opened_at, replied_at')
-    .eq('enrollment_id', enrollment.id as string)
-    .lt('step_number', currentStep)
-    .order('step_number', { ascending: false })
-    .limit(5);
-
-  if (!prev || prev.length === 0) return 'proceed';
-
-  if (conditions.require_previous_opened && !prev[0].opened_at)            return 'skip';
-  if (conditions.skip_if_replied && prev.some((a) => a.replied_at))        return 'skip';
-
-  return 'proceed';
-}

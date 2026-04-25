@@ -85,7 +85,6 @@ function hasContactInfo(lead: Lead, channel: string): boolean {
   switch (channel) {
     case 'email':
       if (lead.email_verification_status === 'invalid') return false;
-      if (lead.email_verification_status === 'catch_all') return false;
       return !!lead.email;
     case 'whatsapp':
     case 'call':
