@@ -103,6 +103,17 @@ export async function processEnrollment(
 
   if (actionError) throw actionError;
 
+  // If the step is 'call' but Vapi isn't active, the router falls back to email/WA
+  // with no appropriate template. Skip and advance rather than fail.
+  if ((step.channel as string) === 'call' && channelResult.channel !== 'call') {
+    await supabase
+      .from('mkt_sequence_actions')
+      .update({ status: 'skipped', failure_reason: 'Call step skipped — Vapi not active' })
+      .eq('id', action!.id);
+    await advanceToNextStep(supabase, enrollment, steps, currentStepNum);
+    return 'skipped';
+  }
+
   // Resolve template — when falling back from email to WhatsApp, look up the
   // product's WhatsApp template by step number.
   let effectiveTemplateId = step.template_id;
