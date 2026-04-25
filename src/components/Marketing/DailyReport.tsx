@@ -47,6 +47,13 @@ interface CampaignSend {
   followup: OutreachTypeCounts;
 }
 
+interface PipelineRow {
+  campaign_id: string;
+  queued: number;
+  delivered_today: number;
+  in_flight_today: number;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function Dash() {
@@ -132,6 +139,29 @@ export function DailyReport() {
     enabled: !!effectiveOrgId,
     refetchInterval: 60_000,
   });
+
+  // Pipeline: queued + today's cap progress per campaign (works for all campaigns incl. paused)
+  const { data: pipeline = [] } = useQuery<PipelineRow[]>({
+    queryKey: ["daily-report-pipeline", effectiveOrgId, selectedDate],
+    queryFn: async () => {
+      if (!effectiveOrgId) return [];
+      const { data, error } = await supabase.rpc("mkt_step1_pipeline", {
+        p_org_id: effectiveOrgId,
+        p_date: selectedDate,
+      });
+      if (error) throw error;
+      return (data ?? []).map((r: any) => ({
+        campaign_id:    r.campaign_id,
+        queued:         Number(r.queued)          || 0,
+        delivered_today: Number(r.delivered_today) || 0,
+        in_flight_today: Number(r.in_flight_today) || 0,
+      }));
+    },
+    enabled: !!effectiveOrgId,
+    refetchInterval: 60_000,
+  });
+
+  const pipelineMap = new Map<string, PipelineRow>(pipeline.map((p) => [p.campaign_id, p]));
 
   const isLoading = campLoading || statsLoading;
 
@@ -304,6 +334,7 @@ export function DailyReport() {
               <th className="text-left px-3 py-2.5 text-xs font-medium text-muted-foreground" rowSpan={2}>Type</th>
               <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground hidden sm:table-cell" rowSpan={2}>Product</th>
               <th className="text-center px-4 py-2.5 text-xs font-medium text-muted-foreground" rowSpan={2}>Status</th>
+              <th className="text-left px-3 py-2.5 text-xs font-medium text-muted-foreground border-l" rowSpan={2}>Pipeline</th>
               <th className="text-center px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 border-l" colSpan={4}>
                 <Mail className="h-3 w-3 inline mr-1" />Email
               </th>
@@ -326,6 +357,7 @@ export function DailyReport() {
               const isPaused = row.status === "paused";
               const bg = i % 2 === 0 ? "bg-background" : "bg-muted/10";
               const opacity = !isActive ? "opacity-60" : "";
+              const pipe = pipelineMap.get(row.campaign_id);
 
               const types: Array<{ key: "cold_outreach" | "followup"; label: string; icon: React.ReactNode }> = [
                 {
@@ -343,12 +375,15 @@ export function DailyReport() {
               return types.map((t, ti) => {
                 const ch = row[t.key];
                 const isFirst = ti === 0;
+                const isColdOutreach = t.key === "cold_outreach";
+                const capFill = pipe ? Math.min(100, Math.round(((pipe.delivered_today + pipe.in_flight_today) / 100) * 100)) : 0;
+
                 return (
                   <tr
                     key={`${row.campaign_id}-${t.key}`}
                     className={`${isFirst ? "border-t" : ""} border-b last:border-0 ${bg} ${opacity}`}
                   >
-                    {/* Campaign name — only on first sub-row, spans 1 row visually via border trick */}
+                    {/* Campaign name — only on first sub-row */}
                     <td className={`px-4 ${isFirst ? "pt-2.5 pb-1" : "pt-1 pb-2.5"}`}>
                       {isFirst && (
                         <div className="flex items-center gap-2">
@@ -386,6 +421,29 @@ export function DailyReport() {
                         <Badge className="bg-emerald-500 hover:bg-emerald-500 text-white text-[10px] h-5 px-1.5">active</Badge>
                       ))}
                     </td>
+                    {/* Pipeline column — cap progress for New outreach, empty for Follow-ups */}
+                    <td className={`px-3 border-l ${isFirst ? "pt-2.5 pb-1" : "pt-1 pb-2.5"}`}>
+                      {isColdOutreach && pipe ? (
+                        <div className="min-w-[90px]">
+                          {/* Cap progress bar */}
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+                              <div
+                                className={`h-full rounded-full transition-all ${capFill >= 100 ? "bg-emerald-500" : "bg-violet-400"}`}
+                                style={{ width: `${capFill}%` }}
+                              />
+                            </div>
+                            <span className="text-[10px] tabular-nums text-muted-foreground whitespace-nowrap">
+                              {pipe.delivered_today}/100
+                            </span>
+                          </div>
+                          {/* Queue depth */}
+                          <p className="text-[10px] text-muted-foreground tabular-nums whitespace-nowrap">
+                            {pipe.queued.toLocaleString()} queued
+                          </p>
+                        </div>
+                      ) : null}
+                    </td>
                     {/* Email columns */}
                     <td className={`px-3 text-right border-l ${isFirst ? "pt-2.5 pb-1" : "pt-1 pb-2.5"}`}>
                       <NumCell value={ch.email.sent} total={ch.email.sent} color="text-blue-600 dark:text-blue-400" />
@@ -413,7 +471,7 @@ export function DailyReport() {
           </tbody>
           <tfoot>
             <tr className="bg-muted/40 border-t">
-              <td className="px-4 py-2 text-xs font-semibold" colSpan={4}>Total</td>
+              <td className="px-4 py-2 text-xs font-semibold" colSpan={5}>Total</td>
               <td className="px-3 py-2 text-right text-xs font-bold text-blue-600 dark:text-blue-400 tabular-nums border-l">
                 {totEmail.sent.toLocaleString()}
               </td>

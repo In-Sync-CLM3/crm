@@ -9,13 +9,13 @@ const corsHeaders = {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-// Step-1 (cold outreach) only. Cap: 100 delivered/day/product.
-// Batch size matches sequence-executor so each cron tick does the same work quantum.
+// Step-1 (cold outreach) only.
+// Cap: 100 delivered/day PER CAMPAIGN — each campaign gets its own independent budget.
+// Multiple campaigns with the same product_key each get 100, not shared.
 const BATCH_SIZE = 25;
 const DAILY_OUTREACH_LIMIT = 100;
 
-// Safety ceiling: never exceed 1.5× the delivery target to guard against
-// delayed Resend webhooks accumulating phantom in-flight counts.
+// Safety ceiling: never exceed 1.5× delivery target to guard against delayed webhooks.
 const MAX_SEND_MULTIPLIER = 1.5;
 
 // ── Main handler ─────────────────────────────────────────────────────────────
@@ -88,53 +88,35 @@ Deno.serve(async (req) => {
       step1IdByCampaign.set(row.campaign_id as string, row.id as string);
     }
 
-    // 4. Group campaigns by product_key
-    const campaignsByProduct = new Map<string, string[]>();
-    for (const c of activeCampaigns) {
-      const pk  = (c.product_key as string) || '_unkeyed';
-      const arr = campaignsByProduct.get(pk) ?? [];
-      arr.push(c.id as string);
-      campaignsByProduct.set(pk, arr);
-    }
+    // 4. Per-campaign cap check — each campaign gets its own 100/day budget independently.
+    //    All active campaigns run in parallel (same batch), no staggering.
+    const step1Pool: Array<Record<string, unknown>> = [];
+    const campaignBudgetLog: Record<string, { delivered: number; inFlight: number; remaining: number }> = {};
 
-    // 5. Count today's step-1 deliveries + in-flight per product
-    const step1DlvdTodayByProduct = new Map<string, number>();
-    const step1SentTodayByProduct = new Map<string, number>();
+    for (const campaign of activeCampaigns) {
+      const cid    = campaign.id as string;
+      const stepId = step1IdByCampaign.get(cid);
+      if (!stepId) continue;
 
-    for (const [productKey, campIds] of campaignsByProduct.entries()) {
-      const stepIds = campIds.map((cid) => step1IdByCampaign.get(cid)).filter(Boolean) as string[];
-      if (stepIds.length === 0) {
-        step1DlvdTodayByProduct.set(productKey, 0);
-        step1SentTodayByProduct.set(productKey, 0);
-        continue;
-      }
-
+      // Confirmed deliveries for this campaign today
       const { count: dlvdCount } = await supabase
         .from('mkt_sequence_actions')
         .select('id', { count: 'exact', head: true })
-        .in('step_id', stepIds)
+        .eq('step_id', stepId)
         .not('delivered_at', 'is', null)
         .gte('created_at', `${today}T00:00:00Z`);
 
+      // In-flight (sent but not yet confirmed) for this campaign today
       const { count: inFlightCount } = await supabase
         .from('mkt_sequence_actions')
         .select('id', { count: 'exact', head: true })
-        .in('step_id', stepIds)
+        .eq('step_id', stepId)
         .in('status', ['sent', 'pending'])
         .is('delivered_at', null)
         .gte('created_at', `${today}T00:00:00Z`);
 
-      step1DlvdTodayByProduct.set(productKey, dlvdCount ?? 0);
-      step1SentTodayByProduct.set(productKey, inFlightCount ?? 0);
-    }
-
-    // 6. Build step-1 pool respecting per-product cap
-    const step1Pool: Array<Record<string, unknown>> = [];
-    const productBudgetLog: Record<string, { delivered: number; inFlight: number; remaining: number }> = {};
-
-    for (const [productKey, campIds] of campaignsByProduct.entries()) {
-      const delivered = step1DlvdTodayByProduct.get(productKey) ?? 0;
-      const inFlight  = step1SentTodayByProduct.get(productKey) ?? 0;
+      const delivered = dlvdCount ?? 0;
+      const inFlight  = inFlightCount ?? 0;
       const totalSent = delivered + inFlight;
       const safetyMax = Math.floor(DAILY_OUTREACH_LIMIT * MAX_SEND_MULTIPLIER);
 
@@ -142,46 +124,39 @@ Deno.serve(async (req) => {
         ? 0
         : Math.max(0, DAILY_OUTREACH_LIMIT - totalSent);
 
-      productBudgetLog[productKey] = { delivered, inFlight, remaining };
+      campaignBudgetLog[cid] = { delivered, inFlight, remaining };
       if (remaining === 0) continue;
 
-      // Distribute slots evenly across campaigns in this product
-      const slotsEach = Math.max(1, Math.ceil(remaining / campIds.length));
+      // Pull up to `remaining` step-1 enrollments due for this campaign
+      const { data: pool } = await supabase
+        .from('mkt_sequence_enrollments')
+        .select('id, org_id, lead_id, campaign_id, current_step, status')
+        .eq('status', 'active')
+        .eq('current_step', 1)
+        .eq('campaign_id', cid)
+        .lte('next_action_at', nowIso)
+        .order('next_action_at', { ascending: true })
+        .limit(remaining);
 
-      for (const cid of campIds) {
-        const stepId = step1IdByCampaign.get(cid);
-        if (!stepId) continue;
-
-        const { data: pool } = await supabase
-          .from('mkt_sequence_enrollments')
-          .select('id, org_id, lead_id, campaign_id, current_step, status')
-          .eq('status', 'active')
-          .eq('current_step', 1)
-          .eq('campaign_id', cid)
-          .lte('next_action_at', nowIso)
-          .order('next_action_at', { ascending: true })
-          .limit(Math.min(remaining, slotsEach));
-
-        step1Pool.push(...(pool ?? []));
-      }
+      step1Pool.push(...(pool ?? []));
     }
 
     const enrollments = step1Pool.slice(0, BATCH_SIZE);
 
     if (enrollments.length === 0) {
       return new Response(
-        JSON.stringify({ message: 'No cold outreach due', product_budgets: productBudgetLog, executed: 0 }),
+        JSON.stringify({ message: 'No cold outreach due', campaign_budgets: campaignBudgetLog, executed: 0 }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
     await logger.info('outreach-start', {
-      product_budgets: productBudgetLog,
-      step1_due:       step1Pool.length,
-      batch:           enrollments.length,
+      campaign_budgets: campaignBudgetLog,
+      step1_due:        step1Pool.length,
+      batch:            enrollments.length,
     });
 
-    // 7. Batch-fetch related data
+    // 5. Batch-fetch related data
     const campaignIds = [...new Set(enrollments.map((e) => e.campaign_id))];
     const leadIds     = [...new Set(enrollments.map((e) => e.lead_id))];
 
@@ -200,7 +175,7 @@ Deno.serve(async (req) => {
       stepsByCampaign.set(step.campaign_id, arr);
     }
 
-    // 8. Process sequentially
+    // 6. Process sequentially
     let executed = 0, skipped = 0, completed = 0, failed = 0;
 
     for (const enrollment of enrollments) {
@@ -227,7 +202,7 @@ Deno.serve(async (req) => {
 
     await logger.info('outreach-complete', { executed, skipped, completed, failed });
 
-    // Self-chain: if work was done and window is still open, immediately kick off next batch.
+    // Self-chain: if work was done and window is still open, kick off next batch immediately.
     const minuteOfDayAfter = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
     if (executed > 0 && minuteOfDayAfter < windowEndMin) {
       fetch(`${supabaseUrl}/functions/v1/mkt-outreach-executor`, {
@@ -237,7 +212,7 @@ Deno.serve(async (req) => {
     }
 
     return new Response(
-      JSON.stringify({ message: 'Cold outreach complete', executed, skipped, completed, failed, product_budgets: productBudgetLog }),
+      JSON.stringify({ message: 'Cold outreach complete', executed, skipped, completed, failed, campaign_budgets: campaignBudgetLog }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
 
