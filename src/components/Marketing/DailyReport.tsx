@@ -5,7 +5,7 @@ import { useOrgContext } from "@/hooks/useOrgContext";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, Pause, CheckCircle2, Clock, ChevronLeft, ChevronRight, UserPlus, RotateCcw } from "lucide-react";
+import { RefreshCw, Pause, CheckCircle2, Clock, ChevronLeft, ChevronRight, UserPlus, RotateCcw, Mail, MessageCircle } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,6 +18,7 @@ interface CampaignRow {
 
 interface StatRow {
   campaign_id: string;
+  channel: string;
   outreach_type: "cold_outreach" | "followup";
   sent: number;
   delivered: number;
@@ -30,15 +31,17 @@ interface PipelineRow {
   in_flight_today: number;
 }
 
+interface ChannelPair { sent: number; dlvd: number; }
+
 interface CampaignStats {
   id: string;
   name: string;
   product_key: string;
   status: string;
-  new_sent: number;
-  new_dlvd: number;
-  fu_sent: number;
-  fu_dlvd: number;
+  new_email: ChannelPair;
+  new_wa:    ChannelPair;
+  fu_email:  ChannelPair;
+  fu_wa:     ChannelPair;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -81,21 +84,13 @@ export function DailyReport() {
         p_date: selectedDate,
       });
       if (error) throw error;
-      // Collapse all channels into one row per campaign × outreach_type
-      const map = new Map<string, StatRow>();
-      for (const r of data ?? []) {
-        const key = `${r.campaign_id}:${r.outreach_type ?? "followup"}`;
-        const existing = map.get(key) ?? {
-          campaign_id: r.campaign_id,
-          outreach_type: r.outreach_type ?? "followup",
-          sent: 0,
-          delivered: 0,
-        };
-        existing.sent      += Number(r.sent)      || 0;
-        existing.delivered += Number(r.delivered) || 0;
-        map.set(key, existing);
-      }
-      return Array.from(map.values());
+      return (data ?? []).map((r: any) => ({
+        campaign_id:   r.campaign_id,
+        channel:       r.channel,
+        outreach_type: r.outreach_type ?? "followup",
+        sent:          Number(r.sent)      || 0,
+        delivered:     Number(r.delivered) || 0,
+      }));
     },
     enabled: !!effectiveOrgId,
     refetchInterval: 60_000,
@@ -124,34 +119,34 @@ export function DailyReport() {
 
   const isLoading = campLoading || statsLoading;
 
-  // Build per-campaign stats map
-  const statsMap = new Map<string, { new_sent: number; new_dlvd: number; fu_sent: number; fu_dlvd: number }>();
+  // Build per-campaign stats map keyed by campaign_id
+  const zero = (): ChannelPair => ({ sent: 0, dlvd: 0 });
+  const statsMap = new Map<string, { new_email: ChannelPair; new_wa: ChannelPair; fu_email: ChannelPair; fu_wa: ChannelPair }>();
   for (const s of stats) {
-    const existing = statsMap.get(s.campaign_id) ?? { new_sent: 0, new_dlvd: 0, fu_sent: 0, fu_dlvd: 0 };
-    if (s.outreach_type === "cold_outreach") {
-      existing.new_sent += s.sent;
-      existing.new_dlvd += s.delivered;
-    } else {
-      existing.fu_sent += s.sent;
-      existing.fu_dlvd += s.delivered;
-    }
+    const existing = statsMap.get(s.campaign_id) ?? { new_email: zero(), new_wa: zero(), fu_email: zero(), fu_wa: zero() };
+    const isNew = s.outreach_type === "cold_outreach";
+    const bucket = isNew
+      ? (s.channel === "email" ? existing.new_email : existing.new_wa)
+      : (s.channel === "email" ? existing.fu_email  : existing.fu_wa);
+    bucket.sent += s.sent;
+    bucket.dlvd += s.delivered;
     statsMap.set(s.campaign_id, existing);
   }
 
   const pipelineMap = new Map<string, PipelineRow>(pipeline.map((p) => [p.campaign_id, p]));
 
   const rows: CampaignStats[] = campaigns.map((c) => {
-    const s = statsMap.get(c.id) ?? { new_sent: 0, new_dlvd: 0, fu_sent: 0, fu_dlvd: 0 };
+    const s = statsMap.get(c.id) ?? { new_email: zero(), new_wa: zero(), fu_email: zero(), fu_wa: zero() };
     return { id: c.id, name: c.name, product_key: c.product_key, status: c.status, ...s };
   });
 
   // Totals
   let totNewSent = 0, totNewDlvd = 0, totFuSent = 0, totFuDlvd = 0;
   for (const r of rows) {
-    totNewSent += r.new_sent;
-    totNewDlvd += r.new_dlvd;
-    totFuSent  += r.fu_sent;
-    totFuDlvd  += r.fu_dlvd;
+    totNewSent += r.new_email.sent + r.new_wa.sent;
+    totNewDlvd += r.new_email.dlvd + r.new_wa.dlvd;
+    totFuSent  += r.fu_email.sent  + r.fu_wa.sent;
+    totFuDlvd  += r.fu_email.dlvd  + r.fu_wa.dlvd;
   }
   const grandSent = totNewSent + totFuSent;
   const grandDlvd = totNewDlvd + totFuDlvd;
@@ -229,108 +224,96 @@ export function DailyReport() {
         </div>
       </div>
 
-      {/* Table — one row per campaign */}
+      {/* Table — one row per campaign, channels split within New and Follow-ups */}
       <div className="rounded-xl border overflow-hidden overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b bg-muted/40">
-              <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Campaign</th>
-              <th className="text-left px-3 py-2.5 font-medium text-muted-foreground hidden sm:table-cell">Product</th>
-              <th className="text-center px-3 py-2.5 font-medium text-muted-foreground">Status</th>
-              <th className="text-left px-3 py-2.5 font-medium text-muted-foreground border-l">Pipeline</th>
-              <th className="text-right px-3 py-2.5 font-medium text-violet-600 dark:text-violet-400 border-l">
-                <UserPlus className="h-3 w-3 inline mr-1" />New · Sent
+              <th className="text-left px-4 py-2 font-medium text-muted-foreground" rowSpan={2}>Campaign</th>
+              <th className="text-left px-3 py-2 font-medium text-muted-foreground hidden sm:table-cell" rowSpan={2}>Product</th>
+              <th className="text-center px-3 py-2 font-medium text-muted-foreground" rowSpan={2}>Status</th>
+              <th className="text-left px-3 py-2 font-medium text-muted-foreground border-l" rowSpan={2}>Pipeline</th>
+              <th className="text-center px-3 py-1 font-medium text-violet-600 dark:text-violet-400 border-l" colSpan={4}>
+                <UserPlus className="h-3 w-3 inline mr-1" />New outreach
               </th>
-              <th className="text-right px-3 py-2.5 font-medium text-violet-500 dark:text-violet-300">Dlvd</th>
-              <th className="text-right px-3 py-2.5 font-medium text-amber-600 dark:text-amber-400 border-l">
-                <RotateCcw className="h-3 w-3 inline mr-1" />Follow-up · Sent
+              <th className="text-center px-3 py-1 font-medium text-amber-600 dark:text-amber-400 border-l" colSpan={4}>
+                <RotateCcw className="h-3 w-3 inline mr-1" />Follow-ups
               </th>
-              <th className="text-right px-3 py-2.5 font-medium text-amber-500 dark:text-amber-300">Dlvd</th>
+            </tr>
+            <tr className="border-b bg-muted/30">
+              <th className="text-right px-2 py-1 font-medium text-muted-foreground border-l">
+                <Mail className="h-2.5 w-2.5 inline" /> S
+              </th>
+              <th className="text-right px-2 py-1 font-medium text-muted-foreground">D</th>
+              <th className="text-right px-2 py-1 font-medium text-muted-foreground border-l">
+                <MessageCircle className="h-2.5 w-2.5 inline" /> S
+              </th>
+              <th className="text-right px-2 py-1 font-medium text-muted-foreground">D</th>
+              <th className="text-right px-2 py-1 font-medium text-muted-foreground border-l">
+                <Mail className="h-2.5 w-2.5 inline" /> S
+              </th>
+              <th className="text-right px-2 py-1 font-medium text-muted-foreground">D</th>
+              <th className="text-right px-2 py-1 font-medium text-muted-foreground border-l">
+                <MessageCircle className="h-2.5 w-2.5 inline" /> S
+              </th>
+              <th className="text-right px-2 py-1 font-medium text-muted-foreground">D</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row, i) => {
               const isActive = row.status === "active";
               const isPaused = row.status === "paused";
-              const hasSends = row.new_sent + row.fu_sent > 0;
+              const hasSends = row.new_email.sent + row.new_wa.sent + row.fu_email.sent + row.fu_wa.sent > 0;
               const pipe = pipelineMap.get(row.id);
               const capFill = pipe ? Math.min(100, Math.round(((pipe.delivered_today + pipe.in_flight_today) / 100) * 100)) : 0;
 
+              const N = (v: number, color: string) => v > 0
+                ? <span className={`tabular-nums ${color}`}>{v.toLocaleString()}</span>
+                : <span className="text-muted-foreground">—</span>;
+
               return (
-                <tr
-                  key={row.id}
-                  className={`border-b last:border-0 ${i % 2 === 0 ? "bg-background" : "bg-muted/10"} ${!isActive ? "opacity-60" : ""}`}
-                >
-                  {/* Campaign */}
-                  <td className="px-4 py-2.5">
+                <tr key={row.id} className={`border-b last:border-0 ${i % 2 === 0 ? "bg-background" : "bg-muted/10"} ${!isActive ? "opacity-60" : ""}`}>
+                  <td className="px-4 py-2">
                     <div className="flex items-center gap-2">
-                      {isActive && hasSends ? (
-                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 flex-shrink-0" />
-                      ) : isActive ? (
-                        <Clock className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
-                      ) : (
-                        <Pause className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
-                      )}
+                      {isActive && hasSends ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 flex-shrink-0" />
+                        : isActive ? <Clock className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
+                        : <Pause className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />}
                       <span className="font-medium">{row.name}</span>
                     </div>
                   </td>
-                  {/* Product */}
-                  <td className="px-3 py-2.5 hidden sm:table-cell">
-                    <span className="font-mono text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
-                      {row.product_key}
-                    </span>
+                  <td className="px-3 py-2 hidden sm:table-cell">
+                    <span className="font-mono text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{row.product_key}</span>
                   </td>
-                  {/* Status */}
-                  <td className="px-3 py-2.5 text-center">
-                    {isPaused ? (
-                      <Badge variant="outline" className="text-amber-600 border-amber-300 text-[10px] h-5 px-1.5">paused</Badge>
-                    ) : (
-                      <Badge className="bg-emerald-500 hover:bg-emerald-500 text-white text-[10px] h-5 px-1.5">active</Badge>
-                    )}
+                  <td className="px-3 py-2 text-center">
+                    {isPaused
+                      ? <Badge variant="outline" className="text-amber-600 border-amber-300 text-[10px] h-5 px-1.5">paused</Badge>
+                      : <Badge className="bg-emerald-500 hover:bg-emerald-500 text-white text-[10px] h-5 px-1.5">active</Badge>}
                   </td>
-                  {/* Pipeline: cap bar + queue */}
-                  <td className="px-3 py-2.5 border-l">
+                  <td className="px-3 py-2 border-l">
                     {pipe ? (
-                      <div className="min-w-[88px]">
+                      <div className="min-w-[80px]">
                         <div className="flex items-center gap-1.5 mb-0.5">
                           <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-                            <div
-                              className={`h-full rounded-full ${capFill >= 100 ? "bg-emerald-500" : "bg-violet-400"}`}
-                              style={{ width: `${capFill}%` }}
-                            />
+                            <div className={`h-full rounded-full ${capFill >= 100 ? "bg-emerald-500" : "bg-violet-400"}`} style={{ width: `${capFill}%` }} />
                           </div>
-                          <span className="text-[10px] tabular-nums text-muted-foreground whitespace-nowrap">
-                            {pipe.delivered_today}/100
-                          </span>
+                          <span className="text-[10px] tabular-nums text-muted-foreground whitespace-nowrap">{pipe.delivered_today}/100</span>
                         </div>
-                        <p className="text-[10px] text-muted-foreground tabular-nums">
-                          {pipe.queued.toLocaleString()} queued
-                        </p>
+                        <p className="text-[10px] text-muted-foreground tabular-nums">{pipe.queued.toLocaleString()} queued</p>
                       </div>
                     ) : <span className="text-muted-foreground">—</span>}
                   </td>
-                  {/* New outreach */}
-                  <td className="px-3 py-2.5 text-right tabular-nums border-l">
-                    {row.new_sent > 0
-                      ? <span className="font-medium text-violet-600 dark:text-violet-400">{row.new_sent.toLocaleString()}</span>
-                      : <span className="text-muted-foreground">—</span>}
-                  </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">
-                    {row.new_dlvd > 0
-                      ? <span className="text-violet-500 dark:text-violet-300">{row.new_dlvd.toLocaleString()}</span>
-                      : <span className="text-muted-foreground">—</span>}
-                  </td>
-                  {/* Follow-ups */}
-                  <td className="px-3 py-2.5 text-right tabular-nums border-l">
-                    {row.fu_sent > 0
-                      ? <span className="font-medium text-amber-600 dark:text-amber-400">{row.fu_sent.toLocaleString()}</span>
-                      : <span className="text-muted-foreground">—</span>}
-                  </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">
-                    {row.fu_dlvd > 0
-                      ? <span className="text-amber-500 dark:text-amber-300">{row.fu_dlvd.toLocaleString()}</span>
-                      : <span className="text-muted-foreground">—</span>}
-                  </td>
+                  {/* New: Email */}
+                  <td className="px-2 py-2 text-right border-l">{N(row.new_email.sent, "font-medium text-violet-600 dark:text-violet-400")}</td>
+                  <td className="px-2 py-2 text-right">{N(row.new_email.dlvd, "text-violet-500 dark:text-violet-300")}</td>
+                  {/* New: WA */}
+                  <td className="px-2 py-2 text-right border-l">{N(row.new_wa.sent, "font-medium text-violet-600 dark:text-violet-400")}</td>
+                  <td className="px-2 py-2 text-right">{N(row.new_wa.dlvd, "text-violet-500 dark:text-violet-300")}</td>
+                  {/* FU: Email */}
+                  <td className="px-2 py-2 text-right border-l">{N(row.fu_email.sent, "font-medium text-amber-600 dark:text-amber-400")}</td>
+                  <td className="px-2 py-2 text-right">{N(row.fu_email.dlvd, "text-amber-500 dark:text-amber-300")}</td>
+                  {/* FU: WA */}
+                  <td className="px-2 py-2 text-right border-l">{N(row.fu_wa.sent, "font-medium text-amber-600 dark:text-amber-400")}</td>
+                  <td className="px-2 py-2 text-right">{N(row.fu_wa.dlvd, "text-amber-500 dark:text-amber-300")}</td>
                 </tr>
               );
             })}
@@ -338,17 +321,29 @@ export function DailyReport() {
           <tfoot>
             <tr className="bg-muted/40 border-t font-semibold">
               <td className="px-4 py-2" colSpan={4}>Total</td>
-              <td className="px-3 py-2 text-right tabular-nums text-violet-600 dark:text-violet-400 border-l">
-                {totNewSent.toLocaleString()}
+              <td className="px-2 py-2 text-right tabular-nums text-violet-600 dark:text-violet-400 border-l">
+                {rows.reduce((a, r) => a + r.new_email.sent, 0).toLocaleString()}
               </td>
-              <td className="px-3 py-2 text-right tabular-nums text-violet-500 dark:text-violet-300">
-                {totNewDlvd.toLocaleString()}
+              <td className="px-2 py-2 text-right tabular-nums text-violet-500 dark:text-violet-300">
+                {rows.reduce((a, r) => a + r.new_email.dlvd, 0).toLocaleString()}
               </td>
-              <td className="px-3 py-2 text-right tabular-nums text-amber-600 dark:text-amber-400 border-l">
-                {totFuSent.toLocaleString()}
+              <td className="px-2 py-2 text-right tabular-nums text-violet-600 dark:text-violet-400 border-l">
+                {rows.reduce((a, r) => a + r.new_wa.sent, 0).toLocaleString()}
               </td>
-              <td className="px-3 py-2 text-right tabular-nums text-amber-500 dark:text-amber-300">
-                {totFuDlvd.toLocaleString()}
+              <td className="px-2 py-2 text-right tabular-nums text-violet-500 dark:text-violet-300">
+                {rows.reduce((a, r) => a + r.new_wa.dlvd, 0).toLocaleString()}
+              </td>
+              <td className="px-2 py-2 text-right tabular-nums text-amber-600 dark:text-amber-400 border-l">
+                {rows.reduce((a, r) => a + r.fu_email.sent, 0).toLocaleString()}
+              </td>
+              <td className="px-2 py-2 text-right tabular-nums text-amber-500 dark:text-amber-300">
+                {rows.reduce((a, r) => a + r.fu_email.dlvd, 0).toLocaleString()}
+              </td>
+              <td className="px-2 py-2 text-right tabular-nums text-amber-600 dark:text-amber-400 border-l">
+                {rows.reduce((a, r) => a + r.fu_wa.sent, 0).toLocaleString()}
+              </td>
+              <td className="px-2 py-2 text-right tabular-nums text-amber-500 dark:text-amber-300">
+                {rows.reduce((a, r) => a + r.fu_wa.dlvd, 0).toLocaleString()}
               </td>
             </tr>
           </tfoot>
