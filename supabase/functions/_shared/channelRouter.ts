@@ -21,13 +21,30 @@ interface ChannelResult {
 
 /**
  * Determines the best channel for a lead at a given step.
- * Checks: opt-outs and contact info availability.
+ * Checks: opt-outs, contact info availability, and milestone gates.
  * Daily send limits are managed by the sequence executor (per-product, not here).
  */
 export async function getNextChannel(
   lead: Lead,
   step: StepConfig
 ): Promise<ChannelResult> {
+  const supabase = getSupabaseClient();
+
+  // Milestone gate: call channel requires M3 (10 paying clients).
+  // If Vapi is not yet active, treat 'call' steps as if the channel is unavailable
+  // and fall through immediately to the fallback chain (whatsapp → email).
+  let effectiveChannel = step.channel;
+  if (step.channel === 'call') {
+    const { data: vapiChannel } = await supabase
+      .from('mkt_channels')
+      .select('active')
+      .eq('channel_key', 'vapi')
+      .maybeSingle();
+    if (!vapiChannel?.active) {
+      effectiveChannel = 'email'; // skip to fallback chain starting point
+    }
+  }
+
   // Helper: try a specific channel for this lead
   async function tryChannel(ch: string, fallbackReason?: string): Promise<ChannelResult | null> {
     if (await isOptedOut(lead.org_id, lead, ch)) return null;
@@ -35,17 +52,17 @@ export async function getNextChannel(
     return { channel: ch, allowed: true, reason: fallbackReason };
   }
 
-  // 1. Try preferred channel first
-  const preferred = await tryChannel(step.channel);
+  // 1. Try preferred channel first (may have been overridden above)
+  const preferred = await tryChannel(effectiveChannel);
   if (preferred) return preferred;
 
   // 2. Walk fallback chain: email → whatsapp → call (or whatsapp → email → call, etc.)
-  for (const fb of getFallbackChain(step.channel)) {
+  for (const fb of getFallbackChain(effectiveChannel)) {
     const result = await tryChannel(fb, `Fallback from ${step.channel}`);
     if (result) return result;
   }
 
-  return { channel: step.channel, allowed: false, reason: `No reachable channel for ${step.channel}` };
+  return { channel: effectiveChannel, allowed: false, reason: `No reachable channel for ${step.channel}` };
 }
 
 /**
