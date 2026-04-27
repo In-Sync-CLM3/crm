@@ -23,7 +23,19 @@ interface BackfillBody {
   since_hours?: number;          // default 168 (7 days)
   channels?: Array<'whatsapp' | 'email'>; // default both
   org_id?: string;               // optional scoping
-  max_per_channel?: number;      // safety cap, default 500
+  max_per_channel?: number;      // safety cap, default 200 (fits in 150s timeout)
+}
+
+const CONCURRENCY = 20;
+
+async function runInBatches<T>(
+  items: T[],
+  batchSize: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  for (let i = 0; i < items.length; i += batchSize) {
+    await Promise.all(items.slice(i, i + batchSize).map(worker));
+  }
 }
 
 interface BackfillSummary {
@@ -42,7 +54,7 @@ Deno.serve(async (req) => {
     const body: BackfillBody = await req.json().catch(() => ({} as BackfillBody));
     const sinceHours    = body.since_hours    ?? 168;
     const channels      = body.channels       ?? ['whatsapp', 'email'];
-    const maxPerChannel = body.max_per_channel ?? 500;
+    const maxPerChannel = body.max_per_channel ?? 200;
     const orgFilter     = body.org_id;
 
     const since = new Date(Date.now() - sinceHours * 3600_000);
@@ -116,12 +128,12 @@ async function backfillWhatsAppDLRs(
     }
     const basicAuth = btoa(`${settings.api_key}:${settings.api_token}`);
 
-    for (const action of orgActions) {
+    await runInBatches(orgActions, CONCURRENCY, async (action) => {
       summary.whatsapp.checked++;
       try {
         const url = `https://${settings.subdomain}/v2/accounts/${settings.account_sid}/messages/${action.external_id}`;
         const res = await fetch(url, { headers: { Authorization: `Basic ${basicAuth}` } });
-        if (!res.ok) { summary.whatsapp.errors++; continue; }
+        if (!res.ok) { summary.whatsapp.errors++; return; }
 
         const json = await res.json();
         // Exotel response shape: { response: { whatsapp: { messages: [{ data: { sid, status, ... } }] } } }
@@ -153,7 +165,7 @@ async function backfillWhatsAppDLRs(
       } catch {
         summary.whatsapp.errors++;
       }
-    }
+    });
     await logger.info('wa-dlr-batch', { org_id: orgId, processed: orgActions.length });
   }
 }
@@ -200,13 +212,15 @@ async function backfillWhatsAppReplies(
         ?? json?.messages
         ?? [];
 
-      for (const m of list) {
+      // Pre-filter to inbound only, then process in parallel batches.
+      const inbound = list.filter((m) => {
         const direction = String((m.direction as string) ?? (m.message_type as string) ?? '').toLowerCase();
-        const isInbound = direction.includes('in') || direction === 'received' || direction === 'received_message';
-        if (!isInbound) continue;
+        return direction.includes('in') || direction === 'received' || direction === 'received_message';
+      });
 
+      await runInBatches(inbound, CONCURRENCY, async (m) => {
         const fromRaw = (m.from as string) ?? ((m.contact as Record<string, string>)?.phone) ?? '';
-        if (!fromRaw) continue;
+        if (!fromRaw) return;
 
         const e164Phone = fromRaw.startsWith('+') ? fromRaw : `+${fromRaw.replace(/[^\d]/g, '')}`;
 
@@ -217,7 +231,7 @@ async function backfillWhatsAppReplies(
           .eq('phone', e164Phone)
           .limit(1)
           .maybeSingle();
-        if (!contact) continue;
+        if (!contact) return;
 
         const { data: enrollment } = await supabase
           .from('mkt_sequence_enrollments')
@@ -227,7 +241,7 @@ async function backfillWhatsAppReplies(
           .order('enrolled_at', { ascending: false })
           .limit(1)
           .maybeSingle();
-        if (!enrollment) continue;
+        if (!enrollment) return;
 
         const { data: latestAction } = await supabase
           .from('mkt_sequence_actions')
@@ -238,14 +252,14 @@ async function backfillWhatsAppReplies(
           .order('sent_at', { ascending: false })
           .limit(1)
           .maybeSingle();
-        if (!latestAction || latestAction.replied_at) continue;
+        if (!latestAction || latestAction.replied_at) return;
 
         await supabase
           .from('mkt_sequence_actions')
           .update({ replied_at: new Date().toISOString() })
           .eq('id', latestAction.id as string);
         summary.whatsapp.replies_synced++;
-      }
+      });
     } catch (e) {
       summary.whatsapp.errors++;
       await logger.warn('wa-replies-org-failed', { org_id: orgId, error: e instanceof Error ? e.message : String(e) });
@@ -287,13 +301,13 @@ async function backfillEmailEvents(
   const { data: actions } = await q;
   if (!actions || actions.length === 0) return;
 
-  for (const action of actions) {
+  await runInBatches(actions, CONCURRENCY, async (action) => {
     summary.email.checked++;
     try {
       const res = await fetch(`https://api.resend.com/emails/${action.external_id}`, {
         headers: { Authorization: `Bearer ${resendKey}` },
       });
-      if (!res.ok) { summary.email.errors++; continue; }
+      if (!res.ok) { summary.email.errors++; return; }
 
       const data = await res.json();
       const lastEvent = String(data?.last_event ?? '').toLowerCase();
@@ -320,5 +334,5 @@ async function backfillEmailEvents(
     } catch {
       summary.email.errors++;
     }
-  }
+  });
 }
