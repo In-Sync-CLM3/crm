@@ -104,15 +104,19 @@ jobs:
       - name: Link project
         run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
 
-      # phase4_5_6_tables was applied via SQL Editor before CI existed and is
-      # not idempotent on re-run (CREATE POLICY can't IF NOT EXISTS). Mark it
-      # as applied so db push skips it. The other legacy migrations are
-      # idempotent and can run as no-ops if needed. `|| true` means the step
-      # is safe once the row is already recorded in supabase_migrations.
+      # CI was added late — every migration up through 20260421000000 had
+      # already been applied to remote via the SQL Editor, and many of the
+      # function-defining ones (CREATE OR REPLACE FUNCTION returning TABLE)
+      # have had their signatures evolved in-place on remote, so re-applying
+      # them now blows up with SQLSTATE 42P13 "cannot change return type".
+      # Mark them all as applied; subsequent migrations will run normally.
+      # `|| true` keeps the step idempotent once the rows are recorded.
       - name: Mark legacy migrations as applied
         run: |
-          supabase migration repair --linked --status applied 20260403000000 || true
-          supabase migration repair --linked --status applied 20260403000001 || true
+          for ts in $(ls supabase/migrations | sed 's/_.*//' | sort -u | awk '$1 <= "20260421000000"'); do
+            echo "Repairing $ts..."
+            supabase migration repair --linked --status applied "$ts" || true
+          done
 
       - name: Push database migrations
         run: supabase db push --linked

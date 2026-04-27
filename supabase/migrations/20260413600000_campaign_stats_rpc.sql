@@ -1,6 +1,10 @@
 -- Returns campaign execution stats for a given org + product_key.
 -- Used by the ProductManagement UI to show sent/opened/replied counts per product card.
 
+-- Drop first: an earlier version of this function had a different RETURNS TABLE
+-- shape, and CREATE OR REPLACE cannot change a function's return type.
+DROP FUNCTION IF EXISTS get_campaign_stats(uuid, text);
+
 CREATE OR REPLACE FUNCTION get_campaign_stats(p_org_id uuid, p_product_key text)
 RETURNS TABLE (
   sent            bigint,
