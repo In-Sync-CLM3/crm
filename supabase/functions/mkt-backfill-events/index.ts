@@ -40,8 +40,8 @@ async function runInBatches<T>(
 
 interface BackfillSummary {
   since:    string;
-  whatsapp: { dlr_synced: number; replies_synced: number; checked: number; errors: number };
-  email:    { events_synced: number; checked: number; errors: number };
+  whatsapp: { dlr_synced: number; replies_synced: number; checked: number; errors: number; sample_error?: { status: number; body: string; url: string } };
+  email:    { events_synced: number; checked: number; errors: number; sample_error?: { status: number; body: string } };
 }
 
 Deno.serve(async (req) => {
@@ -133,7 +133,14 @@ async function backfillWhatsAppDLRs(
       try {
         const url = `https://${settings.subdomain}/v2/accounts/${settings.account_sid}/messages/${action.external_id}`;
         const res = await fetch(url, { headers: { Authorization: `Basic ${basicAuth}` } });
-        if (!res.ok) { summary.whatsapp.errors++; return; }
+        if (!res.ok) {
+          summary.whatsapp.errors++;
+          if (!summary.whatsapp.sample_error) {
+            const body = await res.text().catch(() => '');
+            summary.whatsapp.sample_error = { status: res.status, body: body.substring(0, 300), url };
+          }
+          return;
+        }
 
         const json = await res.json();
         // Exotel response shape: { response: { whatsapp: { messages: [{ data: { sid, status, ... } }] } } }
@@ -307,7 +314,14 @@ async function backfillEmailEvents(
       const res = await fetch(`https://api.resend.com/emails/${action.external_id}`, {
         headers: { Authorization: `Bearer ${resendKey}` },
       });
-      if (!res.ok) { summary.email.errors++; return; }
+      if (!res.ok) {
+        summary.email.errors++;
+        if (!summary.email.sample_error) {
+          const body = await res.text().catch(() => '');
+          summary.email.sample_error = { status: res.status, body: body.substring(0, 300) };
+        }
+        return;
+      }
 
       const data = await res.json();
       const lastEvent = String(data?.last_event ?? '').toLowerCase();
