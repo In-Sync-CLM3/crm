@@ -128,12 +128,22 @@ export default function SupportTickets() {
           const overdueCount = tickets.filter(t => t.due_at && isPast(new Date(t.due_at)) && !["resolved", "closed"].includes(t.status)).length;
           const criticalCount = tickets.filter(t => t.priority === "critical" && !["resolved", "closed"].includes(t.status)).length;
 
+          const applyView = (view: typeof viewFilter) => {
+            setStatusFilter("all");
+            setPriorityFilter("all");
+            setCategoryFilter("all");
+            setViewFilter(view);
+            setTimeout(() => {
+              document.getElementById("tickets-table-section")?.scrollIntoView({ behavior: "smooth" });
+            }, 100);
+          };
+
           const stats = [
-            { label: "Total Tickets", value: total, icon: Ticket, color: "text-primary", onClick: () => { setStatusFilter("all"); setPriorityFilter("all"); } },
-            { label: "Open", value: openCount, icon: Clock, color: "text-blue-500", onClick: () => { setStatusFilter("in_progress"); setPriorityFilter("all"); } },
-            { label: "Resolved", value: resolvedCount, icon: CheckCircle2, color: "text-green-500", onClick: () => { setStatusFilter("resolved"); setPriorityFilter("all"); } },
-            { label: "Overdue", value: overdueCount, icon: AlertCircle, color: "text-destructive", onClick: () => { setStatusFilter("all"); setPriorityFilter("all"); } },
-            { label: "Critical", value: criticalCount, icon: Flame, color: "text-orange-500", onClick: () => { setPriorityFilter("critical"); setStatusFilter("all"); } },
+            { label: "Total Tickets", value: total, icon: Ticket, color: "text-primary", onClick: () => applyView("all") },
+            { label: "Open", value: openCount, icon: Clock, color: "text-blue-500", onClick: () => applyView("open") },
+            { label: "Resolved", value: resolvedCount, icon: CheckCircle2, color: "text-green-500", onClick: () => applyView("resolved") },
+            { label: "Overdue", value: overdueCount, icon: AlertCircle, color: "text-destructive", onClick: () => applyView("overdue") },
+            { label: "Critical", value: criticalCount, icon: Flame, color: "text-orange-500", onClick: () => applyView("critical") },
           ];
 
           return (
