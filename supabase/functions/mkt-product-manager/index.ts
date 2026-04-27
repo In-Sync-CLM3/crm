@@ -1520,6 +1520,91 @@ async function handleResume(
 }
 
 // ---------------------------------------------------------------------------
+// RELINK CAMPAIGN STEP TEMPLATES
+// ---------------------------------------------------------------------------
+//
+// `mkt_campaign_steps.template_id` is a plain uuid with no FK constraint, so
+// when `email_templates` / `whatsapp_templates` / `call_scripts` are
+// regenerated (delete + recreate via clearStepOutput), step rows keep dangling
+// IDs and the sender returns "template not found". This walks each campaign of
+// the product, drops orphaned IDs, and assigns templates positionally — same
+// logic the original handleToggle inline relinker used, but with orphan
+// validation so it self-heals after a regen.
+async function relinkCampaignStepTemplates(
+  supabase: SupabaseClient,
+  org_id: string,
+  product_key: string,
+): Promise<void> {
+  const { data: campaigns } = await supabase
+    .from('mkt_campaigns')
+    .select('id')
+    .eq('org_id', org_id)
+    .eq('product_key', product_key);
+
+  if (!campaigns || campaigns.length === 0) return;
+
+  const [{ data: emailTpls }, { data: waTpls }] = await Promise.all([
+    supabase.from('mkt_email_templates')
+      .select('id')
+      .eq('org_id', org_id)
+      .ilike('name', `${product_key}-%`)
+      .eq('is_active', true)
+      .order('created_at'),
+    supabase.from('mkt_whatsapp_templates')
+      .select('id')
+      .eq('org_id', org_id)
+      .ilike('name', `${product_key}-%`)
+      .eq('approval_status', 'approved')
+      .order('created_at'),
+  ]);
+
+  const emailIds = (emailTpls ?? []).map((t: { id: string }) => t.id);
+  const waIds    = (waTpls    ?? []).map((t: { id: string }) => t.id);
+  const emailSet = new Set(emailIds);
+  const waSet    = new Set(waIds);
+
+  for (const campaign of campaigns) {
+    const { data: steps } = await supabase
+      .from('mkt_campaign_steps')
+      .select('id, step_number, channel, template_id')
+      .eq('campaign_id', campaign.id as string)
+      .order('step_number');
+
+    if (!steps) continue;
+
+    let emailIdx = 0, waIdx = 0;
+    for (const step of steps) {
+      const linkValid = step.template_id && (
+        (step.channel === 'email'    && emailSet.has(step.template_id as string)) ||
+        (step.channel === 'whatsapp' && waSet.has(step.template_id as string))
+      );
+
+      // Advance the positional index for already-valid links too, so we
+      // don't reassign the same template to a later step.
+      if (linkValid) {
+        if (step.channel === 'email')    emailIdx++;
+        else if (step.channel === 'whatsapp') waIdx++;
+        continue;
+      }
+
+      let nextId: string | null = null;
+      if (step.channel === 'email' && emailIdx < emailIds.length) {
+        nextId = emailIds[emailIdx++];
+      } else if (step.channel === 'whatsapp' && waIdx < waIds.length) {
+        nextId = waIds[waIdx++];
+      }
+
+      if (nextId !== (step.template_id ?? null)) {
+        await supabase
+          .from('mkt_campaign_steps')
+          .update({ template_id: nextId })
+          .eq('id', step.id as string);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // TOGGLE
 // ---------------------------------------------------------------------------
 
@@ -1555,6 +1640,10 @@ async function handleToggle(
       .eq('org_id', org_id)
       .eq('product_key', product_key);
 
+    // Self-heal: drop orphaned template_ids and re-link unlinked/orphaned steps
+    // to current templates before the campaign starts firing.
+    await relinkCampaignStepTemplates(supabase, org_id, product_key);
+
     for (const campaign of (campaigns || [])) {
       const campaign_id = campaign.id as string;
 
@@ -1572,44 +1661,6 @@ async function handleToggle(
           .eq('org_id', org_id).eq('product_key', product_key).eq('step_name', 'campaign_create');
         await logger.info('campaign-steps-missing-reset', { org_id, product_key, campaign_id });
         continue;
-      }
-
-      // Fetch steps in order
-      const { data: steps } = await supabase
-        .from('mkt_campaign_steps')
-        .select('id, step_number, channel, template_id')
-        .eq('campaign_id', campaign_id)
-        .order('step_number');
-
-      // Fetch templates by product_key prefix (naming convention: productkey_*)
-      const [{ data: emailTpls }, { data: waTpls }] = await Promise.all([
-        supabase.from('mkt_email_templates')
-          .select('id')
-          .eq('org_id', org_id)
-          .ilike('name', `${product_key}%`)
-          .eq('is_active', true)
-          .order('created_at'),
-        supabase.from('mkt_whatsapp_templates')
-          .select('id')
-          .eq('org_id', org_id)
-          .ilike('template_name', `${product_key}%`)
-          .eq('approval_status', 'approved')
-          .order('created_at'),
-      ]);
-
-      // Link templates to steps in sequence order (email steps cycle through email templates, WA through WA)
-      let emailIdx = 0, waIdx = 0;
-      for (const step of (steps || [])) {
-        if (step.template_id) continue; // already linked
-        let tplId: string | null = null;
-        if (step.channel === 'email' && emailTpls && emailIdx < emailTpls.length) {
-          tplId = (emailTpls[emailIdx++] as { id: string }).id;
-        } else if (step.channel === 'whatsapp' && waTpls && waIdx < waTpls.length) {
-          tplId = (waTpls[waIdx++] as { id: string }).id;
-        }
-        if (tplId) {
-          await supabase.from('mkt_campaign_steps').update({ template_id: tplId }).eq('id', step.id as string);
-        }
       }
 
       // Activate campaign
@@ -1985,6 +2036,12 @@ async function handleResetStep(
     product?.product_notes ?? '',
   );
 
+  // After regenerating templates, re-link campaign steps so the executor
+  // doesn't keep failing on dangling template_ids.
+  if (step_name === 'email_templates' || step_name === 'whatsapp_templates' || step_name === 'call_scripts') {
+    await relinkCampaignStepTemplates(supabase, org_id, product_key);
+  }
+
   await logger.info('step-reset', { product_key, step_name });
   return { product_key, step_name, steps };
 }
@@ -2037,6 +2094,9 @@ async function handleRefreshContent(
     serviceRoleKey,
     product?.product_notes ?? '',
   );
+
+  // Templates were just regenerated — re-link campaign steps to the new IDs.
+  await relinkCampaignStepTemplates(supabase, org_id, product_key);
 
   await logger.info('content-refreshed', { org_id, product_key, steps_run: CONTENT_STEPS.length });
   return { org_id, product_key, steps };
