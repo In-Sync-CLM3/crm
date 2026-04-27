@@ -12,6 +12,23 @@ verify_jwt = false
 [functions.mkt-superflow-webhook]
 verify_jwt = false
 
+# External webhooks — these endpoints are hit by third-party services
+# (Exotel, Resend, Vapi, Razorpay) that don't send a Supabase JWT, so
+# JWT verification must be disabled. Without these entries the webhooks
+# return 401 and DLRs / status callbacks are silently dropped — that's
+# the recurring "WhatsApp delivered = 0" symptom.
+[functions.mkt-whatsapp-webhook]
+verify_jwt = false
+
+[functions.mkt-email-webhook]
+verify_jwt = false
+
+[functions.mkt-vapi-webhook]
+verify_jwt = false
+
+[functions.razorpay-webhook]
+verify_jwt = false
+
 [functions.mkt-evolve-icp]
 verify_jwt = false
 

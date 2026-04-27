@@ -187,11 +187,11 @@ async function handleInboundMessage(
   const e164Phone = `+${normalizePhone(from)}`;
 
   const { data: lead } = await supabase
-    .from('mkt_leads')
-    .select('id, org_id, campaign_id')
+    .from('contacts')
+    .select('id, org_id')
     .eq('phone', e164Phone)
     .limit(1)
-    .single();
+    .maybeSingle();
 
   if (!lead) {
     await logger.info('inbound-unmatched', { from, text_preview: text.substring(0, 50) });
