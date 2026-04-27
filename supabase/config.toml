@@ -38,6 +38,9 @@ verify_jwt = false
 [functions.mkt-sync-whatsapp-status]
 verify_jwt = false
 
+[functions.mkt-backfill-events]
+verify_jwt = false
+
 [functions.check-next-actions]
 verify_jwt = false
 
