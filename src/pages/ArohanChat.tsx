@@ -5,6 +5,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { useArohanChat, ChatMessage } from "@/hooks/useArohanChat";
 import { useArohanContext, CampaignStat, TechRequest } from "@/hooks/useArohanContext";
 import {
@@ -19,6 +20,7 @@ import {
   Clock,
   ChevronRight,
   Wrench,
+  PanelRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -401,6 +403,7 @@ export default function ArohanChat() {
   const { messages, isSending, error, sendMessage, clearThread } = useArohanChat();
   const { refetch: refetchContext } = useArohanContext();
   const [input, setInput] = useState("");
+  const [contextOpen, setContextOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -429,33 +432,45 @@ export default function ArohanChat() {
 
   return (
     <DashboardLayout>
-      <div className="flex h-[calc(100vh-80px)] gap-4">
+      <div className="flex h-[calc(100vh-80px)] gap-0 md:gap-4">
         {/* ── Chat column ── */}
         <div className="flex flex-col flex-1 min-w-0">
           {/* Header */}
-          <div className="flex items-center justify-between pb-3 border-b">
-            <div>
+          <div className="flex items-center justify-between gap-2 pb-3 border-b">
+            <div className="min-w-0">
               <h1 className="text-lg font-bold flex items-center gap-2">
                 <span className="w-6 h-6 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center">
                   A
                 </span>
                 Arohan
               </h1>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-muted-foreground truncate">
                 Autonomous revenue intelligence · Ask anything
               </p>
             </div>
-            {messages.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              {messages.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearThread}
+                  className="gap-1.5 text-xs text-muted-foreground h-7"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  <span className="hidden sm:inline">New thread</span>
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={clearThread}
-                className="gap-1.5 text-xs text-muted-foreground h-7"
+                onClick={() => setContextOpen(true)}
+                className="md:hidden gap-1.5 text-xs h-7"
+                aria-label="Open live context"
               >
-                <RotateCcw className="h-3 w-3" />
-                New thread
+                <PanelRight className="h-3.5 w-3.5" />
+                Context
               </Button>
-            )}
+            </div>
           </div>
 
           {/* Messages */}
@@ -506,10 +521,17 @@ export default function ArohanChat() {
           </div>
         </div>
 
-        {/* ── Context panel ── */}
-        <div className="w-72 flex-shrink-0 border-l pl-4 py-1">
+        {/* ── Context panel (desktop) ── */}
+        <div className="hidden md:block w-72 flex-shrink-0 border-l pl-4 py-1">
           <ContextPanel onRefresh={refetchContext} />
         </div>
+
+        {/* ── Context panel (mobile sheet) ── */}
+        <Sheet open={contextOpen} onOpenChange={setContextOpen}>
+          <SheetContent side="right" className="w-[88vw] sm:max-w-sm p-4 overflow-y-auto">
+            <ContextPanel onRefresh={refetchContext} />
+          </SheetContent>
+        </Sheet>
       </div>
     </DashboardLayout>
   );
