@@ -42,14 +42,17 @@ export default function BillingSystem() {
 
   const queryClient = useQueryClient();
 
-  // Fetch CRM clients from Supabase
+  // Fetch CRM clients from Supabase. Use select("*") so the query is resilient
+  // both before and after the billing-fields migration has run — missing
+  // columns simply come back undefined rather than failing the whole query
+  // and blanking the client dropdown.
   const { data: crmClients = [], isLoading: clientsLoading } = useQuery({
     queryKey: ["billing-crm-clients", effectiveOrgId],
     queryFn: async () => {
       if (!effectiveOrgId) return [];
       const { data, error } = await supabase
         .from("clients")
-        .select("id, company, first_name, last_name, email, phone, address, city, state, postal_code, status, gstin, pan, billing_address, billing_state_code, invoice_company_name")
+        .select("*")
         .eq("org_id", effectiveOrgId)
         .order("company", { ascending: true });
       if (error) throw error;
