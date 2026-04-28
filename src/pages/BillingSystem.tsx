@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import DashboardLayout from "@/components/Layout/DashboardLayout";
@@ -40,6 +40,8 @@ export default function BillingSystem() {
     issueCreditNote,
   } = useBillingData();
 
+  const queryClient = useQueryClient();
+
   // Fetch CRM clients from Supabase
   const { data: crmClients = [], isLoading: clientsLoading } = useQuery({
     queryKey: ["billing-crm-clients", effectiveOrgId],
@@ -47,7 +49,7 @@ export default function BillingSystem() {
       if (!effectiveOrgId) return [];
       const { data, error } = await supabase
         .from("clients")
-        .select("id, company, first_name, last_name, email, phone, address, city, state, postal_code, status")
+        .select("id, company, first_name, last_name, email, phone, address, city, state, postal_code, status, gstin, pan, billing_address, billing_state_code, invoice_company_name")
         .eq("org_id", effectiveOrgId)
         .order("company", { ascending: true });
       if (error) throw error;
@@ -56,7 +58,9 @@ export default function BillingSystem() {
     enabled: !!effectiveOrgId,
   });
 
-  // Map CRM clients to BillingClient format
+  // Map CRM clients to BillingClient format. Prefer billing-specific fields
+  // when set; fall back to general address/postal_code so clients without
+  // explicit billing details still pre-fill from the contact record.
   const clients: BillingClient[] = useMemo(() => {
     return crmClients.map(c => ({
       id: c.id,
@@ -65,14 +69,51 @@ export default function BillingSystem() {
       last_name: c.last_name || undefined,
       email: c.email || undefined,
       phone: c.phone || undefined,
-      billing_address: c.address || undefined,
+      gstin: c.gstin || undefined,
+      pan: c.pan || undefined,
+      invoice_company_name: c.invoice_company_name || undefined,
+      billing_address: c.billing_address || c.address || undefined,
       city: c.city || undefined,
       state: c.state || undefined,
       pin_code: c.postal_code || undefined,
-      billing_state_code: getStateCode(c.state),
+      billing_state_code: c.billing_state_code || getStateCode(c.state),
       status: c.status || "active",
     }));
   }, [crmClients]);
+
+  // Persist updated billing details back to the clients table so the next
+  // invoice for this client (on any device) pre-fills automatically.
+  const handleUpdateClientBilling = useCallback(async (
+    clientId: string,
+    details: {
+      gstin?: string;
+      pan?: string;
+      invoice_company_name?: string;
+      billing_address?: string;
+      billing_state_code?: string;
+      state?: string;
+      city?: string;
+      pin_code?: string;
+    },
+  ) => {
+    if (!clientId) return;
+    const update: Record<string, string | null> = {};
+    if (details.gstin !== undefined) update.gstin = details.gstin || null;
+    if (details.pan !== undefined) update.pan = details.pan || null;
+    if (details.invoice_company_name !== undefined) update.invoice_company_name = details.invoice_company_name || null;
+    if (details.billing_address !== undefined) update.billing_address = details.billing_address || null;
+    if (details.billing_state_code !== undefined) update.billing_state_code = details.billing_state_code || null;
+    if (details.state !== undefined) update.state = details.state || null;
+    if (details.city !== undefined) update.city = details.city || null;
+    if (details.pin_code !== undefined) update.postal_code = details.pin_code || null;
+    if (Object.keys(update).length === 0) return;
+    const { error } = await supabase.from("clients").update(update).eq("id", clientId);
+    if (error) {
+      console.error("Failed to persist client billing details:", error);
+      return;
+    }
+    queryClient.invalidateQueries({ queryKey: ["billing-crm-clients", effectiveOrgId] });
+  }, [queryClient, effectiveOrgId]);
 
   const navigate = useCallback((v: BillingView) => {
     setView(v);
@@ -206,6 +247,7 @@ export default function BillingSystem() {
           onBack={handleBack}
           editDoc={editDoc || undefined}
           onUpdateSettings={updateSettings}
+          onUpdateClientBilling={handleUpdateClientBilling}
           onRecordAdvance={async (p) => {
             await recordPayment({
               document_id: p.document_id,

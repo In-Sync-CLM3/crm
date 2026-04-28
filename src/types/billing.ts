@@ -145,6 +145,7 @@ export interface BillingClient {
   pan?: string;
   billing_state_code?: string;
   billing_address?: string;
+  invoice_company_name?: string;
   state?: string;
   city?: string;
   pin_code?: string;

@@ -1947,6 +1947,8 @@ export type Database = {
       clients: {
         Row: {
           address: string | null
+          billing_address: string | null
+          billing_state_code: string | null
           city: string | null
           company: string | null
           contact_id: string
@@ -1956,13 +1958,16 @@ export type Database = {
           created_at: string
           email: string | null
           first_name: string
+          gstin: string | null
           id: string
+          invoice_company_name: string | null
           job_title: string | null
           last_discussion: string | null
           last_discussion_at: string | null
           last_name: string | null
           notes: string | null
           org_id: string
+          pan: string | null
           phone: string | null
           postal_code: string | null
           state: string | null
@@ -1972,6 +1977,8 @@ export type Database = {
         }
         Insert: {
           address?: string | null
+          billing_address?: string | null
+          billing_state_code?: string | null
           city?: string | null
           company?: string | null
           contact_id: string
@@ -1981,13 +1988,16 @@ export type Database = {
           created_at?: string
           email?: string | null
           first_name: string
+          gstin?: string | null
           id?: string
+          invoice_company_name?: string | null
           job_title?: string | null
           last_discussion?: string | null
           last_discussion_at?: string | null
           last_name?: string | null
           notes?: string | null
           org_id: string
+          pan?: string | null
           phone?: string | null
           postal_code?: string | null
           state?: string | null
@@ -1997,6 +2007,8 @@ export type Database = {
         }
         Update: {
           address?: string | null
+          billing_address?: string | null
+          billing_state_code?: string | null
           city?: string | null
           company?: string | null
           contact_id?: string
@@ -2006,13 +2018,16 @@ export type Database = {
           created_at?: string
           email?: string | null
           first_name?: string
+          gstin?: string | null
           id?: string
+          invoice_company_name?: string | null
           job_title?: string | null
           last_discussion?: string | null
           last_discussion_at?: string | null
           last_name?: string | null
           notes?: string | null
           org_id?: string
+          pan?: string | null
           phone?: string | null
           postal_code?: string | null
           state?: string | null
