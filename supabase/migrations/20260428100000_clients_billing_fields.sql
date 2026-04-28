@@ -17,7 +17,7 @@ ALTER TABLE public.clients
 -- record automatically.
 WITH ranked AS (
   SELECT
-    client_id,
+    client_id::uuid AS client_id,
     NULLIF(client_billing_snapshot->>'gstin', '')                AS gstin,
     NULLIF(client_billing_snapshot->>'pan', '')                  AS pan,
     NULLIF(client_billing_snapshot->>'billing_address', '')      AS billing_address,
@@ -29,6 +29,7 @@ WITH ranked AS (
     created_at
   FROM public.billing_documents
   WHERE client_id IS NOT NULL
+    AND client_id <> ''
     AND client_billing_snapshot IS NOT NULL
 ),
 backfill AS (
