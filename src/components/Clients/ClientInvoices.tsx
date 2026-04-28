@@ -15,6 +15,7 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useNotification } from "@/hooks/useNotification";
 import { EmptyState } from "@/components/common/EmptyState";
+import { DocumentPreview } from "@/components/common/DocumentPreview";
 import { format } from "date-fns";
 
 interface ClientInvoicesProps {
@@ -859,21 +860,7 @@ export function ClientInvoices({ clientId, orgId }: ClientInvoicesProps) {
               Document Viewer
             </DialogTitle>
           </DialogHeader>
-          {viewingFile && (
-            /\.(jpe?g|png|gif|webp|svg)(\?|$)/i.test(viewingFile) ? (
-              <img
-                src={viewingFile}
-                className="w-full h-full object-contain rounded-md border bg-muted"
-                alt="Document"
-              />
-            ) : (
-              <iframe
-                src={viewingFile}
-                className="w-full h-full rounded-md border"
-                title="Document Viewer"
-              />
-            )
-          )}
+          {viewingFile && <DocumentPreview fileUrl={viewingFile} />}
         </DialogContent>
       </Dialog>
     </Card>

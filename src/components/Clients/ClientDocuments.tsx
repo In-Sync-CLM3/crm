@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Plus, FileText, Trash2, Download, ExternalLink } from "lucide-react";
 import { useNotification } from "@/hooks/useNotification";
 import { EmptyState } from "@/components/common/EmptyState";
+import { DocumentPreview } from "@/components/common/DocumentPreview";
 import { format } from "date-fns";
 
 interface ClientDocumentsProps {
@@ -296,21 +297,7 @@ export function ClientDocuments({ clientId, orgId }: ClientDocumentsProps) {
           <DialogHeader>
             <DialogTitle>Document Viewer</DialogTitle>
           </DialogHeader>
-          {viewingFile && (
-            /\.(jpe?g|png|gif|webp|svg)(\?|$)/i.test(viewingFile) ? (
-              <img
-                src={viewingFile}
-                className="w-full h-full object-contain rounded-md border bg-muted"
-                alt="Document"
-              />
-            ) : (
-              <iframe
-                src={viewingFile}
-                className="w-full h-full rounded-md border"
-                title="Document Viewer"
-              />
-            )
-          )}
+          {viewingFile && <DocumentPreview fileUrl={viewingFile} />}
         </DialogContent>
       </Dialog>
     </Card>

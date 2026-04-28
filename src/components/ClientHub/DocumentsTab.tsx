@@ -15,6 +15,7 @@ import { useOrgContext } from "@/hooks/useOrgContext";
 import { useNotification } from "@/hooks/useNotification";
 import { LoadingState } from "@/components/common/LoadingState";
 import { EmptyState } from "@/components/common/EmptyState";
+import { DocumentPreview } from "@/components/common/DocumentPreview";
 import { EntitySelector, SelectedEntity } from "./EntitySelector";
 import { format } from "date-fns";
 
@@ -433,21 +434,7 @@ export function DocumentsTab() {
           <DialogHeader>
             <DialogTitle>Document Viewer</DialogTitle>
           </DialogHeader>
-          {viewingFile && (
-            /\.(jpe?g|png|gif|webp|svg)(\?|$)/i.test(viewingFile) ? (
-              <img
-                src={viewingFile}
-                className="w-full h-full object-contain rounded-md border bg-muted"
-                alt="Document"
-              />
-            ) : (
-              <iframe
-                src={viewingFile}
-                className="w-full h-full rounded-md border"
-                title="Document Viewer"
-              />
-            )
-          )}
+          {viewingFile && <DocumentPreview fileUrl={viewingFile} />}
         </DialogContent>
       </Dialog>
     </div>
