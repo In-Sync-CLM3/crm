@@ -297,11 +297,19 @@ export function ClientDocuments({ clientId, orgId }: ClientDocumentsProps) {
             <DialogTitle>Document Viewer</DialogTitle>
           </DialogHeader>
           {viewingFile && (
-            <iframe
-              src={`https://docs.google.com/viewer?url=${encodeURIComponent(viewingFile)}&embedded=true`}
-              className="w-full h-full rounded-md border"
-              title="Document Viewer"
-            />
+            /\.(jpe?g|png|gif|webp|svg)(\?|$)/i.test(viewingFile) ? (
+              <img
+                src={viewingFile}
+                className="w-full h-full object-contain rounded-md border bg-muted"
+                alt="Document"
+              />
+            ) : (
+              <iframe
+                src={viewingFile}
+                className="w-full h-full rounded-md border"
+                title="Document Viewer"
+              />
+            )
           )}
         </DialogContent>
       </Dialog>
