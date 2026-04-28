@@ -17,6 +17,7 @@ interface BillingCreateDocumentProps {
   docType: BillingDocumentType;
   clients: BillingClient[];
   settings: BillingSettings;
+  documents: BillingDocument[];
   getNextDocNumber: (docType: BillingDocumentType) => string;
   onSave: (doc: BillingDocument) => Promise<{ success: boolean; error?: string; id?: string }> | void;
   onBack: () => void;
@@ -49,7 +50,7 @@ function getDefaultNotes(settings: BillingSettings, docType: BillingDocumentType
   return settings.default_notes || "We value your business and trust.";
 }
 
-export function BillingCreateDocument({ docType, clients, settings, getNextDocNumber, onSave, onBack, editDoc, onUpdateSettings, onRecordAdvance, existingAdvanceTotal = 0, advanceHasPaymentRecord = false }: BillingCreateDocumentProps) {
+export function BillingCreateDocument({ docType, clients, settings, documents, getNextDocNumber, onSave, onBack, editDoc, onUpdateSettings, onRecordAdvance, existingAdvanceTotal = 0, advanceHasPaymentRecord = false }: BillingCreateDocumentProps) {
   const { getClientBillingDetails, saveClientBillingDetails } = useBillingClientCache();
   const isEdit = !!editDoc;
   // Lock the advance field only when a payment record backs it (edits there
@@ -111,34 +112,55 @@ export function BillingCreateDocument({ docType, clients, settings, getNextDocNu
 
   const selectedClient = clients.find(c => c.id === form.client_id);
 
-  // Pre-fill billing details when client changes:
-  // 1. First check saved billing cache (previously entered details)
-  // 2. Fall back to CRM client data
+  // Pre-fill billing details when client changes. Priority:
+  //   1. Most recent prior billing document's snapshot (server-side, cross-device)
+  //   2. localStorage cache (legacy device-local fallback)
+  //   3. CRM client data
+  // Skip when editing — editDoc already seeded the form.
   useEffect(() => {
-    if (selectedClient) {
-      const cached = getClientBillingDetails(selectedClient.id);
-      if (cached) {
-        // Use previously saved billing details
-        setBillingDetails(cached);
-      } else {
-        // Fall back to CRM client data
-        const stateCode = selectedClient.billing_state_code ||
-          INDIAN_STATES.find(s => s.name === selectedClient.state)?.code || "";
-        setBillingDetails({
-          invoice_company_name: "",
-          gstin: selectedClient.gstin || "",
-          pan: selectedClient.pan || "",
-          billing_address: selectedClient.billing_address || "",
-          city: selectedClient.city || "",
-          state: selectedClient.state || "",
-          state_code: stateCode,
-          pin_code: selectedClient.pin_code || "",
-        });
-      }
-    } else {
+    if (isEdit) return;
+    if (!selectedClient) {
       setBillingDetails({ invoice_company_name: "", gstin: "", pan: "", billing_address: "", city: "", state: "", state_code: "", pin_code: "" });
+      return;
     }
-  }, [selectedClient, getClientBillingDetails]);
+
+    // documents are sorted by created_at desc — first match is the most recent
+    const lastDoc = documents.find(d => d.client_id === selectedClient.id && d.client);
+    const snap = lastDoc?.client;
+    if (snap && (snap.gstin || snap.billing_address || snap.state)) {
+      setBillingDetails({
+        invoice_company_name: snap.invoice_company_name || "",
+        gstin: snap.gstin || "",
+        pan: snap.pan || "",
+        billing_address: snap.billing_address || "",
+        city: snap.city || "",
+        state: snap.state || "",
+        state_code: snap.billing_state_code ||
+          INDIAN_STATES.find(s => s.name === snap.state)?.code || "",
+        pin_code: snap.pin_code || "",
+      });
+      return;
+    }
+
+    const cached = getClientBillingDetails(selectedClient.id);
+    if (cached) {
+      setBillingDetails(cached);
+      return;
+    }
+
+    const stateCode = selectedClient.billing_state_code ||
+      INDIAN_STATES.find(s => s.name === selectedClient.state)?.code || "";
+    setBillingDetails({
+      invoice_company_name: "",
+      gstin: selectedClient.gstin || "",
+      pan: selectedClient.pan || "",
+      billing_address: selectedClient.billing_address || "",
+      city: selectedClient.city || "",
+      state: selectedClient.state || "",
+      state_code: stateCode,
+      pin_code: selectedClient.pin_code || "",
+    });
+  }, [selectedClient, documents, getClientBillingDetails, isEdit]);
 
   const updateBillingField = (key: keyof typeof billingDetails, value: string) => {
     const next = { ...billingDetails, [key]: value };

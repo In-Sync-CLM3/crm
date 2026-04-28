@@ -200,6 +200,7 @@ export default function BillingSystem() {
           docType={createDocType}
           clients={clients}
           settings={settings}
+          documents={documents}
           getNextDocNumber={getNextDocNumber}
           onSave={handleSaveDoc}
           onBack={handleBack}
