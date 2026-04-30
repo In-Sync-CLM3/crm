@@ -147,19 +147,125 @@ RETURNING bs.org_id, bs.next_proforma_number;
 --            Use this if STEP 1 shows the row is a real INVOICE or CREDIT NOTE
 --            that was somehow saved with the 'PI-' prefix.
 --
--- Edit `:new_doc_number` below to the correct slot for that doc_type, e.g.
--- 'INV-2627-0001' (or whatever the next free invoice number is in this FY).
--- Run STEP 1's third query to see the existing numbers in the series.
+-- This block is fully self-determining: it reads the row's actual doc_type,
+-- picks the right prefix (INV for invoice, CN for credit_note), finds the
+-- next free slot in that prefix series for the same org+FY (FY = "2627"
+-- segment from the existing PI number), bumps the matching billing_settings
+-- counter past it, and renames in one transaction.
+--
+-- Refuses to run if doc_type is 'proforma' (use STEP 2A or 2C instead).
 -- =============================================================================
 BEGIN;
 
-UPDATE public.billing_documents
-SET doc_number = 'INV-2627-XXXX',  -- <<< edit before running
-    updated_at = now()
-WHERE doc_number = 'PI-2627-0005'
-RETURNING id, doc_type, doc_number, status;
+WITH target AS (
+  SELECT id, org_id, doc_type
+  FROM public.billing_documents
+  WHERE doc_number = 'PI-2627-0005'
+),
+guard AS (
+  -- Hard-stop if the row is itself a proforma -- renaming a proforma to INV/CN
+  -- would be data corruption. The /0 forces an error.
+  SELECT
+    CASE WHEN doc_type = 'proforma'
+         THEN 1/0
+         ELSE 1
+    END AS ok
+  FROM target
+),
+plan AS (
+  SELECT
+    t.id,
+    t.org_id,
+    t.doc_type,
+    CASE t.doc_type
+      WHEN 'invoice'     THEN COALESCE(bs.invoice_prefix,     'INV')
+      WHEN 'credit_note' THEN COALESCE(bs.credit_note_prefix, 'CN')
+    END AS prefix,
+    bs.id AS settings_id
+  FROM target t
+  JOIN public.billing_settings bs ON bs.org_id = t.org_id
+  CROSS JOIN guard
+),
+maxnum AS (
+  SELECT
+    p.id,
+    p.org_id,
+    p.doc_type,
+    p.prefix,
+    p.settings_id,
+    COALESCE(MAX(
+      (regexp_match(d.doc_number, '-(\d+)$'))[1]::int
+    ), 0) AS max_suffix
+  FROM plan p
+  LEFT JOIN public.billing_documents d
+    ON d.org_id = p.org_id
+   AND d.doc_type = p.doc_type
+   AND d.doc_number LIKE p.prefix || '-2627-%'
+   AND d.doc_number ~ '-(\d+)$'
+   AND d.id <> p.id  -- exclude the row being renamed
+  GROUP BY p.id, p.org_id, p.doc_type, p.prefix, p.settings_id
+),
+renamed AS (
+  UPDATE public.billing_documents d
+  SET doc_number = m.prefix || '-2627-' || lpad((m.max_suffix + 1)::text, 4, '0'),
+      updated_at = now()
+  FROM maxnum m
+  WHERE d.id = m.id
+  RETURNING d.id, d.org_id, d.doc_type, d.doc_number
+)
+-- Bump the matching counter past the slot we just consumed so the next
+-- "Create Invoice" / "Create Credit Note" click suggests the right number.
+UPDATE public.billing_settings bs
+SET
+  next_invoice_number = CASE
+    WHEN r.doc_type = 'invoice'
+     AND bs.next_invoice_number <= (regexp_match(r.doc_number, '-(\d+)$'))[1]::int
+    THEN (regexp_match(r.doc_number, '-(\d+)$'))[1]::int + 1
+    ELSE bs.next_invoice_number
+  END,
+  next_credit_note_number = CASE
+    WHEN r.doc_type = 'credit_note'
+     AND bs.next_credit_note_number <= (regexp_match(r.doc_number, '-(\d+)$'))[1]::int
+    THEN (regexp_match(r.doc_number, '-(\d+)$'))[1]::int + 1
+    ELSE bs.next_credit_note_number
+  END,
+  updated_at = now()
+FROM renamed r
+WHERE bs.org_id = r.org_id
+RETURNING bs.org_id, bs.next_invoice_number, bs.next_credit_note_number;
 
--- COMMIT;   -- uncomment after editing the new number
+-- After the rename, the PI series for this FY ends at 0004, so the next PI
+-- should be 0005. Reconcile next_proforma_number to that.
+WITH ctx AS (
+  SELECT bs.id AS settings_id, bs.org_id
+  FROM public.billing_settings bs
+  WHERE bs.org_id IN (
+    SELECT DISTINCT org_id FROM public.billing_documents
+    WHERE doc_number LIKE 'PI-2627-%'
+  )
+),
+maxpi AS (
+  SELECT
+    ctx.settings_id,
+    COALESCE(MAX(
+      (regexp_match(d.doc_number, '-(\d+)$'))[1]::int
+    ), 0) AS max_suffix
+  FROM ctx
+  LEFT JOIN public.billing_documents d
+    ON d.org_id = ctx.org_id
+   AND d.doc_type = 'proforma'
+   AND d.doc_number LIKE 'PI-2627-%'
+   AND d.doc_number ~ '-(\d+)$'
+  GROUP BY ctx.settings_id
+)
+UPDATE public.billing_settings bs
+SET next_proforma_number = m.max_suffix + 1,
+    updated_at = now()
+FROM maxpi m
+WHERE bs.id = m.settings_id
+RETURNING bs.org_id, bs.next_proforma_number;
+
+-- COMMIT;   -- uncomment to apply
 -- ROLLBACK; -- uncomment to discard
 
 
