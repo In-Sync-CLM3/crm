@@ -1,6 +1,9 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useLiveQuery } from "dexie-react-hooks";
 import { supabase } from "@/integrations/supabase/client";
+import { db } from "@/lib/db";
+import { mirrorCallLogsToDexie } from "@/services/sync/callLogsSync";
 import DashboardLayout from "@/components/Layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -47,11 +50,10 @@ export default function CallLogs() {
   const [dateFilter, setDateFilter] = useState("7");
   const notify = useNotification();
 
-  // Fetch call logs with React Query
-  const { data: callLogs = [], isLoading: loading } = useQuery({
+  // Fetch call logs with React Query (server-first, mirrors to Dexie)
+  const { data: serverCallLogs, isLoading: loading, isError: serverError } = useQuery({
     queryKey: ['call-logs', effectiveOrgId, dateFilter, callTypeFilter],
     queryFn: async () => {
-      // Calculate date filter
       const fromDate = new Date();
       fromDate.setDate(fromDate.getDate() - parseInt(dateFilter));
 
@@ -73,11 +75,62 @@ export default function CallLogs() {
       const { data, error } = await query.limit(500);
 
       if (error) throw error;
-      return (data || []) as CallLog[];
+      const rows = (data || []) as CallLog[];
+      // Mirror to Dexie (drop joined fields).
+      mirrorCallLogsToDexie(
+        rows.map(({ contacts: _c, call_dispositions: _cd, ...rest }: any) => rest)
+      ).catch(() => undefined);
+      return rows;
     },
     enabled: !!effectiveOrgId,
-    refetchInterval: 60000, // Auto-refresh every 60 seconds
+    refetchInterval: 60000,
+    retry: 0,
   });
+
+  // Offline fallback from Dexie.
+  const offlineCallLogs = useLiveQuery(
+    async () => {
+      if (!effectiveOrgId) return null;
+      const fromMs = Date.now() - parseInt(dateFilter) * 24 * 60 * 60 * 1000;
+      let arr = await db.callLogs.where("orgId").equals(effectiveOrgId).toArray();
+      arr = arr.filter((c) => c.createdAt.getTime() >= fromMs);
+      if (callTypeFilter !== "all") {
+        arr = arr.filter((c) => c.callType === callTypeFilter);
+      }
+      arr.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return arr.slice(0, 500).map(
+        (c) =>
+          ({
+            id: c.id,
+            org_id: c.orgId ?? "",
+            contact_id: c.contactId,
+            agent_id: c.agentId,
+            exotel_call_sid: c.exotelCallSid,
+            call_type: c.callType,
+            from_number: c.fromNumber,
+            to_number: c.toNumber,
+            direction: c.direction,
+            status: c.status,
+            call_duration: c.callDuration ?? 0,
+            started_at: c.startedAt,
+            ended_at: c.endedAt,
+            disposition_id: c.dispositionId,
+            sub_disposition_id: c.subDispositionId,
+            notes: c.notes,
+            created_at: c.createdAt.toISOString(),
+            contacts: null,
+            call_dispositions: null,
+          }) as unknown as CallLog
+      );
+    },
+    [effectiveOrgId, dateFilter, callTypeFilter]
+  );
+
+  const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
+  const callLogs: CallLog[] =
+    serverError || isOffline
+      ? offlineCallLogs ?? serverCallLogs ?? []
+      : serverCallLogs ?? offlineCallLogs ?? [];
 
   const formatDuration = (seconds: number) => {
     const minutes = Math.floor(seconds / 60);

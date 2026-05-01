@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useQuery } from "@tanstack/react-query";
+import { updateCallLogDispositionOffline } from "@/services/sync/callLogsSync";
+import { useActivityMutations } from "@/hooks/useActivitiesOffline";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -41,6 +43,7 @@ export function PostCallDispositionDialog({
   onDispositionSaved,
 }: PostCallDispositionDialogProps) {
   const notify = useNotification();
+  const { createActivity: createActivityOffline } = useActivityMutations();
   const [loading, setLoading] = useState(false);
   const [dispositions, setDispositions] = useState<CallDisposition[]>([]);
   const [subDispositions, setSubDispositions] = useState<CallSubDisposition[]>([]);
@@ -119,56 +122,68 @@ export function PostCallDispositionDialog({
 
       if (!profile?.org_id) throw new Error("Organization not found");
 
-      // Update call log with disposition
-      const { error: callLogError } = await supabase
-        .from("call_logs")
-        .update({
-          disposition_id: formData.disposition_id,
-          sub_disposition_id: formData.sub_disposition_id || null,
-          notes: formData.notes || null,
-        })
-        .eq("id", callLogId);
+      const isOnline = typeof navigator !== "undefined" ? navigator.onLine : true;
 
-      if (callLogError) throw callLogError;
+      // Queue / write the call-log disposition update through the offline
+      // helper. Online: this also fires the Supabase update immediately.
+      await updateCallLogDispositionOffline({
+        callLogId,
+        dispositionId: formData.disposition_id,
+        subDispositionId: formData.sub_disposition_id || null,
+        notes: formData.notes || null,
+      });
 
-      // Create contact activity if contact exists
+      // Create the contact activity through the offline-aware mutation so
+      // it queues if we're offline.
       if (contactId) {
-        const activityData = {
+        const activityResult = await createActivityOffline.mutateAsync({
           contact_id: contactId,
-          org_id: profile.org_id,
           activity_type: "call",
           subject: "Call completed",
-          description: formData.notes || `Call duration: ${Math.floor(callDuration / 60)}m ${callDuration % 60}s`,
-          call_disposition_id: formData.disposition_id,
-          call_sub_disposition_id: formData.sub_disposition_id || null,
-          call_duration: callDuration,
-          created_by: user.id,
+          description:
+            formData.notes ||
+            `Call duration: ${Math.floor(callDuration / 60)}m ${callDuration % 60}s`,
           completed_at: new Date().toISOString(),
           next_action_date: callbackDateTime?.toISOString() || null,
-          next_action_notes: callbackDateTime ? `Callback scheduled for ${format(callbackDateTime, "PPP 'at' p")}` : null,
-        };
+          next_action_notes: callbackDateTime
+            ? `Callback scheduled for ${format(callbackDateTime, "PPP 'at' p")}`
+            : null,
+        });
 
-        const { data: activity, error: activityError } = await supabase
-          .from("contact_activities")
-          .insert([activityData])
-          .select()
-          .single();
+        // Server-side fields and pipeline stage update need network — defer
+        // these when offline.
+        if (
+          isOnline &&
+          activityResult.id &&
+          !activityResult.id.startsWith("local_")
+        ) {
+          // Persist call disposition columns the activity hook doesn't model.
+          await supabase
+            .from("contact_activities")
+            .update({
+              call_disposition_id: formData.disposition_id,
+              call_sub_disposition_id: formData.sub_disposition_id || null,
+              call_duration: callDuration,
+            })
+            .eq("id", activityResult.id);
 
-        if (activityError) throw activityError;
-
-        // Link activity to call log
-        if (activity) {
+          // Link the new activity to the call log.
           await supabase
             .from("call_logs")
-            .update({ activity_id: activity.id })
+            .update({ activity_id: activityResult.id })
             .eq("id", callLogId);
-        }
 
-        // Update pipeline stage from New to Contacted
-        await updateContactStageToContacted(contactId);
+          // Move pipeline stage from New → Contacted.
+          await updateContactStageToContacted(contactId);
+        }
       }
 
-      notify.success("Disposition saved", "Call disposition has been recorded successfully");
+      notify.success(
+        "Disposition saved",
+        isOnline
+          ? "Call disposition has been recorded successfully"
+          : "Saved offline. Disposition and follow-up will sync when online."
+      );
 
       resetForm();
       onOpenChange(false);
