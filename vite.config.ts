@@ -14,6 +14,9 @@ export default defineConfig(({ mode }) => ({
     react(),
 
     VitePWA({
+      strategies: "injectManifest",
+      srcDir: "public",
+      filename: "sw.js",
       registerType: "autoUpdate",
       includeAssets: ["favicon.png", "favicon.ico", "robots.txt"],
       manifest: {
@@ -54,29 +57,12 @@ export default defineConfig(({ mode }) => ({
         ],
         categories: ["business", "productivity"]
       },
-      workbox: {
-        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024, // 3 MB
+      injectManifest: {
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
-        skipWaiting: true,
-        clientsClaim: true,
-        cleanupOutdatedCaches: true,
-        navigateFallback: "/index.html",
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/.*\.supabase\.co\/.*/i,
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "supabase-cache",
-              expiration: {
-                maxEntries: 100,
-                maxAgeSeconds: 60 * 60 * 24 // 24 hours
-              },
-              cacheableResponse: {
-                statuses: [0, 200]
-              }
-            }
-          }
-        ]
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024
+      },
+      devOptions: {
+        enabled: false
       }
     })
   ].filter(Boolean),

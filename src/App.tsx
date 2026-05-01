@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { AuthProvider } from "@/contexts/AuthProvider";
 import { OrgContextProvider } from "@/contexts/OrgContextProvider";
+import { ServiceWorkerUpdateHandler } from "@/components/Offline/ServiceWorkerUpdateHandler";
 
 // Static imports - public/auth pages only
 import Login from "./pages/Login";
@@ -15,6 +16,7 @@ import PublicForm from "./pages/PublicForm";
 import GoogleCalendarCallback from "./pages/GoogleCalendarCallback";
 import ProtectedRoute from "./components/Auth/ProtectedRoute";
 import Install from "./pages/Install";
+import OfflinePage from "./pages/Offline";
 
 // Page loader component
 const PageLoader = () => (
@@ -101,6 +103,7 @@ const Tasks = lazy(() => import("./pages/Tasks"));
 const Calendar = lazy(() => import("./pages/Calendar"));
 const Chat = lazy(() => import("./pages/Chat"));
 const SupportTickets = lazy(() => import("./pages/SupportTickets"));
+const SyncMonitoring = lazy(() => import("./pages/SyncMonitoring"));
 // GSTDashboard is now integrated into main Dashboard
 
 const App = () => (
@@ -109,6 +112,7 @@ const App = () => (
       <TooltipProvider>
         <Toaster />
         <Sonner />
+        <ServiceWorkerUpdateHandler />
         <BrowserRouter>
           <Suspense fallback={<PageLoader />}>
             <Routes>
@@ -118,6 +122,12 @@ const App = () => (
           <Route path="/signup" element={<SignUp />} />
           <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/install" element={<Install />} />
+          <Route path="/offline" element={<OfflinePage />} />
+          <Route path="/sync-monitoring" element={
+            <ProtectedRoute>
+              <SyncMonitoring />
+            </ProtectedRoute>
+          } />
           <Route path="/form/:formId" element={<PublicForm />} />
           <Route path="/google-calendar-callback" element={<GoogleCalendarCallback />} />
           

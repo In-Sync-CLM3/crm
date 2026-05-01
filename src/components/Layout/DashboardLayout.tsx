@@ -33,6 +33,8 @@ import { useTopModules } from "@/hooks/useTopModules";
 import { NotificationBell } from "./NotificationBell";
 import { QuickDial } from "@/components/Contact/QuickDial";
 import { CallbackReminderAlert } from "@/components/Contact/CallbackReminderAlert";
+import { OfflineBanner } from "@/components/Offline/OfflineBanner";
+import { SyncStatus } from "@/components/Offline/SyncStatus";
 import { useAuth } from "@/contexts/AuthProvider";
 import { useQuery } from "@tanstack/react-query";
  import { FloatingChatWidget } from "@/components/chat/FloatingChatWidget";
@@ -132,6 +134,7 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
           <h1 className="text-lg font-semibold text-primary">In-Sync</h1>
         )}
         <div className="flex items-center gap-1">
+          <SyncStatus />
           <QuickDial />
           <NotificationBell />
           <Button
@@ -402,8 +405,10 @@ function DashboardLayout({ children }: DashboardLayoutProps) {
         <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
           {/* Desktop header with notifications */}
           <div className="hidden lg:flex items-center justify-end gap-2 px-4 py-2 border-b border-border bg-card shrink-0">
+            <SyncStatus />
             <NotificationBell />
           </div>
+          <OfflineBanner />
           <SubscriptionStatusBanner />
           <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4 lg:p-6">
             {children}
