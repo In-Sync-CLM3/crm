@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import { supabase } from "@/integrations/supabase/client";
+import { requireOnline } from "@/lib/offline";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -96,6 +97,8 @@ export default function BulkSMSSender() {
   };
 
   const handleCreateCampaign = async () => {
+    if (!requireOnline("Bulk SMS send", notify)) return;
+
     // Validate campaign name
     if (!campaignName || campaignName.length > MAX_CAMPAIGN_NAME_LENGTH) {
       notify.error("Error", new Error(`Campaign name is required and must be less than ${MAX_CAMPAIGN_NAME_LENGTH} characters`));

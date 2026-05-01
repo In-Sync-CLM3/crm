@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { requireOnline } from "@/lib/offline";
 import DashboardLayout from "@/components/Layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -183,6 +184,7 @@ const BulkEmailSender = () => {
   };
 
   const handleSendCampaign = async () => {
+    if (!requireOnline("Bulk email send", notify)) return;
     setLoading(true);
 
     try {

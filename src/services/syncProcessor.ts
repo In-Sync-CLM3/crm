@@ -7,6 +7,7 @@ import { logger } from "./logger";
 import { networkMonitor } from "./networkMonitor";
 import { syncAnalytics } from "./syncAnalytics";
 import { supabase } from "@/integrations/supabase/client";
+import { ttlOfflineTables } from "@/lib/offline";
 
 const MAX_RETRIES_DEFAULT = 5;
 
@@ -57,6 +58,23 @@ export async function processSyncQueue(): Promise<void> {
     durationMs: Date.now() - start,
   });
   logger.info(`Sync finished in ${Date.now() - start}ms`, "SyncProcessor");
+
+  // Opportunistic TTL sweep — keeps Dexie under quota. Runs at most once
+  // per hour using a localStorage timestamp.
+  try {
+    const lastKey = "crm.offline.lastTtlSweepAt";
+    const last = parseInt(localStorage.getItem(lastKey) ?? "0", 10);
+    if (Date.now() - last > 60 * 60 * 1000) {
+      const counts = await ttlOfflineTables(30);
+      localStorage.setItem(lastKey, String(Date.now()));
+      const total = Object.values(counts).reduce((a, b) => a + b, 0);
+      if (total > 0) {
+        logger.info(`TTL sweep removed ${total} stale rows`, "SyncProcessor", counts);
+      }
+    }
+  } catch (err) {
+    logger.warn("TTL sweep failed", "SyncProcessor", err);
+  }
 }
 
 export async function getSyncQueueStatus() {
