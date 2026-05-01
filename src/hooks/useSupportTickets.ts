@@ -1,8 +1,19 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLiveQuery } from "dexie-react-hooks";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthProvider";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import { toast } from "sonner";
+import { db, generateLocalId } from "@/lib/db";
+import {
+  registerTicketsSync,
+  mirrorTicketsToDexie,
+  mirrorTicketCommentsToDexie,
+} from "@/services/sync/ticketsSync";
+
+registerTicketsSync();
+
+const isOnline = () => (typeof navigator !== "undefined" ? navigator.onLine : true);
 
 export interface SupportTicket {
   id: string;
@@ -107,14 +118,125 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
 
       const { data, error } = await query.limit(500);
       if (error) throw error;
-      return data as unknown as SupportTicket[];
+      const rows = data as unknown as SupportTicket[];
+      mirrorTicketsToDexie(
+        rows.map(({ creator: _c, assignee: _a, ...rest }: any) => rest)
+      ).catch(() => undefined);
+      return rows;
     },
     enabled: !!orgId,
+    retry: 0,
   });
+
+  // Offline fallback: read tickets from Dexie when offline / server fails.
+  const offlineTickets = useLiveQuery(
+    async () => {
+      if (!orgId) return null;
+      let arr = await db.tickets.where("orgId").equals(orgId).toArray();
+      if (filters?.status && filters.status !== "all") {
+        arr = arr.filter((t) => t.status === filters.status);
+      }
+      if (filters?.priority && filters.priority !== "all") {
+        arr = arr.filter((t) => t.priority === filters.priority);
+      }
+      if (filters?.category && filters.category !== "all") {
+        arr = arr.filter((t) => t.category === filters.category);
+      }
+      if (filters?.search) {
+        const t = filters.search.toLowerCase();
+        arr = arr.filter(
+          (x) =>
+            x.ticketNumber.toLowerCase().includes(t) ||
+            x.subject.toLowerCase().includes(t)
+        );
+      }
+      arr.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return arr.slice(0, 500).map(
+        (t) =>
+          ({
+            id: t.id,
+            org_id: t.orgId ?? "",
+            created_by: t.createdBy,
+            assigned_to: t.assignedTo,
+            ticket_number: t.ticketNumber,
+            subject: t.subject,
+            description: t.description,
+            category: t.category,
+            priority: t.priority,
+            status: t.status,
+            resolution_notes: null,
+            resolved_at: null,
+            contact_name: t.contactName,
+            contact_phone: t.contactPhone,
+            contact_email: t.contactEmail,
+            company_name: t.companyName,
+            due_at: null,
+            attachments: null,
+            created_at: t.createdAt.toISOString(),
+            updated_at: t.updatedAt.toISOString(),
+            creator: undefined,
+            assignee: null,
+          }) as unknown as SupportTicket
+      );
+    },
+    [orgId, filters]
+  );
+
+  // Effective data: server preferred, offline fallback when unavailable.
+  const effectiveTickets =
+    ticketsQuery.data ??
+    (ticketsQuery.isError || !isOnline()
+      ? offlineTickets ?? undefined
+      : undefined);
 
   const createTicket = useMutation({
     mutationFn: async (ticket: CreateTicketInput) => {
       const filesToUpload = ticket.attachments || [];
+
+      // Offline path — write to Dexie and queue. Notifications and
+      // attachments need network and are deferred until the ticket syncs.
+      if (!isOnline()) {
+        const localId = generateLocalId();
+        const now = new Date();
+        await db.tickets.put({
+          id: localId,
+          orgId: orgId!,
+          createdBy: user!.id,
+          assignedTo: null,
+          ticketNumber: "PENDING",
+          subject: ticket.subject,
+          description: ticket.description,
+          category: ticket.category,
+          priority: ticket.priority,
+          status: "new",
+          contactName: ticket.contact_name || null,
+          contactPhone: ticket.contact_phone || null,
+          contactEmail: ticket.contact_email || null,
+          companyName: ticket.company_name || null,
+          source: "crm",
+          createdAt: now,
+          updatedAt: now,
+          syncStatus: "pending",
+        });
+        await db.syncQueue.put({
+          id: `ticket_create_${localId}`,
+          type: "ticket",
+          entityId: localId,
+          action: "create",
+          data: { id: localId },
+          priority: 1,
+          retryCount: 0,
+          maxRetries: 5,
+          createdAt: now,
+        });
+        if (filesToUpload.length > 0) {
+          toast.info(
+            "Saved offline",
+            { description: "Attachments will need to be re-added once the ticket syncs." }
+          );
+        }
+        return { id: localId, ticket_number: "PENDING" } as any;
+      }
 
       const { data, error } = await supabase
         .from("support_tickets")
@@ -263,11 +385,44 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
       if (updates.status === "resolved") {
         updateData.resolved_at = new Date().toISOString();
       }
+
+      // Update Dexie + queue (always — even when online so the queue tracks it).
+      const localPatch: Record<string, unknown> = {
+        ...(updates.status !== undefined && { status: updates.status }),
+        ...(updates.assigned_to !== undefined && { assignedTo: updates.assigned_to }),
+        syncStatus: "pending",
+        updatedAt: new Date(),
+      };
+      const existing = await db.tickets.get(id);
+      if (existing) await db.tickets.update(id, localPatch);
+      await db.syncQueue.put({
+        id: `ticket_update_${id}`,
+        type: "ticket",
+        entityId: id,
+        action: "update",
+        data: { id, ...updates },
+        priority: 1,
+        retryCount: 0,
+        maxRetries: 5,
+        createdAt: new Date(),
+      });
+
+      if (!isOnline()) {
+        // History / notifications below are server-only; skip them offline.
+        return;
+      }
+
       const { error } = await supabase
         .from("support_tickets")
         .update(updateData)
         .eq("id", id);
       if (error) throw error;
+      // Mark synced once server accepted.
+      await db.tickets.update(id, {
+        syncStatus: "synced",
+        lastSyncedAt: new Date(),
+      });
+      await db.syncQueue.delete(`ticket_update_${id}`);
 
       // Log history
       const actions: { action: string; old_value?: string; new_value?: string }[] = [];
@@ -451,7 +606,13 @@ export function useSupportTickets(filters?: { status?: string; priority?: string
     },
   });
 
-  return { ticketsQuery, createTicket, updateTicket, deleteTicket };
+  return {
+    ticketsQuery,
+    tickets: effectiveTickets,
+    createTicket,
+    updateTicket,
+    deleteTicket,
+  };
 }
 
 export function useTicketComments(ticketId: string | null) {
@@ -468,13 +629,73 @@ export function useTicketComments(ticketId: string | null) {
         .eq("ticket_id", ticketId!)
         .order("created_at", { ascending: true });
       if (error) throw error;
-      return data as unknown as TicketComment[];
+      const rows = data as unknown as TicketComment[];
+      mirrorTicketCommentsToDexie(
+        rows.map(({ user: _u, ...rest }: any) => rest)
+      ).catch(() => undefined);
+      return rows;
     },
     enabled: !!ticketId,
+    retry: 0,
   });
+
+  const offlineComments = useLiveQuery(
+    async () => {
+      if (!ticketId) return null;
+      const arr = await db.ticketComments
+        .where("ticketId")
+        .equals(ticketId)
+        .toArray();
+      arr.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      return arr.map(
+        (c) =>
+          ({
+            id: c.id,
+            ticket_id: c.ticketId,
+            org_id: c.orgId ?? "",
+            user_id: c.userId,
+            comment: c.comment,
+            is_internal: c.isInternal,
+            created_at: c.createdAt.toISOString(),
+            user: undefined,
+          }) as unknown as TicketComment
+      );
+    },
+    [ticketId]
+  );
 
   const addComment = useMutation({
     mutationFn: async ({ comment, is_internal }: { comment: string; is_internal: boolean }) => {
+      // Always write Dexie + queue, then attempt server when online. Lets the
+      // comment land instantly in the UI through the offline fallback below
+      // even before the server returns.
+      const localId = generateLocalId();
+      const now = new Date();
+      await db.ticketComments.put({
+        id: localId,
+        ticketId: ticketId!,
+        orgId: orgId!,
+        userId: user!.id,
+        comment,
+        isInternal: is_internal,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus: "pending",
+      });
+      await db.syncQueue.put({
+        id: `ticket_comment_create_${localId}`,
+        type: "ticket_comment",
+        entityId: localId,
+        action: "create",
+        data: { id: localId },
+        priority: 2,
+        retryCount: 0,
+        maxRetries: 5,
+        createdAt: now,
+      });
+
+      if (!isOnline()) return;
+
       const { error } = await supabase
         .from("support_ticket_comments")
         .insert({
@@ -485,6 +706,10 @@ export function useTicketComments(ticketId: string | null) {
           is_internal,
         });
       if (error) throw error;
+      // Successfully synced — drop the queued local row (the next read mirror
+      // will replace it with the server-keyed one).
+      await db.ticketComments.delete(localId);
+      await db.syncQueue.delete(`ticket_comment_create_${localId}`);
 
       // Log history
       await supabase.from("support_ticket_history").insert({
@@ -498,12 +723,22 @@ export function useTicketComments(ticketId: string | null) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["ticket-comments", ticketId] });
       queryClient.invalidateQueries({ queryKey: ["ticket-history", ticketId] });
-      toast.success("Comment added");
+      toast.success(isOnline() ? "Comment added" : "Comment saved offline (will sync)");
     },
     onError: (error: Error) => {
       toast.error("Failed to add comment: " + error.message);
     },
   });
 
-  return { commentsQuery, addComment };
+  // Merge: server-first; offline fallback merges queued local-only comments.
+  const queued =
+    offlineComments?.filter(
+      (c) => typeof c.id === "string" && c.id.startsWith("local_")
+    ) ?? [];
+  const comments =
+    commentsQuery.data && commentsQuery.data.length >= 0
+      ? [...commentsQuery.data, ...queued]
+      : offlineComments ?? undefined;
+
+  return { commentsQuery, comments, addComment };
 }
