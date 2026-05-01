@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLiveQuery } from "dexie-react-hooks";
 import { supabase } from "@/integrations/supabase/client";
+import { db } from "@/lib/db";
+import { mirrorContactsToDexie } from "@/services/sync/contactsSync";
 import DashboardLayout from "@/components/Layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -105,12 +108,12 @@ export default function ContactDetail() {
     refetchOnWindowFocus: false,
   });
 
-  // Fetch contact with React Query
-  const { data: contact, isLoading: loading } = useQuery({
+  // Fetch contact with React Query (server-first, mirrors to Dexie)
+  const { data: serverContact, isLoading: serverLoading, isError: serverError } = useQuery({
     queryKey: ['contact-detail', id],
     queryFn: async () => {
       if (!id) return null;
-      
+
       const { data, error } = await supabase
         .from("contacts")
         .select(`
@@ -122,24 +125,68 @@ export default function ContactDetail() {
         .single();
 
       if (error) throw error;
-      
-      // Transform the data to match our interface
+
       const transformedData = {
         ...data,
-        profiles: data.assigned_profile
+        profiles: data.assigned_profile,
       };
       delete (transformedData as any).assigned_profile;
-      
+
+      // Mirror to Dexie for offline reads.
+      mirrorContactsToDexie([data as any]).catch(() => undefined);
+
       return transformedData as Contact;
     },
     enabled: !!id,
+    retry: 0,
     meta: {
       onError: () => {
         notify.error("Error loading contact", new Error("Failed to load contact"));
         navigate("/contacts");
-      }
-    }
+      },
+    },
   });
+
+  // Offline fallback: read from Dexie when server fetch fails or device offline.
+  const localContact = useLiveQuery(
+    async () => {
+      if (!id) return null;
+      const c = await db.contacts.get(id);
+      if (!c) return null;
+      return {
+        id: c.id,
+        org_id: c.orgId ?? "",
+        first_name: c.firstName,
+        last_name: c.lastName,
+        email: c.email,
+        phone: c.phone,
+        company: c.company,
+        job_title: c.jobTitle,
+        city: c.city,
+        industry_type: null,
+        nature_of_business: null,
+        status: c.status ?? "new",
+        source: c.source,
+        address: null,
+        state: c.state,
+        country: c.country,
+        postal_code: null,
+        website: null,
+        linkedin_url: null,
+        notes: c.notes,
+        pipeline_stage_id: c.pipelineStageId,
+        created_at: c.createdAt.toISOString(),
+        pipeline_stages: null,
+        profiles: null,
+      } as unknown as Contact;
+    },
+    [id]
+  );
+
+  const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
+  const contact: Contact | null | undefined =
+    serverContact ?? (isOffline || serverError ? localContact ?? undefined : undefined);
+  const loading = serverLoading && !localContact;
 
   const refreshContact = () => {
     queryClient.invalidateQueries({ queryKey: ['contact-detail', id] });

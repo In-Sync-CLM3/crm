@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useNotification } from "@/hooks/useNotification";
+import { useContactMutations } from "@/hooks/useContactsOffline";
 import { ContactEmails } from "./ContactEmails";
 import { ContactPhones } from "./ContactPhones";
 import { Separator } from "@/components/ui/separator";
@@ -50,6 +51,7 @@ export function EditContactDialog({
   onContactUpdated,
 }: EditContactDialogProps) {
   const notify = useNotification();
+  const { updateContact } = useContactMutations();
   const [loading, setLoading] = useState(false);
   const [pipelineStages, setPipelineStages] = useState<PipelineStage[]>([]);
   const [formData, setFormData] = useState({
@@ -107,9 +109,9 @@ export function EditContactDialog({
     setLoading(true);
 
     try {
-      const { error } = await supabase
-        .from("contacts")
-        .update({
+      await updateContact.mutateAsync({
+        id: contact.id,
+        data: {
           first_name: formData.first_name,
           last_name: formData.last_name || null,
           company: formData.company || null,
@@ -121,17 +123,14 @@ export function EditContactDialog({
           linkedin_url: formData.linkedin_url || null,
           notes: formData.notes || null,
           pipeline_stage_id: formData.pipeline_stage_id || null,
-        })
-        .eq("id", contact.id);
-
-      if (error) throw error;
-
-      notify.success("Contact updated", "Contact has been updated successfully");
+        },
+      });
 
       onOpenChange(false);
       if (onContactUpdated) onContactUpdated();
-    } catch (error: any) {
-      notify.error("Error", error);
+    } catch (error: unknown) {
+      // useContactMutations already reports the error via notify.
+      console.error("[EditContactDialog] update failed", error);
     } finally {
       setLoading(false);
     }

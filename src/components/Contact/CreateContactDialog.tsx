@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { useNotification } from "@/hooks/useNotification";
 import { useOrgContext } from "@/hooks/useOrgContext";
+import { useContactMutations } from "@/hooks/useContactsOffline";
 import { InlineEmailInput, EmailEntry } from "./InlineEmailInput";
 import { InlinePhoneInput, PhoneEntry } from "./InlinePhoneInput";
 
@@ -37,6 +38,7 @@ export function CreateContactDialog({
 }: CreateContactDialogProps) {
   const notify = useNotification();
   const { effectiveOrgId } = useOrgContext();
+  const { createContact } = useContactMutations();
   const [loading, setLoading] = useState(false);
   const [pipelineStages, setPipelineStages] = useState<PipelineStage[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -128,22 +130,11 @@ export function CreateContactDialog({
     setLoading(true);
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("User not authenticated");
+      // Primary email and phone for the main contact record
+      const primaryEmail = emails.find((e) => e.is_primary)?.email || emails[0]?.email || null;
+      const primaryPhone = phones.find((p) => p.is_primary)?.phone || phones[0]?.phone || null;
 
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("org_id")
-        .eq("id", user.id)
-        .single();
-
-      if (!profile?.org_id) throw new Error("Organization not found");
-
-      // Get primary email and phone for the main contact record
-      const primaryEmail = emails.find(e => e.is_primary)?.email || emails[0]?.email || null;
-      const primaryPhone = phones.find(p => p.is_primary)?.phone || phones[0]?.phone || null;
-
-      const contactData = {
+      const result = await createContact.mutateAsync({
         first_name: formData.first_name,
         last_name: formData.last_name || null,
         email: primaryEmail,
@@ -159,49 +150,49 @@ export function CreateContactDialog({
         pipeline_stage_id: formData.pipeline_stage_id || null,
         assigned_to: formData.assigned_to || null,
         notes: formData.notes || null,
-        org_id: profile.org_id,
-        created_by: user.id,
-      };
+      });
 
-      const { data: newContact, error } = await supabase
-        .from("contacts")
-        .insert([contactData])
-        .select()
-        .single();
+      // Multi-email/phone tables need a server-side contact id (FK).
+      // Skip when offline — the user can add additional emails/phones from
+      // the contact detail page after the parent contact has synced.
+      const isOnline =
+        typeof navigator !== "undefined" ? navigator.onLine : true;
+      const isServerId =
+        typeof result.id === "string" && !result.id.startsWith("local_");
 
-      if (error) throw error;
-
-      // Save additional emails to contact_emails table
-      if (emails.length > 0 && newContact) {
-        const emailInserts = emails.map(e => ({
-          contact_id: newContact.id,
-          org_id: profile.org_id,
-          email: e.email,
-          email_type: e.email_type,
-          is_primary: e.is_primary,
-        }));
-
-        await supabase.from("contact_emails").insert(emailInserts);
+      if (isOnline && isServerId && effectiveOrgId) {
+        if (emails.length > 0) {
+          const emailInserts = emails.map((e) => ({
+            contact_id: result.id,
+            org_id: effectiveOrgId,
+            email: e.email,
+            email_type: e.email_type,
+            is_primary: e.is_primary,
+          }));
+          await supabase.from("contact_emails").insert(emailInserts);
+        }
+        if (phones.length > 0) {
+          const phoneInserts = phones.map((p) => ({
+            contact_id: result.id,
+            org_id: effectiveOrgId,
+            phone: p.phone,
+            phone_type: p.phone_type,
+            is_primary: p.is_primary,
+          }));
+          await supabase.from("contact_phones").insert(phoneInserts);
+        }
+      } else if ((emails.length > 0 || phones.length > 0) && !isServerId) {
+        notify.info(
+          "Saved offline",
+          "Additional emails/phones will need to be added once the contact has synced."
+        );
       }
 
-      // Save additional phones to contact_phones table
-      if (phones.length > 0 && newContact) {
-        const phoneInserts = phones.map(p => ({
-          contact_id: newContact.id,
-          org_id: profile.org_id,
-          phone: p.phone,
-          phone_type: p.phone_type,
-          is_primary: p.is_primary,
-        }));
-
-        await supabase.from("contact_phones").insert(phoneInserts);
-      }
-
-      notify.success("Contact created", "New contact has been added successfully");
       onOpenChange(false);
       onContactCreated?.();
-    } catch (error: any) {
-      notify.error("Error", error);
+    } catch (error: unknown) {
+      // Errors are reported by useContactMutations.
+      console.error("[CreateContactDialog] create failed", error);
     } finally {
       setLoading(false);
     }

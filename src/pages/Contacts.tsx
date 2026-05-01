@@ -25,6 +25,9 @@ import { NativeContactActions } from "@/components/Contact/NativeContactActions"
 import { ContactFilters, ContactFiltersState, emptyContactFilters } from "@/components/Contacts/ContactFilters";
 import { useUrlFilterState } from "@/hooks/useUrlFilterState";
 import { CreateContactDialog } from "@/components/Contact/CreateContactDialog";
+import { mirrorContactsToDexie } from "@/services/sync/contactsSync";
+import { useLiveQuery } from "dexie-react-hooks";
+import { db } from "@/lib/db";
 
 interface Contact {
   id: string;
@@ -86,12 +89,12 @@ export default function Contacts() {
   
   const pagination = usePagination({ defaultPageSize: 25 });
 
-  // Fetch contacts with React Query
-  const { data: contactsData, isLoading: contactsLoading } = useQuery({
+  // Fetch contacts with React Query (server-first; mirrors to Dexie)
+  const { data: contactsData, isLoading: contactsLoading, isError: contactsError } = useQuery({
     queryKey: ['contacts', effectiveOrgId, pagination.currentPage, pagination.pageSize, appliedFilters],
     queryFn: async () => {
       const offset = (pagination.currentPage - 1) * pagination.pageSize;
-      
+
       let query = supabase
         .from("contacts")
         .select(`
@@ -143,10 +146,71 @@ export default function Contacts() {
         .range(offset, offset + pagination.pageSize - 1);
 
       if (error) throw error;
-      return { data: data || [], count: count || 0 };
+      const rows = data || [];
+      // Mirror to Dexie for offline reads. Fire-and-forget — don't block UI.
+      mirrorContactsToDexie(rows as any).catch(() => undefined);
+      return { data: rows, count: count || 0 };
     },
     enabled: !!effectiveOrgId,
+    retry: 0,
   });
+
+  // Local fallback when the server fetch fails or device is offline.
+  const offlineContacts = useLiveQuery(
+    async () => {
+      if (!effectiveOrgId) return null;
+      // Apply matching filters locally on Dexie data.
+      let arr = await db.contacts.where("orgId").equals(effectiveOrgId).toArray();
+      const f = appliedFilters;
+      if (f.name) {
+        const t = f.name.toLowerCase();
+        arr = arr.filter(
+          (c) =>
+            c.firstName?.toLowerCase().includes(t) ||
+            c.lastName?.toLowerCase().includes(t)
+        );
+      }
+      if (f.email) arr = arr.filter((c) => c.email?.toLowerCase().includes(f.email!.toLowerCase()));
+      if (f.phone) arr = arr.filter((c) => c.phone?.toLowerCase().includes(f.phone!.toLowerCase()));
+      if (f.company) arr = arr.filter((c) => c.company?.toLowerCase().includes(f.company!.toLowerCase()));
+      if (f.city) arr = arr.filter((c) => c.city?.toLowerCase().includes(f.city!.toLowerCase()));
+      if (f.source) arr = arr.filter((c) => c.source?.toLowerCase().includes(f.source!.toLowerCase()));
+      if (f.status) arr = arr.filter((c) => c.status === f.status);
+      if (f.stageId) arr = arr.filter((c) => c.pipelineStageId === f.stageId);
+      if (f.jobTitle) arr = arr.filter((c) => c.jobTitle?.toLowerCase().includes(f.jobTitle!.toLowerCase()));
+      if (f.createdBy) arr = arr.filter((c) => c.createdBy === f.createdBy);
+      arr.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      const total = arr.length;
+      const offset = (pagination.currentPage - 1) * pagination.pageSize;
+      const page = arr.slice(offset, offset + pagination.pageSize).map((c) => ({
+        id: c.id,
+        first_name: c.firstName,
+        last_name: c.lastName,
+        email: c.email,
+        phone: c.phone,
+        company: c.company,
+        job_title: c.jobTitle,
+        city: c.city,
+        industry_type: null,
+        nature_of_business: null,
+        status: c.status ?? "new",
+        source: c.source,
+        assigned_to: c.assignedTo,
+        pipeline_stage_id: c.pipelineStageId,
+        pipeline_stages: null,
+        created_at: c.createdAt.toISOString(),
+        updated_at: c.updatedAt.toISOString(),
+      }));
+      return { data: page, count: total };
+    },
+    [effectiveOrgId, appliedFilters, pagination.currentPage, pagination.pageSize]
+  );
+
+  // Prefer server data; fall back to Dexie on error or while offline.
+  const effectiveContactsData =
+    contactsError || (typeof navigator !== "undefined" && !navigator.onLine)
+      ? offlineContacts ?? contactsData
+      : contactsData ?? offlineContacts;
 
   // Fetch total count (unfiltered) for display
   const { data: totalCountData } = useQuery({
@@ -191,17 +255,17 @@ export default function Contacts() {
     enabled: !!effectiveOrgId,
   });
 
-  // Derive contacts from query data
-  const contacts = contactsData?.data || [];
-  const loading = contactsLoading;
+  // Derive contacts from server-or-offline merged result
+  const contacts = effectiveContactsData?.data || [];
+  const loading = contactsLoading && !effectiveContactsData;
   const unfilteredCount = totalCountData || 0;
 
   // Update pagination total when data changes
   useEffect(() => {
-    if (contactsData) {
-      pagination.setTotalRecords(contactsData.count);
+    if (effectiveContactsData) {
+      pagination.setTotalRecords(effectiveContactsData.count);
     }
-  }, [contactsData?.count]);
+  }, [effectiveContactsData?.count]);
 
   // Listen for org context changes
   useEffect(() => {
