@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import { useNotification } from "@/hooks/useNotification";
+import { useActivityMutations } from "@/hooks/useActivitiesOffline";
+import { useTaskMutations } from "@/hooks/useTaskMutations";
 import {
   Dialog,
   DialogContent,
@@ -60,6 +62,8 @@ export function EditCalendarActivityDialog({
   const { effectiveOrgId } = useOrgContext();
   const notify = useNotification();
   const queryClient = useQueryClient();
+  const { updateActivity: updateActivityOffline } = useActivityMutations();
+  const { updateTask: updateTaskOffline } = useTaskMutations();
 
   const [activityType, setActivityType] = useState<CalendarEventType>("meeting");
   const [subject, setSubject] = useState("");
@@ -114,22 +118,32 @@ export function EditCalendarActivityDialog({
       const scheduledAtUTC = fromZonedTime(localISTDate, IST_TIMEZONE);
 
       if (event.source === "task") {
-        // Update task
-        const { error } = await supabase
-          .from("tasks")
-          .update({
-            title: subject,
-            description,
-            due_date: scheduledAtUTC.toISOString(),
-            priority: priority === "urgent" ? "high" : priority === "important" ? "medium" : "low",
-          })
-          .eq("id", event.id);
-        if (error) throw error;
+        await new Promise<void>((resolve, reject) => {
+          updateTaskOffline(
+            {
+              id: event.id,
+              data: {
+                title: subject,
+                description,
+                due_date: scheduledAtUTC.toISOString(),
+                priority:
+                  priority === "urgent"
+                    ? "high"
+                    : priority === "important"
+                      ? "medium"
+                      : "low",
+              },
+            },
+            {
+              onSuccess: () => resolve(),
+              onError: (err: any) => reject(err),
+            }
+          );
+        });
       } else {
-        // Update activity
-        const { error } = await supabase
-          .from("contact_activities")
-          .update({
+        await updateActivityOffline.mutateAsync({
+          id: event.id,
+          data: {
             activity_type: activityType,
             subject,
             description,
@@ -138,9 +152,8 @@ export function EditCalendarActivityDialog({
             meeting_link: meetingLink || null,
             contact_id: contactId || null,
             priority,
-          })
-          .eq("id", event.id);
-        if (error) throw error;
+          },
+        });
       }
     },
     onSuccess: () => {

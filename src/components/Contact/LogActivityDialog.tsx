@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useQuery } from "@tanstack/react-query";
+import { useActivityMutations } from "@/hooks/useActivitiesOffline";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,6 +43,7 @@ export function LogActivityDialog({
   onActivityLogged,
 }: LogActivityDialogProps) {
   const notify = useNotification();
+  const { createActivity: createActivityOffline } = useActivityMutations();
   const [loading, setLoading] = useState(false);
   const [dispositions, setDispositions] = useState<CallDisposition[]>([]);
   const [subDispositions, setSubDispositions] = useState<CallSubDisposition[]>([]);
@@ -149,38 +151,77 @@ export function LogActivityDialog({
 
       if (!profile?.org_id) throw new Error("Organization not found");
 
-      const activityData: any = { // Database insert allows flexible schema
+      // Create the activity through the offline-aware mutation. When online,
+      // it inserts to Supabase immediately and returns the server id. When
+      // offline, it stores locally and returns a temporary local_ id; the
+      // meeting / participants / meet-link follow-ups need server data and
+      // are skipped in that case.
+      const isOnline = typeof navigator !== "undefined" ? navigator.onLine : true;
+      const isMeeting = formData.activity_type === "meeting";
+
+      const result = await createActivityOffline.mutateAsync({
         contact_id: contactId,
-        org_id: profile.org_id,
         activity_type: formData.activity_type,
         subject: formData.subject || null,
         description: formData.description || null,
-        call_disposition_id: formData.call_disposition_id || null,
-        call_sub_disposition_id: formData.call_sub_disposition_id || null,
-        call_duration: formData.call_duration ? parseInt(formData.call_duration) * 60 : null,
-        created_by: user.id,
+        scheduled_at: isMeeting
+          ? meetingConfig.scheduledAt?.toISOString() ?? null
+          : null,
+        completed_at: isMeeting
+          ? meetingConfig.scheduledAt
+            ? null
+            : new Date().toISOString()
+          : new Date().toISOString(),
+        duration_minutes: isMeeting ? meetingConfig.duration ?? null : null,
         next_action_date: formData.next_action_date?.toISOString() || null,
         next_action_notes: formData.next_action_notes || null,
-        morning_reminder_sent: false,
-        pre_action_reminder_sent: false,
-      };
+      });
 
-      // For meetings: add meeting-specific fields
-      if (formData.activity_type === 'meeting') {
-        activityData.scheduled_at = meetingConfig.scheduledAt?.toISOString();
-        activityData.meeting_duration_minutes = meetingConfig.duration;
-        activityData.completed_at = meetingConfig.scheduledAt ? null : new Date().toISOString();
-      } else {
-        activityData.completed_at = new Date().toISOString();
+      const isServerId =
+        typeof result.id === "string" && !result.id.startsWith("local_");
+
+      // Persist call disposition / duration columns the offline hook doesn't
+      // model (they live only on the server row). Best-effort when online.
+      if (
+        isOnline &&
+        isServerId &&
+        (formData.call_disposition_id ||
+          formData.call_sub_disposition_id ||
+          formData.call_duration)
+      ) {
+        await supabase
+          .from("contact_activities")
+          .update({
+            call_disposition_id: formData.call_disposition_id || null,
+            call_sub_disposition_id: formData.call_sub_disposition_id || null,
+            call_duration: formData.call_duration
+              ? parseInt(formData.call_duration) * 60
+              : null,
+          })
+          .eq("id", result.id);
       }
 
-      const { data: activity, error: activityError } = await supabase
-        .from("contact_activities")
-        .insert([activityData])
-        .select()
-        .single();
-
-      if (activityError) throw activityError;
+      // Synthetic activity ref for the post-insert code below so we don't
+      // touch the rest of the file (participants, meet links). When offline
+      // this id is the local_ id and all the subsequent server calls will
+      // simply no-op or surface their own offline errors gracefully.
+      const activity = { id: result.id };
+      if (!isOnline || !isServerId) {
+        // Skip the entire meeting/participants/meet-link section when offline.
+        // The activity row will sync when connection returns; meet link &
+        // invites can be generated then by editing the activity.
+        if (isMeeting) {
+          notify.info(
+            "Saved offline",
+            "Meeting saved. Participants and Google Meet link can be added once you're back online."
+          );
+        }
+        notify.success("Activity logged", "Saved offline (will sync)");
+        resetForm();
+        onOpenChange(false);
+        if (onActivityLogged) onActivityLogged();
+        return;
+      }
 
       // Track if Google Meet link was successfully generated
       let meetLinkGenerated = false;

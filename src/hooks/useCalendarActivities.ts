@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useOrgContext } from "@/hooks/useOrgContext";
+import { mirrorActivitiesToDexie } from "@/services/sync/activitiesSync";
 import { CalendarEvent, CalendarEventType, CalendarFilters, TaskStatus, ViewMode } from "@/types/calendar";
 import { startOfMonth, endOfMonth, addDays, format } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
@@ -67,16 +68,20 @@ export function useCalendarActivities({ currentDate, filters, viewMode = 'all', 
         .from("contact_activities")
         .select(`
           id,
+          org_id,
           activity_type,
           subject,
           description,
           scheduled_at,
           next_action_date,
+          next_action_notes,
           completed_at,
           duration_minutes,
           meeting_link,
           contact_id,
           created_by,
+          created_at,
+          updated_at,
           recurring_pattern_id,
           priority,
           contacts:contact_id (
@@ -94,9 +99,15 @@ export function useCalendarActivities({ currentDate, filters, viewMode = 'all', 
         .or(`scheduled_at.lte.${rangeEnd.toISOString()},next_action_date.lte.${rangeEnd.toISOString()}`);
 
       if (error) throw error;
-      return data || [];
+      const rows = data || [];
+      // Mirror to Dexie for offline reads (drop joined fields).
+      mirrorActivitiesToDexie(
+        rows.map(({ contacts: _c, creator: _cr, ...rest }: any) => rest)
+      ).catch(() => undefined);
+      return rows;
     },
     enabled: !!effectiveOrgId && userIdsToFetch.length > 0 && viewMode !== 'tasks',
+    retry: 0,
   });
 
   // Fetch tasks for selected users

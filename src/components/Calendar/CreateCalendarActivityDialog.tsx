@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useOrgContext } from "@/hooks/useOrgContext";
 import { useNotification } from "@/hooks/useNotification";
+import { useActivityMutations } from "@/hooks/useActivitiesOffline";
+import { useTaskMutations } from "@/hooks/useTaskMutations";
 import {
   Dialog,
   DialogContent,
@@ -62,6 +64,8 @@ export function CreateCalendarActivityDialog({
   const { effectiveOrgId } = useOrgContext();
   const notify = useNotification();
   const queryClient = useQueryClient();
+  const { createActivity: createActivityOffline } = useActivityMutations();
+  const { createTask: createTaskOffline } = useTaskMutations();
 
   const [activityType, setActivityType] = useState<CalendarEventType>("meeting");
   const [subject, setSubject] = useState("");
@@ -215,22 +219,26 @@ export function CreateCalendarActivityDialog({
           if (error) throw error;
         }
       } else {
-        // Single activity/task creation (existing logic)
+        // Single activity/task creation — route through offline-aware hooks
+        // so writes queue and sync if currently offline.
         if (activityType === "task") {
-          const { error } = await supabase.from("tasks").insert({
-            org_id: effectiveOrgId,
-            title: subject,
-            description,
-            due_date: scheduledAtUTC.toISOString(),
-            assigned_by: user.id,
-            assigned_to: user.id,
-            status: "pending",
-            priority: "medium",
+          await new Promise<void>((resolve, reject) => {
+            createTaskOffline(
+              {
+                title: subject,
+                description: description || undefined,
+                assigned_to: user.id,
+                due_date: scheduledAtUTC.toISOString(),
+                priority: "medium",
+              },
+              {
+                onSuccess: () => resolve(),
+                onError: (err: any) => reject(err),
+              }
+            );
           });
-          if (error) throw error;
         } else {
-          const { error } = await supabase.from("contact_activities").insert({
-            org_id: effectiveOrgId,
+          await createActivityOffline.mutateAsync({
             contact_id: contactId || null,
             activity_type: activityType,
             subject,
@@ -238,10 +246,8 @@ export function CreateCalendarActivityDialog({
             scheduled_at: scheduledAtUTC.toISOString(),
             duration_minutes: parseInt(duration) || 30,
             meeting_link: meetingLink || null,
-            created_by: user.id,
             priority,
           });
-          if (error) throw error;
         }
       }
     },
