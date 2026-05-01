@@ -29,6 +29,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { QuickDial } from "@/components/Contact/QuickDial";
 import { CreateContactDialog } from "@/components/Contact/CreateContactDialog";
 import { useUrlFilterState } from "@/hooks/useUrlFilterState";
+import { useContactMutations } from "@/hooks/useContactsOffline";
+import { mirrorContactsToDexie } from "@/services/sync/contactsSync";
+import { useLiveQuery } from "dexie-react-hooks";
+import { db } from "@/lib/db";
 interface PipelineStage {
   id: string;
   name: string;
@@ -181,7 +185,7 @@ export default function PipelineBoard() {
     enabled: !!effectiveOrgId,
   });
 
-  const { data: contactsData } = useQuery({
+  const { data: contactsData, isError: contactsError } = useQuery({
     queryKey: ['pipeline-contacts', effectiveOrgId, activeTab, tablePagination.currentPage, tablePagination.pageSize],
     queryFn: async () => {
       const selectFields = "id, first_name, last_name, email, phone, company, pipeline_stage_id, job_title, source, status, notes, website, address, city, state, country, created_at, updated_at, industry_type, nature_of_business, created_by, contact_phones(phone, is_primary)";
@@ -195,7 +199,9 @@ export default function PipelineBoard() {
           .limit(500);
 
         if (error) throw error;
-        return { data: data as (Contact & { contact_phones?: { phone: string; is_primary: boolean }[] })[], count: data?.length || 0 };
+        const rows = (data ?? []) as (Contact & { contact_phones?: { phone: string; is_primary: boolean }[] })[];
+        mirrorContactsToDexie(rows as any).catch(() => undefined);
+        return { data: rows, count: rows.length };
       } else {
         // Table view: use pagination
         const offset = (tablePagination.currentPage - 1) * tablePagination.pageSize;
@@ -206,36 +212,90 @@ export default function PipelineBoard() {
           .range(offset, offset + tablePagination.pageSize - 1);
 
         if (error) throw error;
-        return { data: data as (Contact & { contact_phones?: { phone: string; is_primary: boolean }[] })[], count: count || 0 };
+        const rows = (data ?? []) as (Contact & { contact_phones?: { phone: string; is_primary: boolean }[] })[];
+        mirrorContactsToDexie(rows as any).catch(() => undefined);
+        return { data: rows, count: count || 0 };
       }
     },
     enabled: !!effectiveOrgId,
+    retry: 0,
   });
+
+  // Offline fallback: read contacts from Dexie when offline / server fails.
+  const offlineContactsRows = useLiveQuery(
+    async () => {
+      if (!effectiveOrgId) return null;
+      const arr = await db.contacts.where("orgId").equals(effectiveOrgId).toArray();
+      arr.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+      const limited = activeTab === "board" ? arr.slice(0, 500) : arr;
+      return limited.map(
+        (c) =>
+          ({
+            id: c.id,
+            first_name: c.firstName,
+            last_name: c.lastName,
+            email: c.email,
+            phone: c.phone,
+            company: c.company,
+            pipeline_stage_id: c.pipelineStageId,
+            job_title: c.jobTitle,
+            source: c.source,
+            status: c.status ?? "new",
+            notes: c.notes,
+            website: null,
+            address: null,
+            city: c.city,
+            state: c.state,
+            country: c.country,
+            created_at: c.createdAt.toISOString(),
+            updated_at: c.updatedAt.toISOString(),
+            industry_type: null,
+            nature_of_business: null,
+            created_by: c.createdBy,
+            contact_phones: [],
+          }) as unknown as Contact & {
+            contact_phones?: { phone: string; is_primary: boolean }[];
+          }
+      );
+    },
+    [effectiveOrgId, activeTab]
+  );
+
+  const isOffline = typeof navigator !== "undefined" && !navigator.onLine;
+  const effectiveContactsData =
+    contactsError || isOffline
+      ? offlineContactsRows
+        ? { data: offlineContactsRows, count: offlineContactsRows.length }
+        : contactsData
+      : contactsData ??
+        (offlineContactsRows
+          ? { data: offlineContactsRows, count: offlineContactsRows.length }
+          : undefined);
 
   // Memoize contacts excluding those converted to clients, with primary phones attached
   const baseContacts = useMemo(() => {
-    if (!contactsData?.data) return [];
+    if (!effectiveContactsData?.data) return [];
     const excludeIds = new Set(clientContactIds || []);
-    return contactsData.data
+    return effectiveContactsData.data
       .filter(c => !excludeIds.has(c.id))
       .map(c => ({
         ...c,
         primaryPhone: (c as any).contact_phones?.find((p: any) => p.is_primary)?.phone || null,
       }));
-  }, [contactsData?.data, clientContactIds]);
+  }, [effectiveContactsData?.data, clientContactIds]);
 
   // Update pagination when data changes
   useEffect(() => {
-    if (contactsData && activeTab === "table") {
-      tablePagination.setTotalRecords(contactsData.count);
+    if (effectiveContactsData && activeTab === "table") {
+      tablePagination.setTotalRecords(effectiveContactsData.count);
     }
-  }, [contactsData?.count, activeTab]);
+  }, [effectiveContactsData?.count, activeTab]);
 
   // Derive contacts from filteredContacts or baseContacts
   const contacts = filteredContacts ?? baseContacts;
 
   const stages = stagesData || [];
-  const loading = !stagesData || !contactsData;
+  const loading = !stagesData || !effectiveContactsData;
   const showEnhancedFields = effectiveOrgId === ENHANCED_PIPELINE_ORG_ID;
 
   const handleDragStart = (contactId: string) => {
@@ -246,23 +306,20 @@ export default function PipelineBoard() {
     e.preventDefault();
   };
 
+  const { updateContact: updateContactOffline } = useContactMutations();
+
   const handleDrop = async (stageId: string) => {
     if (!draggedContact) return;
 
     try {
-      const { error } = await supabase
-        .from("contacts")
-        .update({ pipeline_stage_id: stageId })
-        .eq("id", draggedContact);
-
-      if (error) throw error;
-
-      // Invalidate query to refresh data
+      await updateContactOffline.mutateAsync({
+        id: draggedContact,
+        data: { pipeline_stage_id: stageId },
+      });
       queryClient.invalidateQueries({ queryKey: ['pipeline-contacts'] });
-
-      notify.success("Contact moved", "Contact has been moved to new stage");
-    } catch (error: any) {
-      notify.error("Error", error);
+    } catch (error: unknown) {
+      // useContactMutations already surfaced the error toast.
+      console.error("[Pipeline] Drop failed", error);
     } finally {
       setDraggedContact(null);
     }
@@ -411,17 +468,13 @@ export default function PipelineBoard() {
   // Handle inline stage change from table view
   const handleStageChange = async (contactId: string, newStageId: string) => {
     try {
-      const { error } = await supabase
-        .from("contacts")
-        .update({ pipeline_stage_id: newStageId })
-        .eq("id", contactId);
-
-      if (error) throw error;
-
+      await updateContactOffline.mutateAsync({
+        id: contactId,
+        data: { pipeline_stage_id: newStageId },
+      });
       queryClient.invalidateQueries({ queryKey: ['pipeline-contacts'] });
-      notify.success("Stage updated", "Contact stage has been updated");
-    } catch (error: any) {
-      notify.error("Error", error.message);
+    } catch (error: unknown) {
+      console.error("[Pipeline] Stage change failed", error);
     }
   };
 
