@@ -29,12 +29,14 @@ Deno.serve(async (req) => {
     const now    = new Date();
     const nowIso = now.toISOString();
 
-    // 1. Load campaign sequence order + org_id
+    // 1. Load campaigns ordered by priority (NULLS LAST so a campaign that
+    //    somehow loses its priority still gets follow-ups sent — last
+    //    priority, but processed). The mkt_campaigns_autoassign_priority
+    //    trigger is the primary safeguard; this is defense in depth.
     const { data: sequencedCampaigns } = await supabase
       .from('mkt_campaigns')
       .select('id, org_id, status, product_key')
-      .not('sequence_priority', 'is', null)
-      .order('sequence_priority', { ascending: true });
+      .order('sequence_priority', { ascending: true, nullsFirst: false });
 
     const activeCampaigns   = (sequencedCampaigns ?? []).filter((c) => c.status === 'active');
     const activeCampaignIds = activeCampaigns.map((c) => c.id as string);
@@ -42,7 +44,7 @@ Deno.serve(async (req) => {
 
     if (activeCampaignIds.length === 0) {
       return new Response(
-        JSON.stringify({ message: 'No active campaigns with sequence_priority set', executed: 0 }),
+        JSON.stringify({ message: 'No active campaigns', executed: 0 }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }

@@ -58,8 +58,7 @@ export function useArohanContext() {
           .from("mkt_campaigns")
           .select("id, name, channel, status, sequence_priority")
           .eq("org_id", effectiveOrgId)
-          .not("sequence_priority", "is", null)
-          .order("sequence_priority", { ascending: true }),
+          .order("sequence_priority", { ascending: true, nullsFirst: false }),
 
         supabase.rpc("get_all_campaigns_analytics", { p_org_id: effectiveOrgId }),
 
