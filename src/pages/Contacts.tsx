@@ -21,6 +21,7 @@ import { UploadHistoryTable } from "@/components/Contacts/BulkUpload/UploadHisto
 import { ActiveUploadProgress } from "@/components/Contacts/BulkUpload/ActiveUploadProgress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AutoDialer } from "@/components/Contact/AutoDialer";
+import { NativeContactActions } from "@/components/Contact/NativeContactActions";
 import { ContactFilters, ContactFiltersState, emptyContactFilters } from "@/components/Contacts/ContactFilters";
 import { useUrlFilterState } from "@/hooks/useUrlFilterState";
 import { CreateContactDialog } from "@/components/Contact/CreateContactDialog";
@@ -608,6 +609,7 @@ Jane,Smith,jane.smith@example.com,+0987654321,Tech Inc,CEO,contacted,Referral`;
                         </TableCell>
                         <TableCell className="py-1.5 text-right sticky right-0 bg-card z-10">
                           <div className="flex justify-end gap-1">
+                            <NativeContactActions phone={contact.phone} />
                             <Button
                               variant="ghost"
                               size="icon"

@@ -24,6 +24,7 @@ import { SendSMSDialog } from "@/components/Contact/SendSMSDialog";
 import { WhatsAppHistory } from "@/components/Contact/WhatsAppHistory";
 import { SMSHistory } from "@/components/Contact/SMSHistory";
 import { ClickToCall } from "@/components/Contact/ClickToCall";
+import { NativeContactActions } from "@/components/Contact/NativeContactActions";
 import { EmailAutomationJourney } from "@/components/Contact/EmailAutomationJourney";
 import { LeadScoreCard } from "@/components/Contact/LeadScoreCard";
 import { EnrichedFieldsSection } from "@/components/Contact/EnrichedFieldsSection";
@@ -359,6 +360,7 @@ export default function ContactDetail() {
                       contactName={`${contact.first_name} ${contact.last_name || ''}`}
                     />
                   )}
+                  <NativeContactActions phone={contact.phone} />
                   <Button 
                     size="sm" 
                     variant="outline"

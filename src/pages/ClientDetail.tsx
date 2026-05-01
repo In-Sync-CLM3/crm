@@ -20,6 +20,7 @@ import { ClientDocuments } from "@/components/Clients/ClientDocuments";
 import { ClientInvoices } from "@/components/Clients/ClientInvoices";
 import { ClientAlternateContacts } from "@/components/Clients/ClientAlternateContacts";
 import { MonthlyTaxSummary } from "@/components/Clients/MonthlyTaxSummary";
+import { NativeContactActions } from "@/components/Contact/NativeContactActions";
 
 type ClientStatus = 'active' | 'inactive' | 'churned';
 
@@ -250,9 +251,12 @@ export default function ClientDetail() {
               {client.phone && (
                 <div className="flex items-center gap-3">
                   <Phone className="h-4 w-4 text-muted-foreground" />
-                  <div>
+                  <div className="flex-1">
                     <p className="text-sm text-muted-foreground">Phone</p>
                     <p className="font-medium">{client.phone}</p>
+                  </div>
+                  <div className="flex gap-1">
+                    <NativeContactActions phone={client.phone} />
                   </div>
                 </div>
               )}
