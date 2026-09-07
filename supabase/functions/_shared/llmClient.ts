@@ -34,10 +34,14 @@ const MODEL_MAP: Record<'sonnet', string> = {
 // Cerebras model that replaced Claude Haiku for the 'haiku' tier (lightweight/high-volume calls)
 const CEREBRAS_MODEL = 'gemma-4-31b';
 
-// Groq equivalents — used as fallback when the primary provider is unavailable
+// Groq equivalents — used as fallback when the primary provider is unavailable.
+// llama-3.1-8b-instant and llama-3.3-70b-versatile were both retired by Groq
+// (2026-09, confirmed live: 404 model_not_found on this account). Replaced
+// with the gpt-oss pair, same tiering intent (20b = fast/cheap, 120b = the
+// bigger fallback) -- already proven in production via globalcrm/Vendor-Sync.
 const GROQ_MODEL_MAP: Record<LLMModel, string> = {
-  haiku: 'llama-3.1-8b-instant',
-  sonnet: 'llama-3.3-70b-versatile',
+  haiku: 'openai/gpt-oss-20b',
+  sonnet: 'openai/gpt-oss-120b',
 };
 
 const MAX_RETRIES = 3;

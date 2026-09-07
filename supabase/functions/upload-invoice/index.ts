@@ -35,6 +35,12 @@ async function convertToInr(amount: number, currency: string, date: string | nul
   return Math.round(amount * (FALLBACK_RATES[cur] ?? 84) * 100) / 100;
 }
 
+// Groq's previous vision model here (llama-4-scout) was retired 2026-09;
+// qwen/qwen3.6-27b is its confirmed-live replacement. It's a reasoning
+// model -- response_format json_object keeps its <think> trace out of
+// `content`, so `content` is the JSON directly. max_tokens stays under this
+// Groq org's shared 1,000 output-tokens/minute limit for this model, with
+// headroom for reasoning tokens ahead of the (short) actual answer.
 async function parseWithGroq(base64Data: string, mimeType: string): Promise<Record<string, unknown> | null> {
   const key = Deno.env.get("GROQ_API_KEY");
   if (!key || mimeType === "application/pdf") return null;
@@ -43,8 +49,9 @@ async function parseWithGroq(base64Data: string, mimeType: string): Promise<Reco
       method: "POST",
       headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "meta-llama/llama-4-scout-17b-16e-instruct",
-        max_tokens: 300,
+        model: "qwen/qwen3.6-27b",
+        max_tokens: 800,
+        response_format: { type: "json_object" },
         messages: [{
           role: "user",
           content: [
@@ -57,8 +64,11 @@ async function parseWithGroq(base64Data: string, mimeType: string): Promise<Reco
     if (!res.ok) return null;
     const data = await res.json();
     const text = data.choices?.[0]?.message?.content ?? "";
-    const m = text.match(/\{[\s\S]*\}/);
-    return m ? JSON.parse(m[0]) : null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
   } catch {
     return null;
   }

@@ -124,11 +124,21 @@ Example response:
 
     const isPdf = mimeType === 'application/pdf';
 
-    // 1st choice: Groq. It only accepts image formats — not PDF — so for PDF
-    // input we skip straight to Claude Haiku below, which is the only
-    // provider here that reads real PDF documents natively. Since almost all
-    // documents here are PDFs, Haiku still does most of the real work; Groq
-    // picks up the rare image-only upload.
+    // 1st choice: Groq (qwen/qwen3.6-27b). It only accepts image formats —
+    // not PDF — so for PDF input we skip straight to Claude Haiku below,
+    // which is the only provider here that reads real PDF documents
+    // natively. Since almost all documents here are PDFs, Haiku still does
+    // most of the real work; Groq picks up the rare image-only upload,
+    // cheaply (image tokens are $0 on this model) and fast. The prior model
+    // here (llama-4-scout) was retired by Groq 2026-09 — confirmed live that
+    // qwen/qwen3.6-27b is vision-capable and active on this account. It's a
+    // reasoning model — response_format json_object keeps its <think>
+    // reasoning out of `content` so content IS the JSON directly, no
+    // regex-hunting needed. max_tokens stays under this Groq org's 1,000
+    // output-tokens/minute rate limit for this model (shared across every
+    // project on this Groq account, not just this call); also confirmed it
+    // can 503 "over capacity" under load, so this still needs the Claude
+    // fallback below, not a hard dependency.
     if (!isPdf) {
       const groqKey = Deno.env.get('GROQ_API_KEY');
       if (groqKey) {
@@ -137,8 +147,9 @@ Example response:
             method: 'POST',
             headers: { 'Authorization': `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-              max_tokens: 2000,
+              model: 'qwen/qwen3.6-27b',
+              max_tokens: 900,
+              response_format: { type: 'json_object' },
               messages: [
                 { role: 'system', content: systemPrompt },
                 {
@@ -154,14 +165,17 @@ Example response:
           if (groqRes.ok) {
             const groqData = await groqRes.json();
             const content = groqData.choices?.[0]?.message?.content || '';
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-              const extractedData = JSON.parse(jsonMatch[0]);
+            try {
+              const extractedData = JSON.parse(content);
               console.log('Extracted data (Groq):', extractedData);
               return new Response(JSON.stringify({ success: true, extractedData }), {
                 headers: { ...corsHeaders, 'Content-Type': 'application/json' },
               });
+            } catch (parseError) {
+              console.error('Groq returned non-JSON content, falling back to Haiku:', parseError);
             }
+          } else {
+            console.error('Groq extraction failed, falling back to Haiku:', groqRes.status, await groqRes.text());
           }
         } catch (groqError) {
           console.error('Groq extraction failed, falling back to Haiku:', groqError);
