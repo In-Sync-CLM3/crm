@@ -18,6 +18,20 @@ import { getSupabaseClient } from '../_shared/supabaseClient.ts';
 const ok = (d: unknown) => new Response(JSON.stringify(d), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 const err = (s: number, m: string) => new Response(JSON.stringify({ error: m }), { status: s, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
+/** Reveal a real email/last name for one Apollo person id (costs a credit). */
+async function revealPerson(apolloKey: string, id: string): Promise<Record<string, any> | null> {
+  try {
+    const res = await fetch('https://api.apollo.io/api/v1/people/match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apolloKey },
+      body: JSON.stringify({ id }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return null;
+    return (await res.json())?.person ?? null;
+  } catch { return null; }
+}
+
 const TITLES = [
   'Director of Delivery', 'VP Delivery', 'Head of Delivery', 'Director of Consulting',
   'Practice Lead', 'CTO', 'Chief Architect', 'VP Engineering', 'President', 'COO',
@@ -61,7 +75,11 @@ Deno.serve(async (req) => {
 
       let people: Record<string, any>[] = [];
       try {
-        const res = await fetch('https://api.apollo.io/api/v1/mixed_people/search', {
+        // mixed_people/search is deprecated by Apollo in favour of api_search,
+        // which returns names obfuscated and no email — those only come back
+        // from a separate people/match "reveal" call below, made just for the
+        // 1-2 candidates actually selected, not for every result.
+        const res = await fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-api-key': apolloKey },
           body: JSON.stringify({
@@ -101,18 +119,23 @@ Deno.serve(async (req) => {
       const primary = ranked[0];
       const fallback = ranked.find((r) => r.s!.rank !== primary.s!.rank && r.s!.rank <= 3) || ranked[1] || null;
 
+      let primaryEmailFound = false;
       for (const [rec, isPrimary] of [[primary, true], [fallback, false]] as [typeof primary | null, boolean][]) {
         if (!rec) continue;
-        const email = rec.p.email && !/email_not_unlocked/i.test(rec.p.email) ? rec.p.email : null;
+        // api_search never returns email or a real last name — reveal them
+        // with a match call scoped to just this one selected candidate.
+        const revealed = await revealPerson(apolloKey, rec.p.id);
+        const email = revealed?.email && revealed.email_status === 'verified' ? revealed.email : null;
+        if (isPrimary) primaryEmailFound = !!email;
         await supabase.from('bd_contacts').upsert({
           org_id: BD_ORG_ID,
           firm_id: f.id,
           is_primary: isPrimary,
           first_name: rec.p.first_name,
-          last_name: rec.p.last_name,
+          last_name: revealed?.last_name || rec.p.last_name || null,
           title: rec.p.title,
           email,
-          linkedin_url: rec.p.linkedin_url || null,
+          linkedin_url: revealed?.linkedin_url || rec.p.linkedin_url || null,
           source: 'apollo',
           why_chosen: rec.s!.why,
           updated_at: new Date().toISOString(),
@@ -123,7 +146,7 @@ Deno.serve(async (req) => {
         firm: f.firm_name,
         primary: `${primary.p.first_name} ${primary.p.last_name || ''} (${primary.p.title})`.trim(),
         fallback: fallback ? `${fallback.p.first_name} (${fallback.p.title})` : 'none',
-        email_found: !!primary.p.email,
+        email_found: primaryEmailFound,
       });
 
       await new Promise((r) => setTimeout(r, 1200));   // stay well inside Apollo's rate limit
