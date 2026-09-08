@@ -41,12 +41,18 @@ export interface DashboardOverview {
     contactable: number; drafted: number; pending_review: number;
     approved: number; rejected: number; last_reviewed_at: string | null;
     sequences_live: number; sequences_stopped: number; excluded: number;
+    sent_unique_companies: number;
   };
   tickets: {
     raised_30d: number;
     open: number;
     overdue: number;
     monthly: { month: string; raised: number }[] | null;
+  };
+  /** Amit's personal job-application matching engine, not In-Sync hiring. */
+  job_applications: {
+    applied: number;
+    evaluated: number;
   };
 }
 
