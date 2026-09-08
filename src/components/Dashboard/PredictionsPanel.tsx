@@ -48,42 +48,43 @@ export const PredictionsPanel = memo(function PredictionsPanel({ data, isLoading
   }
 
   const months = data.revenue_months || [];
-  const received = months.map((m) => m.received);
+  const invoiced = months.map((m) => m.invoiced);
   const spend = months.map((m) => m.google_spend);
-  const ticketSeries = (data.tickets?.monthly || []).map((m) => m.raised);
 
   // Fit completed months only — the current month is part-way through, and
   // including it makes every trend look like a collapse.
-  const revenueF = forecast(completedPeriods(received), 1);
   const spendF = forecast(completedPeriods(spend), 1);
-  const ticketF = forecast(completedPeriods(ticketSeries), 1);
 
   // Followers project from the last 30 days' movement, not a fitted series —
   // there is only one snapshot cadence and a month of it.
   const linkedin = (data.organic || []).find((c) => c.channel === "linkedin");
 
   const lastComplete = <T,>(a: T[]) => a[a.length - 2] ?? a[a.length - 1];
-  const lastReceived = lastComplete(received) ?? 0;
   const lastSpend = lastComplete(spend) ?? 0;
-  const lastTickets = lastComplete(ticketSeries) ?? 0;
+
+  // Revenue is this month's real invoiced total (Proforma + Tax Invoices), not
+  // a forecast — the current month is the last, part-way-through entry.
+  const thisMonthInvoiced = invoiced[invoiced.length - 1] ?? 0;
+  const lastMonthInvoiced = invoiced[invoiced.length - 2] ?? 0;
+
+  const bd = data.bd || {} as DashboardOverview["bd"];
+  const jobApplications = data.job_applications || { applied: 0, evaluated: 0 };
 
   return (
     <Card className="p-4">
       <div className="mb-3">
         <h3 className="font-display text-[0.95rem] font-semibold tracking-tight">Next month, projected</h3>
         <p className="text-[11px] text-muted-foreground">
-          From the last 6 completed months, with the trend damped so one unusual month can't run away with it
+          Revenue is this month's actual total; the rest is projected from the last 6 completed months, damped so one unusual month can't run away with it
         </p>
       </div>
 
-      <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-2 grid-cols-2 lg:grid-cols-5">
         <Tile
           label="Revenue"
-          value={revenueF ? formatCompactINR(revenueF.points[0]) : "—"}
-          sub={revenueF
-            ? `range ${formatCompactINR(revenueF.low[0])}–${formatCompactINR(revenueF.high[0])}`
-            : "not enough history"}
-          direction={revenueF ? dir(revenueF.points[0], lastReceived) : undefined}
+          value={formatCompactINR(thisMonthInvoiced)}
+          sub="so far this month, PI + Invoices"
+          direction={dir(thisMonthInvoiced, lastMonthInvoiced)}
         />
         <Tile
           label="Ad spend"
@@ -92,12 +93,14 @@ export const PredictionsPanel = memo(function PredictionsPanel({ data, isLoading
           direction={spendF ? dir(spendF.points[0], lastSpend) : undefined}
         />
         <Tile
-          label="Tickets"
-          value={ticketF ? String(Math.round(ticketF.points[0])) : "—"}
-          sub={ticketF
-            ? `range ${Math.round(ticketF.low[0])}–${Math.round(ticketF.high[0])}`
-            : "not enough history"}
-          direction={ticketF ? dir(ticketF.points[0], lastTickets) : undefined}
+          label="BD sent"
+          value={String(bd.sent_unique_companies ?? 0)}
+          sub="unique companies contacted"
+        />
+        <Tile
+          label="Job applications"
+          value={String(jobApplications.applied ?? 0)}
+          sub="applications sent"
         />
         <Tile
           label="LinkedIn followers"
