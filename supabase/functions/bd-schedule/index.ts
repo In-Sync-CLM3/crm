@@ -32,10 +32,27 @@ const DAILY_CAP = 5;
 // thing that makes a sequence read as automated.
 const FOLLOWUP_FACTS = [
   'The ATS I mentioned runs on 47 users because the workflow does the work, not the headcount.',
-  'The agency platform replaced eleven spreadsheets and two SaaS subscriptions in one quarter.',
   'The loan origination system took a 9-day approval cycle to under 48 hours.',
   'The AI intake desk resolves 76% of complaints before a human sees them.',
 ];
+
+// Follow-up 1 also carries the case-study attachment: proof of full-cycle
+// delivery, not bench capacity — scoped it, built it in phases, ran the
+// rollout, still owns it in production nine months later. The rotated fact
+// gives it variety across firms; the attachment and the "not a bench"
+// framing deliberately stay fixed, since the document itself is what varies
+// each recipient's read, not the words introducing it.
+const CASE_STUDY_URL = 'https://crm-marketing-store.echocommunicator.workers.dev/bd-outreach/InSync_CaseStudy_RMPL.pdf';
+const CASE_STUDY_FILENAME = 'InSync_CaseStudy_RMPL.pdf';
+const caseStudyFollowup = (firstName: string, fact: string) => `Hi ${firstName},
+
+One thing worth adding: on the platform behind that number, I wasn't hired for a sprint board — I scoped it directly with the client, built it in phases over ten months, ran the rollout myself, and it's still in daily use today (111 of 111 staff, nine months in). ${fact}
+
+That's the gap I'd fill for you — not another name on the bench, someone who can own a piece of delivery end to end with your client and hand it back working. Case study attached.
+
+Still happy to start small.
+
+Amit`.replace(/\n/g, '<br>');
 
 const BREAKUP = (firstName: string) => `Hi ${firstName},
 
@@ -83,9 +100,13 @@ Deno.serve(async (req) => {
       }
 
       const isBreakup = seq.step === 'followup_2';
+      const isCaseStudyStep = seq.step === 'followup_1';
+      const fact = FOLLOWUP_FACTS[(seq.batch_no || 0 + queued.length) % FOLLOWUP_FACTS.length];
       const html = isBreakup
         ? BREAKUP(contact.first_name).replace(/\n/g, '<br>')
-        : `Hi ${contact.first_name},<br><br>${FOLLOWUP_FACTS[(seq.batch_no || 0 + queued.length) % FOLLOWUP_FACTS.length]}<br><br>Still happy to start small.<br><br>Amit`;
+        : isCaseStudyStep
+          ? caseStudyFollowup(contact.first_name, fact)
+          : `Hi ${contact.first_name},<br><br>${fact}<br><br>Still happy to start small.<br><br>Amit`;
 
       const slot = nextSendSlot(firm?.time_zone || 'ET', now, queued.length);
 
@@ -105,6 +126,7 @@ Deno.serve(async (req) => {
           from_name: FROM_NAME,
           bare_email: true,                 // no platform footer, no List-Unsubscribe
           in_reply_to: seq.thread_message_id,
+          ...(isCaseStudyStep ? { attachment_url: CASE_STUDY_URL, attachment_filename: CASE_STUDY_FILENAME } : {}),
         });
 
         const nextStep = seq.step === 'followup_1' ? 'followup_2' : seq.step === 'followup_2' ? 'linkedin_connect' : 'done';
