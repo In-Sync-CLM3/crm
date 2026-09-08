@@ -449,40 +449,82 @@ async function checkWebhookInboxStale(ref: string): Promise<Check> {
 }
 
 async function checkBdOutreach(ref: string): Promise<Check> {
-  // Outcome check, not a plumbing check: bd-schedule can return HTTP 200 while
-  // every write it attempts silently fails (a schema mismatch did exactly this
-  // for 8 days / 6 cron runs, 2026-08-17 to 08-28 — see
-  // project_prosync_bd_scheduler_silent_failure_fix memory). A 200 from the
-  // function proves nothing; the only real signal is whether approved drafts
-  // are actually turning into queued sends. So this asks the business
-  // question directly instead of asking "did the function run".
+  // Genuinely end-to-end, not per-stage: bd-schedule 200'd while every insert
+  // silently failed for 8 days (2026-08-17 to 08-28), then bd-contacts 200'd
+  // while every Apollo call 403'd/422'd for the pipeline's whole life so far
+  // (endpoint deprecation, found 2026-09-08). Two different tables, two
+  // different symptoms — but the SAME underlying failure shape, and the first
+  // version of this check only watched the second one's stage in isolation
+  // (approved drafts -> queued sends), so it read "ok, nothing waiting" while
+  // the pipeline was dead further upstream and nothing ever reached approved.
+  // A bespoke checkX for every stage that turns out to be able to swallow its
+  // own errors is a losing game — the next one to break silently (research,
+  // drafting, tracking, a disqualifier misfire) would need yet another
+  // hand-written probe discovered only after the fact.
+  //
+  // Instead: measure the one thing that actually matters end to end — is a
+  // NEW firm reaching its first sent email at all, given that a backlog
+  // capable of producing one exists? That answer doesn't care which internal
+  // stage is broken. The stage counts below are diagnostic detail attached to
+  // the SAME check, not separate gating checks of their own, so an alert
+  // already tells you where in the funnel the pile-up is without a new probe
+  // having to be invented for it first.
   try {
     const rows = await sql(
       ref,
-      `select
-         (select count(*) from bd_drafts where status='approved') as approved_waiting,
-         (select max(created_at) from bd_events where event_type='queued') as last_queued`,
+      `with pool as (
+         select f.id from bd_firms f
+         where f.org_id = '65e22e43-f23d-4c0a-9d84-2eba65ad0e12'
+           and f.grade in ('A','B') and f.state_flag is null
+       ),
+       contact_status as (
+         select p.id as firm_id,
+           exists (
+             select 1 from bd_contacts c
+             where c.firm_id = p.id and c.first_name is not null
+               and c.email is not null and c.opted_out is not true
+           ) as has_contact
+         from pool p
+       ),
+       draft_status as (
+         select p.id as firm_id,
+           (select d.status from bd_drafts d where d.firm_id = p.id order by d.created_at desc limit 1) as latest_status
+         from pool p
+       )
+       select
+         (select count(*) from pool) as pool_size,
+         (select count(*) from contact_status where not has_contact) as no_contact,
+         (select count(*) from contact_status cs join draft_status ds on ds.firm_id = cs.firm_id
+            where cs.has_contact and ds.latest_status is null) as contact_no_draft,
+         (select count(*) from draft_status where latest_status = 'pending') as draft_pending_review,
+         (select count(*) from draft_status where latest_status = 'approved') as draft_approved_not_queued,
+         (select count(distinct firm_id) from bd_events
+            where step = 'email_1' and event_type = 'queued' and occurred_at > now() - interval '9 days') as first_touches_last_9d,
+         (select max(occurred_at) from bd_events where step = 'email_1' and event_type = 'queued') as last_first_touch`,
     );
-    const waiting = Number(rows[0]?.approved_waiting || 0);
-    const lastQueued = rows[0]?.last_queued as string | null;
-    if (waiting === 0) return { label: "BD outreach scheduler", status: "ok", detail: "no approved drafts waiting" };
-    const ageDays = lastQueued ? (Date.now() - new Date(lastQueued).getTime()) / 86400000 : Infinity;
-    // Cadence is 3x/week (Tue/Wed/Thu) — 5 clear calendar days with approved
-    // work sitting and nothing queued is already past a full send window with
-    // no progress, not just an unlucky weekend.
-    if (ageDays > 5) {
-      return {
-        label: "BD outreach scheduler",
-        status: "fail",
-        detail: `${waiting} approved draft(s) waiting, last real send queued ${lastQueued ? `${Math.floor(ageDays)}d ago` : "never"} — the scheduler is running but not converting approvals into sends.`,
-      };
+    const r = rows[0] || {};
+    const pool = Number(r.pool_size || 0);
+    const firstTouches9d = Number(r.first_touches_last_9d || 0);
+    const lastFirstTouch = r.last_first_touch as string | null;
+    const stageDetail = `pool ${pool} (no contact ${r.no_contact}, has contact no draft ${r.contact_no_draft}, `
+      + `pending review ${r.draft_pending_review}, approved not sent ${r.draft_approved_not_queued})`;
+
+    if (pool === 0) return { label: "BD outreach pipeline", status: "ok", detail: "no firm is waiting on the funnel" };
+    if (firstTouches9d > 0) {
+      return { label: "BD outreach pipeline", status: "ok", detail: `${firstTouches9d} new firm(s) reached a first email in the last 9d — ${stageDetail}` };
     }
-    if (ageDays > 3) {
-      return { label: "BD outreach scheduler", status: "warn", detail: `${waiting} approved draft(s) waiting, last queued ${Math.floor(ageDays)}d ago — watch this` };
-    }
-    return { label: "BD outreach scheduler", status: "ok", detail: `${waiting} approved draft(s) waiting, queue is moving (last queued ${Math.floor(ageDays)}d ago)` };
+    // Cadence is 3x/week (Tue/Wed/Thu) — 9 days is a full send week plus a
+    // buffer for weekends, so zero NEW firms reaching a first email in that
+    // span, with a non-empty pool, means the funnel has stalled somewhere
+    // between "loaded" and "sent" — not just an unlucky week.
+    const ageDays = lastFirstTouch ? (Date.now() - new Date(lastFirstTouch).getTime()) / 86400000 : Infinity;
+    return {
+      label: "BD outreach pipeline",
+      status: "fail",
+      detail: `0 new firms reached a first email in 9d (last one ${lastFirstTouch ? `${Math.floor(ageDays)}d ago` : "never"}) with ${pool} still in the funnel — ${stageDetail}. The pipeline is not converting new firms end to end; check whichever stage above is piling up.`,
+    };
   } catch (e) {
-    return { label: "BD outreach scheduler", status: "warn", detail: `probe failed: ${String(e).slice(0, 150)}` };
+    return { label: "BD outreach pipeline", status: "warn", detail: `probe failed: ${String(e).slice(0, 150)}` };
   }
 }
 
