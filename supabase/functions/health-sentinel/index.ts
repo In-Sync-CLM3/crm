@@ -570,6 +570,38 @@ async function checkJobMatchEngine(ref: string): Promise<Check> {
   }
 }
 
+// Amit's local job-search browser profiles (LinkedIn, Mercor, Micro1, ...)
+// live on his own PC via Playwright -- Sentinel (cloud) cannot test a login
+// directly. Claude logs a row to platform_session_checks whenever it checks
+// one during an active session; this reads the LATEST check per platform and
+// turns a real logout into a real 'fail', which reconcile() already knows
+// how to do something about: no AUTO_FIXERS entry exists for this label, so
+// it's correctable=false and rides the existing email -> WhatsApp -> AI-call
+// escalation chain automatically -- no new alert code needed.
+async function checkPlatformSessions(ref: string): Promise<Check> {
+  try {
+    const rows = await sql(
+      ref,
+      `select distinct on (platform) platform, logged_in, checked_at
+       from platform_session_checks
+       order by platform, checked_at desc`,
+    );
+    if (!rows.length) return { label: "Platform sign-ins", status: "ok", detail: "no checks logged yet" };
+    const loggedOut = rows.filter((r) => !r.logged_in);
+    if (loggedOut.length) {
+      const names = loggedOut.map((r) => r.platform).join(", ");
+      return {
+        label: "Platform sign-ins",
+        status: "fail",
+        detail: `logged out on: ${names} — last checked ${loggedOut.map((r) => ist(r.checked_at as string)).join(", ")} IST. Needs Amit to sign back in.`,
+      };
+    }
+    return { label: "Platform sign-ins", status: "ok", detail: `${rows.length} platform(s) checked, all signed in` };
+  } catch (e) {
+    return { label: "Platform sign-ins", status: "warn", detail: `probe failed: ${String(e).slice(0, 150)}` };
+  }
+}
+
 async function checkSmbFeed(ref: string): Promise<Check> {
   // smbconnect feed query heartbeat: catches silent failures in feed visibility.
   // Regression test for post_context filter syntax issue where posts stop appearing.
@@ -961,6 +993,7 @@ async function runProject(ref: string): Promise<{ ref: string; name: string; che
     if (m.marketing) checks.push(await checkMarketing(ref));
     if (m.bdOutreach) checks.push(await checkBdOutreach(ref));
     if (m.jobMatch) checks.push(await checkJobMatchEngine(ref));
+    if (m.jobMatch) checks.push(await checkPlatformSessions(ref));
     if (m.feedCheck) checks.push(await checkSmbFeed(ref));
     checks.push(...(await checkQueues(ref)));
     if (ref === "ufwvyybrctjpwipbveqe") checks.push(await checkWebhookInboxStale(ref));
