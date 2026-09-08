@@ -1,6 +1,6 @@
 import { logEngine } from './engineLogger.ts';
 
-type LLMModel = 'haiku' | 'sonnet';
+type LLMModel = 'haiku' | 'sonnet' | 'opus';
 
 interface LLMOptions {
   model?: LLMModel;
@@ -16,8 +16,9 @@ interface LLMOptions {
 // Sonnet 4.6 supports the dynamic-filtering web search tool. Only 'sonnet' calls
 // webSearch in this codebase — the 'haiku' tier now runs on Cerebras, which has
 // no equivalent server-side search tool.
-const WEB_SEARCH_TOOL_TYPE: Record<'sonnet', string> = {
+const WEB_SEARCH_TOOL_TYPE: Record<'sonnet' | 'opus', string> = {
   sonnet: 'web_search_20260209',
+  opus: 'web_search_20260209',
 };
 
 interface LLMResponse {
@@ -27,8 +28,12 @@ interface LLMResponse {
   output_tokens: number;
 }
 
-const MODEL_MAP: Record<'sonnet', string> = {
+const MODEL_MAP: Record<'sonnet' | 'opus', string> = {
   sonnet: 'claude-sonnet-4-6',
+  // Opus 5 -- reserved for calls that need real judgment over volume (e.g.
+  // job-match-evaluate's exact-practitioner-not-adjacent test), not the
+  // default tier for high-throughput generation.
+  opus: 'claude-opus-5',
 };
 
 // Cerebras model that replaced Claude Haiku for the 'haiku' tier (lightweight/high-volume calls)
@@ -42,6 +47,7 @@ const CEREBRAS_MODEL = 'gemma-4-31b';
 const GROQ_MODEL_MAP: Record<LLMModel, string> = {
   haiku: 'openai/gpt-oss-20b',
   sonnet: 'openai/gpt-oss-120b',
+  opus: 'openai/gpt-oss-120b',
 };
 
 const MAX_RETRIES = 3;
@@ -232,9 +238,12 @@ export async function callLLM(
   const body: Record<string, unknown> = {
     model: modelId,
     max_tokens,
-    temperature,
     messages,
   };
+  // Opus 5 rejects `temperature` outright ("deprecated for this model") —
+  // verified live, 400 invalid_request_error. Only send it for models that
+  // still accept it.
+  if (model !== 'opus') body.temperature = temperature;
 
   if (system) {
     body.system = system;
