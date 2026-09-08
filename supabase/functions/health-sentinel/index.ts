@@ -486,6 +486,49 @@ async function checkBdOutreach(ref: string): Promise<Check> {
   }
 }
 
+async function checkBdContactEnrichment(ref: string): Promise<Check> {
+  // Same shape as checkBdOutreach, one stage earlier: bd-contacts can return
+  // HTTP 200 while every single Apollo call inside it 403s/422s, so nothing
+  // ever gets added. That happened for the pipeline's entire life so far
+  // (2026-08-17 through at least 2026-09-08, endpoint deprecation) and was
+  // invisible for the same reason — a top-level 200 with per-item errors. Ask
+  // whether enrichment is actually landing new contacts, not whether the
+  // function ran.
+  try {
+    const rows = await sql(
+      ref,
+      `select
+         (select count(*) from bd_firms f
+            where f.org_id = '65e22e43-f23d-4c0a-9d84-2eba65ad0e12'
+              and f.state_flag is null and f.grade in ('A','B')
+              and f.researched_at is not null
+              and not exists (
+                select 1 from bd_contacts c
+                where c.firm_id = f.id and c.first_name is not null
+                  and c.email is not null and c.opted_out is not true
+              )
+         ) as needing_contact,
+         (select max(created_at) from bd_contacts where source='apollo') as last_apollo_contact`,
+    );
+    const needing = Number(rows[0]?.needing_contact || 0);
+    const last = rows[0]?.last_apollo_contact as string | null;
+    if (needing === 0) return { label: "BD contact enrichment", status: "ok", detail: "no researched firm is waiting on a contact" };
+    const ageHours = last ? (Date.now() - new Date(last).getTime()) / 3600000 : Infinity;
+    // Cron runs once daily (30 2 * * *) — 48h with a backlog and nothing landed
+    // is a missed day, not noise.
+    if (ageHours > 48) {
+      return {
+        label: "BD contact enrichment",
+        status: "fail",
+        detail: `${needing} researched firm(s) still lack a usable contact, and no Apollo contact has landed in ${last ? `${Math.floor(ageHours / 24)}d` : "recorded history"} — enrichment is running but not producing usable contacts.`,
+      };
+    }
+    return { label: "BD contact enrichment", status: "ok", detail: `${needing} firm(s) still queued for a contact, but enrichment is landing new ones (last ${Math.floor(ageHours)}h ago)` };
+  } catch (e) {
+    return { label: "BD contact enrichment", status: "warn", detail: `probe failed: ${String(e).slice(0, 150)}` };
+  }
+}
+
 async function checkSmbFeed(ref: string): Promise<Check> {
   // smbconnect feed query heartbeat: catches silent failures in feed visibility.
   // Regression test for post_context filter syntax issue where posts stop appearing.
@@ -876,6 +919,7 @@ async function runProject(ref: string): Promise<{ ref: string; name: string; che
     }
     if (m.marketing) checks.push(await checkMarketing(ref));
     if (m.bdOutreach) checks.push(await checkBdOutreach(ref));
+    if (m.bdOutreach) checks.push(await checkBdContactEnrichment(ref));
     if (m.feedCheck) checks.push(await checkSmbFeed(ref));
     checks.push(...(await checkQueues(ref)));
     if (ref === "ufwvyybrctjpwipbveqe") checks.push(await checkWebhookInboxStale(ref));
