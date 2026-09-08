@@ -50,8 +50,8 @@ const FROM = "In-Sync Health Sentinel <notifications@in-sync.co.in>";
 //        never silent — this is the lesson from the fieldsync blank-screen
 //        outage). Set web:null to intentionally opt a backend-only project out.
 //   feedCheck: probe feed query visibility (catches silent feed filter failures)
-const META: Record<string, { name: string; dialer?: boolean; marketing?: boolean; bdOutreach?: boolean; demoConfirm?: boolean; feedCheck?: boolean; web?: string | null }> = {
-  mlvgqudcwlkolsbighnn: { name: "crm (core)", marketing: true, bdOutreach: true, web: "https://crm.in-sync.co.in" },
+const META: Record<string, { name: string; dialer?: boolean; marketing?: boolean; bdOutreach?: boolean; jobMatch?: boolean; demoConfirm?: boolean; feedCheck?: boolean; web?: string | null }> = {
+  mlvgqudcwlkolsbighnn: { name: "crm (core)", marketing: true, bdOutreach: true, jobMatch: true, web: "https://crm.in-sync.co.in" },
   ejzjrvazegaxrhqizgaa: { name: "globalcrm", dialer: true, demoConfirm: true, web: "https://globalcrm.in-sync.co.in" },
   gwfofzqrfpwojejjodgz: { name: "event", web: "https://event.in-sync.co.in" },
   htdwkhtfdifwajdkkpul: { name: "ats", web: "https://ats-6t2.pages.dev" },
@@ -528,6 +528,80 @@ async function checkBdOutreach(ref: string): Promise<Check> {
   }
 }
 
+// Amit's personal job-application matching engine has no guaranteed daily
+// volume (research over volume — some days evaluate zero JDs, on purpose),
+// so this does NOT check "did evaluation happen" the way checkBdOutreach
+// checks send volume. It checks the two things that ARE always supposed to
+// be true: the end-of-day digest cron actually fired (job_digest_runs gets a
+// row every day regardless of activity, including a 'skipped_no_activity'
+// row on a quiet day), and no 'error' rows are sitting unnoticed.
+async function checkJobMatchEngine(ref: string): Promise<Check> {
+  try {
+    const rows = await sql(
+      ref,
+      `select
+         (select max(run_date) from job_digest_runs) as last_digest_date,
+         (select status from job_digest_runs order by created_at desc limit 1) as last_digest_status,
+         (select count(*) from job_applications where status = 'error' and created_at > now() - interval '3 days') as recent_errors`,
+    );
+    const r = rows[0] || {};
+    const lastDigestDate = r.last_digest_date as string | null;
+    const errors = Number(r.recent_errors || 0);
+
+    if (!lastDigestDate) return { label: "Job-match digest", status: "ok", detail: "no digest run yet — engine not in use" };
+
+    const ageDays = (Date.now() - new Date(lastDigestDate + 'T12:00:00Z').getTime()) / 86400000;
+    if (ageDays > 2) {
+      return {
+        label: "Job-match digest",
+        status: "fail",
+        detail: `last digest run was ${Math.floor(ageDays)}d ago (${lastDigestDate}) — the daily cron should fire every day regardless of activity; it has stopped.`,
+      };
+    }
+    if (r.last_digest_status === 'error') {
+      return { label: "Job-match digest", status: "warn", detail: `most recent digest run ended in 'error' — check job_digest_runs.error_detail` };
+    }
+    if (errors > 0) {
+      return { label: "Job-match digest", status: "warn", detail: `${errors} job_applications row(s) with status='error' in the last 3 days — a JD evaluation is failing silently otherwise` };
+    }
+    return { label: "Job-match digest", status: "ok", detail: `last digest ${lastDigestDate}, no unresolved errors` };
+  } catch (e) {
+    return { label: "Job-match digest", status: "warn", detail: `probe failed: ${String(e).slice(0, 150)}` };
+  }
+}
+
+// Amit's local job-search browser profiles (LinkedIn, Mercor, Micro1, ...)
+// live on his own PC via Playwright -- Sentinel (cloud) cannot test a login
+// directly. Claude logs a row to platform_session_checks whenever it checks
+// one during an active session; this reads the LATEST check per platform and
+// turns a real logout into a real 'fail', which reconcile() already knows
+// how to do something about: no AUTO_FIXERS entry exists for this label, so
+// it's correctable=false and rides the existing email -> WhatsApp -> AI-call
+// escalation chain automatically -- no new alert code needed.
+async function checkPlatformSessions(ref: string): Promise<Check> {
+  try {
+    const rows = await sql(
+      ref,
+      `select distinct on (platform) platform, logged_in, checked_at
+       from platform_session_checks
+       order by platform, checked_at desc`,
+    );
+    if (!rows.length) return { label: "Platform sign-ins", status: "ok", detail: "no checks logged yet" };
+    const loggedOut = rows.filter((r) => !r.logged_in);
+    if (loggedOut.length) {
+      const names = loggedOut.map((r) => r.platform).join(", ");
+      return {
+        label: "Platform sign-ins",
+        status: "fail",
+        detail: `logged out on: ${names} — last checked ${loggedOut.map((r) => ist(r.checked_at as string)).join(", ")} IST. Needs Amit to sign back in.`,
+      };
+    }
+    return { label: "Platform sign-ins", status: "ok", detail: `${rows.length} platform(s) checked, all signed in` };
+  } catch (e) {
+    return { label: "Platform sign-ins", status: "warn", detail: `probe failed: ${String(e).slice(0, 150)}` };
+  }
+}
+
 async function checkSmbFeed(ref: string): Promise<Check> {
   // smbconnect feed query heartbeat: catches silent failures in feed visibility.
   // Regression test for post_context filter syntax issue where posts stop appearing.
@@ -918,6 +992,8 @@ async function runProject(ref: string): Promise<{ ref: string; name: string; che
     }
     if (m.marketing) checks.push(await checkMarketing(ref));
     if (m.bdOutreach) checks.push(await checkBdOutreach(ref));
+    if (m.jobMatch) checks.push(await checkJobMatchEngine(ref));
+    if (m.jobMatch) checks.push(await checkPlatformSessions(ref));
     if (m.feedCheck) checks.push(await checkSmbFeed(ref));
     checks.push(...(await checkQueues(ref)));
     if (ref === "ufwvyybrctjpwipbveqe") checks.push(await checkWebhookInboxStale(ref));

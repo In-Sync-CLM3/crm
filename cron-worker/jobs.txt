@@ -66,3 +66,9 @@ ad-conversion-upload|mkt-ad-conversion-upload||10 * * * *
 # reach and records daily spend/reach/clicks, so the dashboard reports measured
 # Meta numbers instead of assuming one account. Runs after Google's sync.
 meta-insights|mkt-meta-insights||45 3 * * *
+
+# Amit's personal job-application matching engine. job-match-evaluate itself
+# is called on-demand (Claude invokes it per JD while actively job-searching,
+# not a bulk crawler — research depth over volume, 2026-09-08). This cron is
+# only the end-of-day digest: 22:30 IST = 17:00 UTC.
+job-match-digest|job-match-digest||0 17 * * *
